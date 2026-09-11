@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Markdown Preview</title>
+<!--@inline-css-->
+</head>
+<body>
+  <header class="toolbar">
+    <button id="pickFolderBtn" type="button">📁 フォルダを選ぶ</button>
+    <button id="reconnectBtn" type="button" style="display:none;">🔓 前回のフォルダを再許可</button>
+    <button id="saveBtn" type="button">💾 保存</button>
+    <span id="status" class="status"></span>
+  </header>
+  <main class="main">
+    <textarea id="editor" class="editor" spellcheck="false" placeholder="# ここに Markdown を入力してください"></textarea>
+    <iframe id="preview" class="preview" title="プレビュー" srcdoc="<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body></body></html>"></iframe>
+  </main>
+<!--@inline-js-->
+</body>
+</html>

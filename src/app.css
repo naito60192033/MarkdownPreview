@@ -1,0 +1,71 @@
+/* src/app.css
+ * フェーズ0の技術検証用の最小スタイル。後のフェーズで作り直す前提のため、
+ * 作り込みはせず最低限のレイアウトのみを定義する。
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", sans-serif;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #ddd;
+  background: #f7f7f7;
+  flex: 0 0 auto;
+}
+
+.toolbar button {
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.status {
+  margin-left: auto;
+  color: #555;
+  font-size: 13px;
+}
+
+.status.error {
+  color: #c00;
+  font-weight: bold;
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.editor {
+  flex: 1;
+  border: none;
+  border-right: 1px solid #ddd;
+  padding: 12px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+}
+
+.preview {
+  flex: 1;
+  border: none;
+  background: #fff;
+}
