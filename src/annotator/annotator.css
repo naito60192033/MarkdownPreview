@@ -1,0 +1,288 @@
+/* src/annotator/annotator.css
+ *
+ * 画像注釈エディタ(全画面モーダル)のスタイル。
+ * annotator.js から <style> として1度だけ挿入される(esbuild の text ローダーで
+ * 文字列として取り込む前提)。Windows のシステムフォントを既定にする。
+ */
+
+.annotator-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: flex;
+  flex-direction: column;
+  background: #2b2b2bee;
+  color: #222;
+  font-family: "Meiryo", "Yu Gothic UI", sans-serif;
+  font-size: 13px;
+  user-select: none;
+}
+
+.annotator-overlay * {
+  box-sizing: border-box;
+}
+
+/* ---------- ツールバー ---------- */
+.annotator-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: #f2f2f2;
+  border-bottom: 1px solid #ccc;
+}
+
+.annotator-tool-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 8px;
+  border-right: 1px solid #ddd;
+}
+
+.annotator-tool-group--end {
+  margin-left: auto;
+  border-right: none;
+  padding-right: 0;
+}
+
+.annotator-tool-group:last-child {
+  border-right: none;
+}
+
+.annotator-tool-btn,
+.annotator-icon-btn {
+  padding: 5px 10px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  background: #fff;
+  color: #222;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.annotator-tool-btn:hover,
+.annotator-icon-btn:hover {
+  background: #eaf2ff;
+}
+
+.annotator-tool-btn[aria-pressed="true"] {
+  background: #1e88e5;
+  border-color: #1565c0;
+  color: #fff;
+}
+
+.annotator-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.annotator-color-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  outline: 1px solid #999;
+  cursor: pointer;
+  padding: 0;
+}
+
+.annotator-color-btn[aria-pressed="true"] {
+  outline: 2px solid #1e88e5;
+  outline-offset: 1px;
+}
+
+.annotator-width-btn {
+  width: 28px;
+  height: 26px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.annotator-width-btn[aria-pressed="true"] {
+  background: #1e88e5;
+  border-color: #1565c0;
+  color: #fff;
+}
+
+.annotator-scale-btn {
+  padding: 5px 8px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.annotator-scale-btn[aria-pressed="true"] {
+  background: #1e88e5;
+  border-color: #1565c0;
+  color: #fff;
+}
+
+.annotator-scale-custom {
+  width: 56px;
+  padding: 4px 6px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  font-family: inherit;
+}
+
+.annotator-output-size {
+  color: #555;
+  white-space: nowrap;
+}
+
+.annotator-primary-btn {
+  padding: 6px 16px;
+  border: 1px solid #1565c0;
+  border-radius: 4px;
+  background: #1e88e5;
+  color: #fff;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: bold;
+}
+
+.annotator-primary-btn:hover {
+  background: #1976d2;
+}
+
+/* ---------- キャンバス ---------- */
+.annotator-canvas-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: repeating-conic-gradient(#3a3a3a 0% 25%, #333 0% 50%) 0 0 / 24px 24px;
+}
+
+.annotator-svg {
+  background: #fff;
+  box-shadow: 0 0 0 1px #000, 0 4px 24px rgba(0, 0, 0, 0.5);
+  touch-action: none;
+}
+
+.annotator-svg[data-tool="rect"],
+.annotator-svg[data-tool="crop"] {
+  cursor: crosshair;
+}
+
+.annotator-svg[data-tool="arrow"] {
+  cursor: crosshair;
+}
+
+.annotator-svg[data-tool="callout"] {
+  cursor: text;
+}
+
+/* 図形の当たり判定用の透明な図形(クリックしやすくするためのもの) */
+.annotator-hit-area {
+  fill: transparent;
+  stroke: transparent;
+  cursor: move;
+}
+
+.annotator-handle {
+  fill: #fff;
+  stroke: #1e88e5;
+  stroke-width: 1.5;
+  cursor: pointer;
+}
+
+.annotator-handle-tail {
+  fill: #ffb300;
+  stroke: #7a5200;
+}
+
+.annotator-selection-outline {
+  fill: none;
+  stroke: #1e88e5;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+
+.annotator-crop-boundary {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  pointer-events: none;
+}
+
+.annotator-crop-dim {
+  fill: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+
+/* ---------- 吹き出しのテキスト編集用オーバーレイ ---------- */
+.annotator-text-editor {
+  position: absolute;
+  z-index: 5;
+  resize: none;
+  border: 2px dashed #1e88e5;
+  outline: none;
+  background: rgba(255, 255, 255, 0.95);
+  font-family: "Meiryo", "Yu Gothic UI", sans-serif;
+  white-space: pre;
+  overflow: hidden;
+  padding: 0;
+  margin: 0;
+}
+
+/* ---------- 独自の確認ダイアログ(window.confirm は使わない) ---------- */
+.annotator-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.annotator-confirm-box {
+  background: #fff;
+  border-radius: 6px;
+  padding: 20px 24px;
+  min-width: 280px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+}
+
+.annotator-confirm-message {
+  margin: 0 0 16px;
+  white-space: pre-wrap;
+  color: #222;
+}
+
+.annotator-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.annotator-confirm-actions button {
+  padding: 6px 14px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  background: #f5f5f5;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.annotator-confirm-actions button[data-action="ok"] {
+  background: #1e88e5;
+  border-color: #1565c0;
+  color: #fff;
+}
