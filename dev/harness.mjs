@@ -28,17 +28,59 @@ import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { installFakeFs } from './fake-fs.mjs';
+import { serializeChunks, parseChunks, findChunk } from '../src/annotator/pngmeta.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DIST_HTML = path.join(REPO_ROOT, 'dist', 'mdpreview.html');
 const DIST_URL = 'file://' + DIST_HTML;
+const SCREENSHOT_DIR = path.join(REPO_ROOT, 'test-output');
 
 // 1x1 の赤いピクセルからなる最小の有効な PNG。
 const TEST_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+// 1x1 の最小の有効な JPEG(注釈エディタの「PNG 以外」テスト用)。
+const TEST_JPEG_BASE64 =
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=';
+
+// 見た目の確認用に、指定サイズ・単色の PNG を実際に生成する(注釈エディタでの
+// マウス操作や HTML 出力のスクリーンショットには 1x1 では小さすぎるため)。
+// 1x1 の TEST_PNG_BASE64 と違い、PNG チャンクの組み立ては src/annotator/pngmeta.js
+// (読み取り専用で利用。実装は別エージェントが担当中のため変更しない)の
+// serializeChunks() をそのまま使う。
+function makeSolidPng(width, height, [r, g, b]) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // color type: RGB
+  ihdr[10] = 0; // compression method
+  ihdr[11] = 0; // filter method
+  ihdr[12] = 0; // interlace method
+  const rowBytes = 1 + width * 3;
+  const raw = Buffer.alloc(rowBytes * height);
+  for (let y = 0; y < height; y++) {
+    const rowStart = y * rowBytes;
+    raw[rowStart] = 0; // フィルタタイプ: none
+    for (let x = 0; x < width; x++) {
+      const off = rowStart + 1 + x * 3;
+      raw[off] = r;
+      raw[off + 1] = g;
+      raw[off + 2] = b;
+    }
+  }
+  const idat = zlib.deflateSync(raw);
+  const chunks = [
+    { type: 'IHDR', data: new Uint8Array(ihdr) },
+    { type: 'IDAT', data: new Uint8Array(idat) },
+    { type: 'IEND', data: new Uint8Array(0) },
+  ];
+  return Buffer.from(serializeChunks(chunks));
+}
 
 // ---------- CLI 引数 ----------
 const ARGV = process.argv.slice(2);
@@ -191,6 +233,38 @@ async function nudgeFocus(page) {
 
 async function getPreviewText(page) {
   return page.evaluate(() => window.__mdpreview.getPreviewDocument().body.textContent);
+}
+
+// プレビュー内の最初の画像にマウスを乗せる(画像編集ボタンを表示させるため)。
+// iframe 内の座標に、iframe 要素自体の画面上の位置を足して画面座標に変換する。
+async function hoverPreviewImage(page) {
+  const box = await page.evaluate(() => {
+    const doc = window.__mdpreview.getPreviewDocument();
+    const img = doc.querySelector('img');
+    const r = img.getBoundingClientRect();
+    const frame = document.getElementById('preview').getBoundingClientRect();
+    return { left: frame.left + r.left, top: frame.top + r.top, width: r.width, height: r.height };
+  });
+  const x = box.left + box.width / 2;
+  const y = box.top + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.move(x + 1, y + 1); // mouseover を確実に発火させる
+}
+
+// 画像注釈エディタの .annotator-svg 上で(zoom=1 前提の)画像座標系の2点間を
+// ドラッグして矩形を描く。
+async function drawRectOnAnnotator(page, from, to) {
+  const box = await page.evaluate(() => {
+    const r = document.querySelector('.annotator-svg').getBoundingClientRect();
+    return { left: r.left, top: r.top };
+  });
+  const p1 = { x: box.left + from.x, y: box.top + from.y };
+  const p2 = { x: box.left + to.x, y: box.top + to.y };
+  await page.mouse.move(p1.x, p1.y);
+  await page.mouse.down();
+  await page.mouse.move((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, { steps: 3 });
+  await page.mouse.move(p2.x, p2.y, { steps: 3 });
+  await page.mouse.up();
 }
 
 // ---------- テスト本体 ----------
@@ -634,6 +708,775 @@ async function runTests(browser) {
       });
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // 以下、統合作業(レビュー指摘の修正・MPE互換の組み込み・画像の貼り付け/注釈
+  // エディタ/HTML出力)の検証。
+  // ---------------------------------------------------------------------
+
+  console.log('\n10) 変更検知と保存の競合(レビュー指摘1)');
+  await test('保存前に読み始めた確認処理の結果が保存後に届いても、保存直後の内容を古い内容で上書きしない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 初期\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        const result = await page.evaluate(() =>
+          window.__mdpreview.simulateStaleWatchDuringSave({ delayMs: 600, newText: '# 保存された内容\n', settleWaitMs: 150 })
+        );
+
+        assert.equal(result.dirty, false, '保存が完了していません');
+        assert.ok(result.text.includes('保存された内容'), '保存直後の内容が古い内容で上書きされました: ' + result.text);
+
+        const onDisk = await fs.readFile(path.join(dir, 'doc.md'), 'utf8');
+        assert.ok(onDisk.includes('保存された内容'), 'ディスクの内容が保存後のものになっていません');
+        assert.equal(await page.evaluate(() => window.__mdpreview.isNotifyBarVisible()), false, '不要な通知バーが表示されています');
+
+        printConsoleErrors(consoleErrors, '変更検知と保存の競合');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n11) 描画の順序(レビュー指摘2)');
+  await test('@import の読み込みで待たされる古い描画より後に始めた新しい描画が先に終わっても、最終的に新しい内容が残る', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 初期\n', 'utf8');
+      await fs.writeFile(path.join(dir, 'slow.md'), '遅い取り込みの本文\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.evaluate(() => window.__fakeFs.setDelay({ read: 700 }));
+
+        // 古い描画(@import の読み込みで待たされる)。await せずに発行だけする。
+        await page.evaluate(() => {
+          window.__mdpreview.setEditorText('# 古い\n\n@import "slow.md"\n');
+        });
+        // すぐに新しい描画(@import なしで速い)を発行し、完了を待つ。
+        await page.evaluate(() => window.__mdpreview.setEditorText('# 新しい\n\n新しい内容です\n'));
+
+        await waitFor(async () => (await getPreviewText(page)).includes('新しい内容です'), {
+          message: '新しい描画がプレビューに反映されませんでした',
+        });
+
+        // 古い描画の @import 読み込みが完了するのを待っても、内容が古い方に戻らないこと。
+        await sleep(900);
+        const text = await getPreviewText(page);
+        assert.ok(text.includes('新しい内容です'), '古い描画の結果でプレビューが上書きされました: ' + text);
+        assert.ok(!text.includes('遅い取り込みの本文'), '古い描画(@import の内容)がプレビューに残っています: ' + text);
+
+        printConsoleErrors(consoleErrors, '描画の順序');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n12) 画像キャッシュの解放(レビュー指摘3)');
+  await test('遅い描画の画像確認が後から終わっても、新しい描画が使っている画像の blob URL を解放しない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'images'));
+      await fs.writeFile(path.join(dir, 'images', 'img1.png'), Buffer.from(TEST_PNG_BASE64, 'base64'));
+      await fs.writeFile(path.join(dir, 'images', 'img2.png'), Buffer.from(TEST_PNG_BASE64, 'base64'));
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 画像\n\n![img1](images/img1.png)\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () =>
+          page.evaluate(() => {
+            const img = window.__mdpreview.getPreviewDocument().querySelector('img');
+            return !!img && img.complete && img.naturalWidth > 0;
+          })
+        );
+
+        await page.evaluate(() => window.__fakeFs.setDelay({ read: 700 }));
+        // 古い描画(img1 の再確認で待たされる)。await せずに発行だけする。
+        await page.evaluate(() => {
+          window.__mdpreview.setEditorText('# 画像\n\n![img1](images/img1.png)\n');
+        });
+        await page.evaluate(() => window.__fakeFs.setDelay({ read: 0 }));
+        // 新しい描画(img2 に差し替え)を発行し、反映を待つ。
+        await page.evaluate(() => window.__mdpreview.setEditorText('# 画像\n\n![img2](images/img2.png)\n'));
+
+        await waitFor(
+          async () =>
+            page.evaluate(() => {
+              const img = window.__mdpreview.getPreviewDocument().querySelector('img');
+              return !!img && img.getAttribute('data-src') === 'images/img2.png' && (img.src || '').startsWith('blob:');
+            }),
+          { message: '新しい描画(img2)がプレビューに反映されませんでした' }
+        );
+
+        const blobUrlBefore = await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('img').src);
+
+        // 古い描画(img1)の画像確認が完了するまで待つ。
+        await sleep(900);
+
+        // img2 の blob URL が生きたまま(revoke されていない)であること。
+        const stillOk = await page.evaluate(
+          (url) =>
+            new Promise((resolve) => {
+              const doc = window.__mdpreview.getPreviewDocument();
+              const testImg = doc.createElement('img');
+              testImg.onload = () => resolve(testImg.naturalWidth > 0);
+              testImg.onerror = () => resolve(false);
+              testImg.src = url;
+            }),
+          blobUrlBefore
+        );
+        assert.ok(stillOk, '新しい描画が使っている画像の blob URL が解放されてしまいました');
+
+        const srcAfter = await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('img').src);
+        assert.equal(srcAfter, blobUrlBefore, '表示中の画像の src が変わってしまいました');
+
+        printConsoleErrors(consoleErrors, '画像キャッシュの解放');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n13) 保存の二重実行(レビュー指摘4)');
+  await test('保存中に2回目の保存を呼んでも無視され、競合モーダルが誤って出ない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 初期\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        await page.click('.cm-content');
+        await page.keyboard.press('Control+End');
+        await page.keyboard.type('\n本文');
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).dirty);
+
+        await page.evaluate(() => window.__fakeFs.setDelay({ read: 500 }));
+        await page.evaluate(() => {
+          window.__mdpreview.save(); // 1回目(競合チェックの読み込みで少し時間がかかる)
+          window.__mdpreview.save(); // 2回目(1回目がまだ保存中のはずなので無視される)
+        });
+
+        await waitFor(async () => !(await page.evaluate(() => window.__mdpreview.getState())).dirty, {
+          message: '保存が完了しませんでした',
+        });
+        await sleep(600);
+
+        assert.equal(
+          await page.evaluate(() => window.__mdpreview.isConflictModalVisible()),
+          false,
+          '不要な競合モーダルが表示されました'
+        );
+        const onDisk = await fs.readFile(path.join(dir, 'doc.md'), 'utf8');
+        assert.ok(onDisk.includes('本文'), 'ディスクの内容が保存されていません');
+
+        printConsoleErrors(consoleErrors, '保存の二重実行');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n14) HTML で書いた画像(レビュー指摘5)');
+  await test('生の <img src="..."> で書かれた画像も blob URL に解決され、width 属性を保ったままコンソールエラーが出ない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'images'));
+      await fs.writeFile(path.join(dir, 'images', 'a.png'), Buffer.from(TEST_PNG_BASE64, 'base64'));
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 見出し\n\n<img src="images/a.png" width="300">\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        await waitFor(
+          async () =>
+            page.evaluate(async () => {
+              const doc = window.__mdpreview.getPreviewDocument();
+              const img = doc.querySelector('img');
+              if (!img) return false;
+              if (img.complete) return img.naturalWidth > 0;
+              return new Promise((resolve) => {
+                img.addEventListener('load', () => resolve(img.naturalWidth > 0), { once: true });
+                img.addEventListener('error', () => resolve(false), { once: true });
+              });
+            }),
+          { message: 'HTML で直接書いた <img> が表示されませんでした' }
+        );
+
+        const widthAttr = await page.evaluate(() =>
+          window.__mdpreview.getPreviewDocument().querySelector('img').getAttribute('width')
+        );
+        assert.equal(widthAttr, '300', 'width 属性が保たれていません');
+
+        printConsoleErrors(consoleErrors, 'HTML で書いた画像');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n15) MPE互換: @import');
+  await test('@import が入れ子・別フォルダの画像とともに展開され、外部で @import 先を書き換えると再描画される', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'sub', 'images'), { recursive: true });
+      await fs.writeFile(path.join(dir, 'sub', 'images', 'x.png'), Buffer.from(TEST_PNG_BASE64, 'base64'));
+      await fs.writeFile(path.join(dir, 'sub', 'child.md'), '## 子見出し\n\n![img](images/x.png)\n', 'utf8');
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 親\n\n@import "sub/child.md"\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        await waitFor(async () => (await getPreviewText(page)).includes('子見出し'), {
+          message: '@import 先の内容が展開されませんでした',
+        });
+        await waitFor(
+          async () =>
+            page.evaluate(async () => {
+              const doc = window.__mdpreview.getPreviewDocument();
+              const img = doc.querySelector('img');
+              if (!img) return false;
+              if (img.complete) return img.naturalWidth > 0;
+              return new Promise((resolve) => {
+                img.addEventListener('load', () => resolve(img.naturalWidth > 0), { once: true });
+                img.addEventListener('error', () => resolve(false), { once: true });
+              });
+            }),
+          { message: '@import 先(別フォルダ)の画像が表示されませんでした' }
+        );
+
+        await sleep(30);
+        await fs.writeFile(path.join(dir, 'sub', 'child.md'), '## 更新後の子見出し\n\n![img](images/x.png)\n', 'utf8');
+        await nudgeFocus(page);
+
+        await waitFor(async () => (await getPreviewText(page)).includes('更新後の子見出し'), {
+          message: '@import 先を外部で書き換えても再描画されませんでした',
+        });
+
+        printConsoleErrors(consoleErrors, '@import');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n16) MPE互換: [TOC] クリックでスクロール');
+  await test('[TOC] の目次リンクをクリックすると見出しへスクロールする', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const paras = Array.from({ length: 80 }, (_, i) => `本文${i}\n`).join('\n');
+      const content = `# 見出しA\n\n[TOC]\n\n${paras}\n## 見出しB\n\n下の本文\n`;
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        await waitFor(async () =>
+          page.evaluate(() => !!window.__mdpreview.getPreviewDocument().querySelector('a[href="#見出しb"]'))
+        );
+
+        await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          doc.querySelector('a[href="#見出しb"]').click();
+        });
+
+        await waitFor(
+          async () =>
+            page.evaluate(() => {
+              const doc = window.__mdpreview.getPreviewDocument();
+              const scrollRoot = doc.scrollingElement || doc.documentElement;
+              return scrollRoot.scrollTop > 0;
+            }),
+          { message: '見出しへスクロールしませんでした' }
+        );
+
+        printConsoleErrors(consoleErrors, '[TOC] クリックでスクロール');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n17) MPE互換: ソース書き込み型 TOC の保存時更新(CRLF)');
+  await test('保存時にソース書き込み型 TOC が更新され、CRLF のファイルでも CRLF が保たれる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content =
+        '# 見出し\r\n\r\n' +
+        '<!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->\r\n' +
+        '\r\n<!-- code_chunk_output -->\r\n\r\n- [古い](#古い)\r\n\r\n<!-- /code_chunk_output -->\r\n' +
+        '\r\n## 新しい見出し\r\n\r\n本文\r\n';
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.evaluate(() => window.__mdpreview.save());
+        await waitFor(async () => !(await page.evaluate(() => window.__mdpreview.getState())).dirty);
+
+        const onDisk = await fs.readFile(path.join(dir, 'doc.md'), 'utf8');
+        assert.match(onDisk, /\[新しい見出し\]\(#新しい見出し\)/);
+        assert.doesNotMatch(onDisk, /古い/);
+        assert.ok(!/[^\r]\n/.test(onDisk), 'CRLF が保たれていません(裸の LF が混入しています)');
+        assert.ok(onDisk.includes('\r\n'), 'CRLF になっていません');
+
+        printConsoleErrors(consoleErrors, 'ソース書き込み型 TOC');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n18) MPE互換: アラート');
+  await test('> [!WARNING] 等が div.markdown-alert として描画される', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 見出し\n\n> [!WARNING]\n> 注意してください\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () =>
+          page.evaluate(
+            () => !!window.__mdpreview.getPreviewDocument().querySelector('div.markdown-alert.markdown-alert-warning')
+          )
+        );
+        const titleText = await page.evaluate(
+          () => window.__mdpreview.getPreviewDocument().querySelector('.markdown-alert-title').textContent
+        );
+        assert.equal(titleText, 'Warning');
+
+        printConsoleErrors(consoleErrors, 'アラート');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n19) MPE互換: 日本語見出しの id');
+  await test('## 1. はじめに の id が 1-はじめに になる(既存 md の #見出し リンクとの互換用)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '## 1. はじめに\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () =>
+          page.evaluate(() => !!window.__mdpreview.getPreviewDocument().getElementById('1-はじめに'))
+        );
+        printConsoleErrors(consoleErrors, '日本語見出しの id');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n20) 画像の貼り付けとドロップ');
+  await test('クリップボードの画像を貼り付けると images/ に保存され、参照が挿入されプレビューに表示される', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 貼り付けテスト\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('.cm-content');
+        await page.keyboard.press('Control+End');
+
+        await page.evaluate(async (b64) => {
+          const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+          const file = new File([bytes], 'clipboard.png', { type: 'image/png' });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          const target = document.querySelector('.cm-content');
+          const evt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+          target.dispatchEvent(evt);
+        }, TEST_PNG_BASE64);
+
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getEditorText())).includes('](images/'), {
+          message: '画像の参照が挿入されませんでした',
+        });
+
+        const text = await page.evaluate(() => window.__mdpreview.getEditorText());
+        assert.match(text, /!\[\]\(images\/doc-\d{8}-\d{6}\.png\)/, '画像参照の形式が想定と異なります: ' + text);
+
+        const files = await fs.readdir(path.join(dir, 'images'));
+        assert.equal(files.length, 1, 'images/ にファイルが1つ保存されていません: ' + JSON.stringify(files));
+
+        await waitFor(
+          async () =>
+            page.evaluate(async () => {
+              const doc = window.__mdpreview.getPreviewDocument();
+              const img = doc.querySelector('img');
+              if (!img) return false;
+              if (img.complete) return img.naturalWidth > 0;
+              return new Promise((resolve) => {
+                img.addEventListener('load', () => resolve(img.naturalWidth > 0), { once: true });
+                img.addEventListener('error', () => resolve(false), { once: true });
+              });
+            }),
+          { message: '貼り付けた画像がプレビューに表示されませんでした' }
+        );
+
+        printConsoleErrors(consoleErrors, '画像の貼り付け');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('画像ファイルのドロップで images/ に保存され、参照が挿入される(元の拡張子を保つ・複数ファイル)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# ドロップテスト\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('.cm-content');
+        await page.keyboard.press('Control+End');
+
+        await page.evaluate(
+          async ({ pngB64, jpgB64 }) => {
+            const toFile = (b64, name, type) => {
+              const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+              return new File([bytes], name, { type });
+            };
+            const dt = new DataTransfer();
+            dt.items.add(toFile(pngB64, 'shot1.png', 'image/png'));
+            dt.items.add(toFile(jpgB64, 'shot2.jpg', 'image/jpeg'));
+            const target = document.querySelector('.cm-content');
+            const rect = target.getBoundingClientRect();
+            const evt = new DragEvent('drop', {
+              dataTransfer: dt,
+              bubbles: true,
+              cancelable: true,
+              clientX: rect.left + 10,
+              clientY: rect.top + 10,
+            });
+            target.dispatchEvent(evt);
+          },
+          { pngB64: TEST_PNG_BASE64, jpgB64: TEST_JPEG_BASE64 }
+        );
+
+        await waitFor(
+          async () => {
+            const text = await page.evaluate(() => window.__mdpreview.getEditorText());
+            return (text.match(/!\[\]\(images\//g) || []).length === 2;
+          },
+          { message: '2件の画像参照が挿入されませんでした' }
+        );
+
+        const text = await page.evaluate(() => window.__mdpreview.getEditorText());
+        assert.match(text, /!\[\]\(images\/doc-\d{8}-\d{6}(-\d+)?\.png\)/, 'png の参照が見つかりません: ' + text);
+        assert.match(text, /!\[\]\(images\/doc-\d{8}-\d{6}(-\d+)?\.jpg\)/, 'jpg の参照が見つかりません: ' + text);
+
+        const files = await fs.readdir(path.join(dir, 'images'));
+        assert.equal(files.length, 2, 'images/ に2ファイル保存されていません: ' + JSON.stringify(files));
+        assert.ok(files.some((f) => f.endsWith('.png')), '.png が保存されていません');
+        assert.ok(files.some((f) => f.endsWith('.jpg')), '.jpg が保存されていません(元の拡張子が保たれていません)');
+
+        printConsoleErrors(consoleErrors, '画像のドロップ');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n21) 画像注釈エディタの組み込み');
+  await test('画像の編集ボタン → 赤枠を描いて保存 → ファイルが更新され mdOR チャンクが入っている', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'images'));
+      await fs.writeFile(path.join(dir, 'images', 'shot.png'), makeSolidPng(80, 80, [40, 60, 200]));
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 画像編集\n\n![shot](images/shot.png)\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () =>
+          page.evaluate(() => {
+            const img = window.__mdpreview.getPreviewDocument().querySelector('img');
+            return !!img && img.complete && img.naturalWidth > 0;
+          })
+        );
+
+        await hoverPreviewImage(page);
+        await waitFor(
+          async () =>
+            page.evaluate(() => {
+              const btn = window.__mdpreview.getPreviewDocument().querySelector('.mdpreview-image-edit-btn');
+              return !!btn && btn.style.display !== 'none';
+            }),
+          { message: '画像編集ボタンが表示されませんでした' }
+        );
+
+        // 編集ボタンは iframe(プレビュー)の document 内にあるため、通常の
+        // page.click() ではなく DOM 経由でクリックする。
+        await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdpreview-image-edit-btn').click());
+        await waitFor(async () => page.evaluate(() => !!document.querySelector('.annotator-svg')), {
+          message: '注釈エディタが開きませんでした',
+        });
+
+        await page.click('.annotator-tool-btn[data-tool="rect"]');
+        await drawRectOnAnnotator(page, { x: 10, y: 10 }, { x: 40, y: 40 });
+
+        await page.click('[data-action="save"]');
+        await waitFor(async () => !(await page.evaluate(() => !!document.querySelector('.annotator-svg'))), {
+          message: '保存後に注釈エディタが閉じませんでした',
+        });
+
+        await waitFor(async () => (await getPreviewText(page)) !== undefined); // 再描画の完了を軽く待つ
+        await sleep(200);
+
+        const bytes = await fs.readFile(path.join(dir, 'images', 'shot.png'));
+        const chunks = parseChunks(new Uint8Array(bytes));
+        assert.ok(findChunk(chunks, 'mdOR'), 'mdOR チャンクが見つかりません(元画像が埋め込まれていません)');
+
+        printConsoleErrors(consoleErrors, '画像注釈エディタ(PNG 上書き)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('保存処理の最中に入力した内容は未保存のまま残る', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# A\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        const st = await page.evaluate(async () => {
+          const h = window.__mdpreview;
+          await h.setEditorText('# B\n');
+          // 書き込みの完了通知を遅らせ、その間に入力する(SMB の遅い保存を再現)
+          await window.__fakeFs.setDelay({ write: 800 });
+          const saving = h.save();
+          await new Promise((r) => setTimeout(r, 200));
+          await h.setEditorText('# C\n');
+          await saving;
+          await window.__fakeFs.setDelay({ write: 0 });
+          return h.getState();
+        });
+        assert.equal(await fs.readFile(path.join(dir, 'doc.md'), 'utf8'), '# B\n');
+        assert.equal(st.dirty, true, '保存中に入力した内容が保存済み扱いになっています');
+        printConsoleErrors(consoleErrors, '保存中の入力');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('JPEG を編集すると .png が新規作成され、参照が書き換わる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'images'));
+      // 日本語 + 空白を含むファイル名で、<...> 形式の markdown 参照と HTML の <img> の両方を
+      // 書き換えられることを確認する(data-src は markdown-it が %エンコードした形になるため)。
+      await fs.writeFile(path.join(dir, 'images', '写真 1.jpg'), Buffer.from(TEST_JPEG_BASE64, 'base64'));
+      await fs.writeFile(
+        path.join(dir, 'doc.md'),
+        '# JPEG編集\n\n![photo](<images/写真 1.jpg>)\n\n<img src="images/写真 1.jpg" width="100">\n',
+        'utf8'
+      );
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () =>
+          page.evaluate(async () => {
+            const doc = window.__mdpreview.getPreviewDocument();
+            const img = doc.querySelector('img');
+            if (!img) return false;
+            if (img.complete) return img.naturalWidth > 0;
+            return new Promise((resolve) => {
+              img.addEventListener('load', () => resolve(img.naturalWidth > 0), { once: true });
+              img.addEventListener('error', () => resolve(false), { once: true });
+            });
+          })
+        );
+
+        await hoverPreviewImage(page);
+        await waitFor(async () =>
+          page.evaluate(() => {
+            const btn = window.__mdpreview.getPreviewDocument().querySelector('.mdpreview-image-edit-btn');
+            return !!btn && btn.style.display !== 'none';
+          })
+        );
+        // 編集ボタンは iframe(プレビュー)の document 内にあるため、通常の
+        // page.click() ではなく DOM 経由でクリックする。
+        await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdpreview-image-edit-btn').click());
+        await waitFor(async () => page.evaluate(() => !!document.querySelector('.annotator-svg')));
+
+        await page.click('.annotator-tool-btn[data-tool="rect"]');
+        await drawRectOnAnnotator(page, { x: 10, y: 10 }, { x: 40, y: 40 });
+        await page.click('[data-action="save"]'); // 図形を描いてから保存(PNG化の確認)
+        await waitFor(async () => !(await page.evaluate(() => !!document.querySelector('.annotator-svg'))));
+
+        const expectedText =
+          '# JPEG編集\n\n![photo](<images/写真 1.png>)\n\n<img src="images/写真 1.png" width="100">\n';
+        await waitFor(
+          async () => (await page.evaluate(() => window.__mdpreview.getEditorText())) === expectedText,
+          { message: '参照が images/写真 1.png に正しく書き換わりませんでした' }
+        );
+
+        const exists = await fs
+          .stat(path.join(dir, 'images', '写真 1.png'))
+          .then(() => true)
+          .catch(() => false);
+        assert.ok(exists, 'images/写真 1.png が作成されていません');
+
+        printConsoleErrors(consoleErrors, '画像注釈エディタ(JPEG→PNG)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n22) HTML 出力');
+  await test('通常出力: style.css が効き、画像が表示され、mermaid の svg があり、script 要素が無い', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'images'));
+      await fs.writeFile(path.join(dir, 'images', 'pic.png'), makeSolidPng(40, 40, [20, 120, 200]));
+      await fs.writeFile(path.join(dir, 'style.css'), '.crossnote.markdown-preview { color: rgb(11, 22, 33); }\n', 'utf8');
+      await fs.writeFile(
+        path.join(dir, 'doc.md'),
+        '# 出力テスト\n\n![pic](images/pic.png)\n\n```mermaid\ngraph TD;\n  A-->B;\n```\n',
+        'utf8'
+      );
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(
+          async () => (await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelectorAll('svg').length)) > 0,
+          { message: 'mermaid が描画されませんでした' }
+        );
+        await waitFor(async () =>
+          page.evaluate(() => {
+            const img = window.__mdpreview.getPreviewDocument().querySelector('img');
+            return !!img && img.complete && img.naturalWidth > 0;
+          })
+        );
+
+        await page.evaluate(() => window.__mdpreview.exportNormal());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
+      });
+
+      const context = await browser.newContext();
+      const page2 = await context.newPage();
+      const consoleErrors2 = [];
+      attachDebugLogging(page2, consoleErrors2);
+      try {
+        await page2.goto('file://' + path.join(dir, 'doc.html'));
+
+        const color = await page2.evaluate(
+          () => getComputedStyle(document.querySelector('.crossnote.markdown-preview')).color
+        );
+        assert.equal(color, 'rgb(11, 22, 33)', 'style.css が反映されていません');
+
+        await waitFor(
+          async () =>
+            page2.evaluate(() => {
+              const img = document.querySelector('img');
+              return !!img && img.complete && img.naturalWidth > 0;
+            }),
+          { message: '出力 HTML の画像が表示されませんでした' }
+        );
+
+        assert.ok((await page2.evaluate(() => document.querySelectorAll('svg').length)) > 0, 'mermaid の svg がありません');
+        assert.equal(await page2.evaluate(() => document.querySelectorAll('script').length), 0, 'script 要素が含まれています');
+
+        await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+        await page2.screenshot({ path: path.join(SCREENSHOT_DIR, 'export-normal.png') });
+
+        printConsoleErrors(consoleErrors2, 'HTML 出力(通常)を開く');
+        assert.equal(consoleErrors2.length, 0, 'コンソールエラーが発生しました');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('1ファイル出力: 画像を data URI で埋め込み、別の空フォルダにコピーしても CSS・画像・mermaid が表示される', async () => {
+    const dir = await mkTmpDir();
+    const emptyDir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'images'));
+      await fs.writeFile(path.join(dir, 'images', 'pic.png'), makeSolidPng(40, 40, [10, 200, 60]));
+      await fs.writeFile(
+        path.join(dir, 'style.css'),
+        '.crossnote.markdown-preview { background-color: rgb(240, 240, 210); }\n',
+        'utf8'
+      );
+      await fs.writeFile(
+        path.join(dir, 'doc.md'),
+        '# 1ファイル出力\n\n![pic](images/pic.png)\n\n```mermaid\ngraph TD;\n  A-->B;\n```\n',
+        'utf8'
+      );
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(
+          async () => (await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelectorAll('svg').length)) > 0
+        );
+        await waitFor(async () =>
+          page.evaluate(() => {
+            const img = window.__mdpreview.getPreviewDocument().querySelector('img');
+            return !!img && img.complete && img.naturalWidth > 0;
+          })
+        );
+        await page.evaluate(() => window.__mdpreview.exportStandalone());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.standalone.html')), {
+          message: 'doc.standalone.html が出力されませんでした',
+        });
+      });
+
+      const copiedPath = path.join(emptyDir, 'doc.standalone.html');
+      await fs.copyFile(path.join(dir, 'doc.standalone.html'), copiedPath);
+
+      const context = await browser.newContext();
+      const page2 = await context.newPage();
+      const consoleErrors2 = [];
+      attachDebugLogging(page2, consoleErrors2);
+      try {
+        await page2.goto('file://' + copiedPath);
+
+        const bg = await page2.evaluate(
+          () => getComputedStyle(document.querySelector('.crossnote.markdown-preview')).backgroundColor
+        );
+        assert.equal(bg, 'rgb(240, 240, 210)', 'style.css が反映されていません');
+
+        await waitFor(
+          async () =>
+            page2.evaluate(() => {
+              const img = document.querySelector('img');
+              return !!img && img.complete && img.naturalWidth > 0 && img.src.startsWith('data:');
+            }),
+          { message: '別フォルダにコピーした 1ファイル出力の画像が表示されませんでした' }
+        );
+
+        assert.ok((await page2.evaluate(() => document.querySelectorAll('svg').length)) > 0, 'mermaid の svg がありません');
+        assert.equal(await page2.evaluate(() => document.querySelectorAll('script').length), 0, 'script 要素が含まれています');
+
+        await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+        await page2.screenshot({ path: path.join(SCREENSHOT_DIR, 'export-standalone.png') });
+
+        printConsoleErrors(consoleErrors2, 'HTML 出力(1ファイル)を別フォルダで開く');
+        assert.equal(consoleErrors2.length, 0, 'コンソールエラーが発生しました');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+      await fs.rm(emptyDir, { recursive: true, force: true });
     }
   });
 }

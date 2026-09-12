@@ -5,19 +5,32 @@
 // 差し替えることでスクロール位置を保つ。
 //
 // 担当範囲:
-//   - base.css(文字列として bundle に取り込み済み)→ style.css の順で <style> に反映
+//   - base.css → alerts.css → style.css の順で <style> に反映
+//   - html を一旦(リソースを読み込まない)<template> に入れてから、外部 URL でない
+//     img[src] を data-src に退避し、その後で本文に差し込む(HTML で直接書かれた
+//     `<img src="images/a.png" width="300">` のような MPE 由来の記法にも同じ変換が
+//     効くようにするため。markdown 由来の画像も HTML 出力にそのまま使えるよう、
+//     markdown-it 側では src をそのまま出力している。src/render/markdown.js 参照)
 //   - mermaid のプレースホルダを親ドキュメント側で mermaid.render() して SVG に差し替える
 //     (同じソースは再描画しない。失敗時はその場にエラー表示する)
-//   - 相対パスの <img> を FSA で読んで blob URL に置き換える(パス+lastModified でキャッシュ)
+//   - data-src を FSA で読んで blob URL に置き換える(パス+lastModified でキャッシュ)
 //   - プレビュー内のリンククリックの振り分け(#見出し / 相対 .md / 外部)
 //
 // iframe には sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" を
 // 付け、md 内の <script> やインラインイベントハンドラ属性が実行されないようにする。
 // allow-same-origin により、親スクリプトからは contentDocument への同一オリジンアクセス
 // (addEventListener・DOM 書き換え・スクロール制御)が可能(iframe 自身の script 実行とは別の話)。
+//
+// ---- 描画の順序・画像キャッシュの解放(レビュー指摘) ----
+// render() は @import の展開などで非同期になった呼び出し元(src/app.js の doRender)
+// から呼ばれるため、古い描画の結果が新しい描画より後に届くことがある。呼び出し元側の
+// ガードに加え、このモジュール内でも renderSeq を使い、resolveImages() の「使われて
+// いない blob URL の解放」は最新の描画のときだけ行う(古い描画の解放処理が、新しい
+// 描画が使っている blob URL を revoke してしまわないようにするため)。
 
 import mermaid from 'mermaid';
 import baseCss from '../theme/base.css';
+import alertsCss from '../theme/alerts.css';
 import { dirname, joinPath, isExternalUrl, urlToPath, extname } from '../fs/paths.js';
 import { getFileHandleByPath } from '../fs/workspace.js';
 
@@ -26,6 +39,7 @@ mermaid.initialize({ startOnLoad: false });
 const SKELETON_HTML =
   '<!DOCTYPE html><html><head><meta charset="utf-8">' +
   '<style id="mdpreview-base-style"></style>' +
+  '<style id="mdpreview-alerts-style"></style>' +
   '<style id="mdpreview-user-style"></style>' +
   '</head><body><div class="crossnote markdown-preview" id="mdpreview-root"></div></body></html>';
 
@@ -92,6 +106,8 @@ export function createPreview({ iframe, onOpenMdLink }) {
           wrapperEl = docRef.getElementById('mdpreview-root');
           const baseStyleEl = docRef.getElementById('mdpreview-base-style');
           if (baseStyleEl) baseStyleEl.textContent = baseCss;
+          const alertsStyleEl = docRef.getElementById('mdpreview-alerts-style');
+          if (alertsStyleEl) alertsStyleEl.textContent = alertsCss;
           attachLinkHandler();
           ready = true;
           resolve();
@@ -151,11 +167,20 @@ export function createPreview({ iframe, onOpenMdLink }) {
     );
   }
 
-  async function resolveImages() {
+  // <template> の中身は inert(画像等のリソースを読み込まない)なので、ここで
+  // 外部 URL でない img[src] を data-src に退避してから本文へ差し込む。
+  // markdown 由来の `![]()` も、md に直接書かれた `<img src=...>` も同じ扱いにする。
+  function moveImageSrcToDataSrc(root) {
+    for (const img of root.querySelectorAll('img[src]')) {
+      const src = img.getAttribute('src');
+      if (!src || isExternalUrl(src)) continue;
+      img.removeAttribute('src');
+      img.setAttribute('data-src', src);
+    }
+  }
+
+  async function resolveImages(mySeq) {
     if (!currentRoot) return;
-    // 相対パスの画像は markdown.js 側で src を付けず data-src だけにしてある
-    // (blob URL に置き換わるまでの間、素の相対パスへの無駄な読み込みが
-    // 走ってコンソールエラーになるのを避けるため)。ここで初めて src を設定する。
     const imgs = Array.from(wrapperEl.querySelectorAll('img[data-src]'));
     const usedPaths = new Set();
     for (const img of imgs) {
@@ -181,6 +206,9 @@ export function createPreview({ iframe, onOpenMdLink }) {
         // 見つからない等はそのまま(壊れた画像アイコンとして表示される)
       }
     }
+    // 古い描画の resolveImages がこの後に解決しても、新しい描画が使っている
+    // blob URL を revoke しないよう、最新の描画のときだけ未使用分を解放する。
+    if (mySeq !== renderSeq) return;
     for (const [key, val] of imageCache) {
       if (!usedPaths.has(key)) {
         URL.revokeObjectURL(val.blobUrl);
@@ -198,8 +226,14 @@ export function createPreview({ iframe, onOpenMdLink }) {
     currentMdDir = dirname(mdPath || '');
     currentLineMap = lineMap || [];
     const mySeq = ++renderSeq;
-    wrapperEl.innerHTML = html;
-    await Promise.all([renderMermaidBlocks(mySeq), resolveImages()]);
+
+    const template = docRef.createElement('template');
+    template.innerHTML = html;
+    moveImageSrcToDataSrc(template.content);
+    wrapperEl.innerHTML = '';
+    wrapperEl.appendChild(template.content);
+
+    await Promise.all([renderMermaidBlocks(mySeq), resolveImages(mySeq)]);
   }
 
   return {

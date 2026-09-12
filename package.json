@@ -4,9 +4,11 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "test": "npm run test:unit && npm run test:e2e",
+    "test": "npm run build && npm run test:unit && npm run test:e2e && npm run build:annotator-sandbox && npm run test:annotator-e2e",
     "test:unit": "node --test tests/",
-    "test:e2e": "node dev/harness.mjs"
+    "test:e2e": "node dev/harness.mjs",
+    "build:annotator-sandbox": "node dev/build-annotator-sandbox.mjs",
+    "test:annotator-e2e": "node dev/annotator-harness.mjs"
   },
   "devDependencies": {
     "@codemirror/lang-markdown": "^6.5.2",

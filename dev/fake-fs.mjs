@@ -70,19 +70,34 @@ export async function installFakeFs(context, opts) {
     ops: opts.fault?.ops ?? ['close'],
   };
 
-  // op ごとの人工的な遅延(ms)。同時編集のレースは、ページ間のタイミングの
-  // ゆらぎ次第で「片方が完全に終わってから他方が始まる」ことがあり、そのままでは
-  // 競合が起きたり起きなかったりする。read を意図的に遅らせると、両ページが
-  // 確実に「同じ古い内容」を読んだうえで書きに行くので、競合が決定的に再現する。
+  // op ごとの人工的な遅延(ms)。実行自体は呼び出された時点で即座に行い(その時点の
+  // ディスク状態を捕まえる)、結果が呼び出し元に返るまでの時間だけを遅らせる
+  // (実際の SMB 越しの遅い応答に近いモデル)。
+  // 同時編集のレースは、ページ間のタイミングのゆらぎ次第で「片方が完全に終わって
+  // から他方が始まる」ことがあり、そのままでは競合が起きたり起きなかったりする。
+  // read を意図的に遅らせると、両ページが確実に「同じ古い内容」を読んだうえで
+  // 書きに行くので、競合が決定的に再現する。
+  // また、「読み込みは先に始まったが結果が届くのは後(その間に別の書き込みが
+  // 完了する)」というレース(src/watch.js の確認処理と保存の競合)も、この
+  // 「実行は即座・結果到着だけ遅延」という順序があるからこそ決定的に再現できる
+  // (実行を遅らせてから読むと、結果は常にそのときの最新内容になってしまい、
+  // 古い内容が「届く」状況を作れない)。
   const delayState = { ...(opts.delay || {}) };
 
   const rootName = path.basename(rootDir) || 'shared';
 
   // ---------- Node 側: ページからのファイル操作をルーティング ----------
+  // 実行(handleFsCall)は即座に開始する。delay はその「結果を返すタイミング」
+  // だけを遅らせる(呼び出しごとに delayState[op] をその時点の値で固定するので、
+  // 実行中に setDelay() で値を変えても、既に発行済みの呼び出しには影響しない)。
   await context.exposeBinding('__fsCall', async (_source, op, args) => {
+    const resultPromise = handleFsCall(rootDir, op, args || []);
     const d = delayState[op];
-    if (d > 0) await new Promise((r) => setTimeout(r, d));
-    return handleFsCall(rootDir, op, args || []);
+    if (d > 0) {
+      const [result] = await Promise.all([resultPromise, new Promise((r) => setTimeout(r, d))]);
+      return result;
+    }
+    return resultPromise;
   });
 
   await context.exposeBinding('__fsSetFault', async (_source, next) => {

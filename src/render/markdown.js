@@ -14,13 +14,18 @@
 // ```mermaid コードブロックは通常のコードとして色付けせず、元のソースを保持した
 // プレースホルダ要素に変換する(実際の描画は iframe を持つ親ドキュメント側で行う。
 // src/ui/preview.js を参照)。
+//
+// 画像の src はここでは書き換えない(markdown の `![]()` も HTML の生 `<img src>`
+// も相対パスのまま出力する)。相対パスを blob URL に差し替えるまでの間に素の
+// パスへ無駄な読み込みが走らないようにする処理(data-src への退避)は、
+// markdown-it の外側(HTML 出力にも同じ変換を使い回すため)src/ui/preview.js の
+// render() が `<template>` 要素を使って一括で行う。
 
 import MarkdownIt from 'markdown-it';
 import taskLists from 'markdown-it-task-lists';
 import attrs from 'markdown-it-attrs';
 import footnote from 'markdown-it-footnote';
 import hljs from 'highlight.js/lib/common';
-import { isExternalUrl } from '../fs/paths.js';
 
 // token.map を持ち、data-line を付けたいブロックトークンの種別。
 const DATA_LINE_TYPES = new Set([
@@ -54,7 +59,6 @@ export function createMarkdown({ plugins = [] } = {}) {
 
   applyPostProcessing(md);
   applyMermaidFence(md);
-  applyImagePlaceholder(md);
 
   return md;
 }
@@ -110,28 +114,5 @@ function applyMermaidFence(md) {
       `<div class="mermaid-source" hidden>${source}</div>` +
       `mermaid を描画中...</div>\n`
     );
-  };
-}
-
-// 相対パスの <img> は、markdown-it が付けた src をそのまま出さず data-src に
-// 退避する。src を残したまま innerHTML に流し込むと、blob URL に置き換える
-// (src/ui/preview.js の resolveImages())より先にブラウザが素の相対パスへ
-// 実際に読み込みを試みてしまい、無駄な 404 とコンソールエラーが発生するため。
-// 外部 URL(http 等)はそのまま素通しする(ブラウザに直接読ませてよいため)。
-function applyImagePlaceholder(md) {
-  const defaultImage =
-    md.renderer.rules.image || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options, env));
-
-  md.renderer.rules.image = (tokens, idx, options, env, self) => {
-    const token = tokens[idx];
-    const srcIdx = token.attrIndex('src');
-    if (srcIdx >= 0) {
-      const src = token.attrs[srcIdx][1];
-      if (!isExternalUrl(src)) {
-        token.attrs.splice(srcIdx, 1);
-        token.attrSet('data-src', src);
-      }
-    }
-    return defaultImage(tokens, idx, options, env, self);
   };
 }

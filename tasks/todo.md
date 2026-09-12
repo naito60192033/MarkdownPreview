@@ -27,18 +27,18 @@
 - [x] @import "x.md"(2 形式、入れ子、循環検出、相対パスの書き換え、行番号の対応表) — src/render/imports.js
 - [x] TOC: `[TOC]` とソース書き込み型(code_chunk_output) — src/render/toc.js
 - [x] アラート `> [!NOTE]` 等 — src/render/alerts.js、src/theme/alerts.css
-- [ ] アプリへの組み込み(pipeline に expandImports とプラグインを登録、保存時の updateTocBlocks、@import 先の変更監視、E2E)
+- [x] アプリへの組み込み(pipeline に expandImports とプラグインを登録、保存時の updateTocBlocks、@import 先の変更監視、E2E)
 
 ## フェーズ 4: 画像の貼り付けとドロップ
-- [ ] images/<md名>-YYYYMMDD-HHmmss.png に保存して参照を挿入
+- [x] images/<md名>-YYYYMMDD-HHmmss.png に保存して参照を挿入 — src/paste.js(空白を含むパスは <...> 形式)
 
 ## フェーズ 5: 注釈エディタ
-- [ ] 赤枠 / 矢印(接続と追従)/ 吹き出し / 切り抜き / 倍率 / 元に戻す・やり直し
-- [ ] PNG iTXt への保存と再編集、PNG 以外の画像の扱い
+- [x] 赤枠 / 矢印(接続と追従)/ 吹き出し / 切り抜き / 倍率 / 元に戻す・やり直し — src/annotator/
+- [x] PNG iTXt への保存と再編集、PNG 以外の画像の扱い — 元画像は独自チャンク mdOR、アプリ側は src/ui/image-edit.js
 
 ## フェーズ 6: HTML 出力
-- [ ] 通常出力(CSS インライン、mermaid SVG、画像は相対パス)
-- [ ] 1 ファイル出力(画像を base64 で埋め込み)
+- [x] 通常出力(CSS インライン、mermaid SVG、画像は相対パス) — src/export.js
+- [x] 1 ファイル出力(画像を base64 で埋め込み)
 
 ## フェーズ 7: README と最終確認
 - [ ] README(導入と使い方)

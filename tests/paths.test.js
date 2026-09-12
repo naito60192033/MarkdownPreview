@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizePath, dirname, basename, extname, joinPath, relativePath, isExternalUrl, urlToPath,
+  toMarkdownLinkDest,
 } from '../src/fs/paths.js';
 
 test('normalizePath: . と .. を解決し、\\ を / にそろえる', () => {
@@ -55,4 +56,11 @@ test('urlToPath: クエリとフラグメントを落とし、%xx をデコー�
   assert.equal(urlToPath('images/%E7%94%BB%E5%83%8F.png?v=1#x'), 'images/画像.png');
   assert.equal(urlToPath('a%20b.png'), 'a b.png');
   assert.equal(urlToPath('bad%E0.png'), 'bad%E0.png');
+});
+
+test('toMarkdownLinkDest: 空白や括弧を含むときだけ <...> で囲む', () => {
+  assert.equal(toMarkdownLinkDest('images/a.png'), 'images/a.png');
+  assert.equal(toMarkdownLinkDest('images/画像.png'), 'images/画像.png');
+  assert.equal(toMarkdownLinkDest('images/議事録 0912.png'), '<images/議事録 0912.png>');
+  assert.equal(toMarkdownLinkDest('images/a(1).png'), '<images/a(1).png>');
 });

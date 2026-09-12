@@ -56,6 +56,11 @@ export function isExternalUrl(url) {
   return /^([a-z][a-z0-9+.-]*:|\/\/|#)/i.test(String(url ?? '').trim());
 }
 
+/** md のリンク先(`![](ここ)`)として書く表記。空白や括弧を含む場合は CommonMark の `<...>` 形式で囲む。 */
+export function toMarkdownLinkDest(ref) {
+  return /[\s()]/.test(ref) ? `<${ref}>` : ref;
+}
+
 /** md 内の URL を FSA で使えるパスにする: '?' と '#' 以降を落とし、%xx をデコードする(失敗時は元のまま)。 */
 export function urlToPath(url) {
   const s = String(url ?? '').trim().replace(/[?#].*$/, '');

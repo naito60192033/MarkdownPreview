@@ -36,6 +36,13 @@
         <button data-view-mode="preview" type="button" class="view-mode-btn">プレビューのみ</button>
       </div>
       <button id="saveBtn" type="button" class="btn btn-primary">保存</button>
+      <div class="export-menu">
+        <button id="exportBtn" type="button" class="btn">HTML 出力 ▾</button>
+        <div id="exportMenu" class="export-menu-list" style="display:none;">
+          <button id="exportNormalBtn" type="button" class="export-menu-item">通常出力</button>
+          <button id="exportStandaloneBtn" type="button" class="export-menu-item">1ファイル出力</button>
+        </div>
+      </div>
       <button id="settingsBtn" type="button" class="icon-btn" title="設定">⚙</button>
       <button id="switchFolderBtn" type="button" class="icon-btn" title="フォルダを切り替え">📁</button>
     </header>
@@ -83,6 +90,27 @@
       <label class="settings-row">
         <span>CSS のパス(ルート相対)</span>
         <input type="text" id="settingCssPath" class="settings-input-text" />
+      </label>
+      <h3 class="settings-subheading">アラートのタイトル</h3>
+      <label class="settings-row">
+        <span>Note</span>
+        <input type="text" id="settingAlertTitleNote" class="settings-input-text" />
+      </label>
+      <label class="settings-row">
+        <span>Tip</span>
+        <input type="text" id="settingAlertTitleTip" class="settings-input-text" />
+      </label>
+      <label class="settings-row">
+        <span>Important</span>
+        <input type="text" id="settingAlertTitleImportant" class="settings-input-text" />
+      </label>
+      <label class="settings-row">
+        <span>Warning</span>
+        <input type="text" id="settingAlertTitleWarning" class="settings-input-text" />
+      </label>
+      <label class="settings-row">
+        <span>Caution</span>
+        <input type="text" id="settingAlertTitleCaution" class="settings-input-text" />
       </label>
       <div class="modal-footer">
         <div></div>

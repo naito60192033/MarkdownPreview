@@ -16,10 +16,14 @@ import { createConflictModal } from './ui/conflict-modal.js';
 import { createNotifyBar } from './ui/notify-bar.js';
 import { createStatusBar } from './ui/statusbar.js';
 import { createResizer } from './ui/resizer.js';
+import { createImageEdit } from './ui/image-edit.js';
 import { createWatcher } from './watch.js';
 import { createScrollSync } from './scroll-sync.js';
+import { attachImagePasteAndDrop } from './paste.js';
+import { exportNormal, exportStandalone } from './export.js';
 import { loadSettings } from './settings.js';
-import { renderDocument } from './render/pipeline.js';
+import { renderDocument, collectHeadingsFor } from './render/pipeline.js';
+import { updateTocBlocks } from './render/toc.js';
 import { ensurePermission, readTextByPath, writeByPath, ConflictError } from './fs/workspace.js';
 import { rememberRoot, reconnectRoot, checkRootPermission } from './fs/recent-roots.js';
 
@@ -32,15 +36,22 @@ const state = {
   currentPath: null,
   currentCssPath: null,
   lastModified: null,
+  // 開いた md の元の改行コード('\n' か '\r\n')。CodeMirror は読み込み時に CRLF を
+  // LF へ正規化するため、保存時にこの値へ復元する(下記 doSave 参照)。
+  eol: '\n',
   dirty: false,
   saving: false,
+  // 保存の開始時・終了時に増やす世代番号(レビュー指摘: 変更検知と保存の競合対策)。
+  // watch.js の確認処理はこの値を使い、開始時から変わっていれば結果を捨てる。
+  writeGeneration: 0,
   suppressChangeEvents: false,
   lineMap: [],
+  deps: [], // 現在の @import 先(ルート相対パス)。変わったら watcher の登録を入れ替える
   settings: loadSettings(),
 };
 
 let els = {};
-let editor, preview, tree, watcher, scrollSync;
+let editor, preview, tree, watcher, scrollSync, imageEdit;
 let startScreen, settingsPanel, conflictModal, notifyBar, statusbar, resizer;
 
 // ---------- localStorage ヘルパー ----------
@@ -90,6 +101,10 @@ function cacheEls() {
     workspaceName: document.getElementById('workspaceName'),
     viewModeBtns: Array.from(document.querySelectorAll('.view-mode-btn')),
     saveBtn: document.getElementById('saveBtn'),
+    exportBtn: document.getElementById('exportBtn'),
+    exportMenu: document.getElementById('exportMenu'),
+    exportNormalBtn: document.getElementById('exportNormalBtn'),
+    exportStandaloneBtn: document.getElementById('exportStandaloneBtn'),
     settingsBtn: document.getElementById('settingsBtn'),
     switchFolderBtn: document.getElementById('switchFolderBtn'),
 
@@ -115,6 +130,11 @@ function cacheEls() {
     settingPollEnabled: document.getElementById('settingPollEnabled'),
     settingPollInterval: document.getElementById('settingPollInterval'),
     settingCssPath: document.getElementById('settingCssPath'),
+    settingAlertTitleNote: document.getElementById('settingAlertTitleNote'),
+    settingAlertTitleTip: document.getElementById('settingAlertTitleTip'),
+    settingAlertTitleImportant: document.getElementById('settingAlertTitleImportant'),
+    settingAlertTitleWarning: document.getElementById('settingAlertTitleWarning'),
+    settingAlertTitleCaution: document.getElementById('settingAlertTitleCaution'),
 
     conflictModal: document.getElementById('conflictModal'),
     conflictCancelBtn: document.getElementById('conflictCancelBtn'),
@@ -145,8 +165,34 @@ function syncDirtyUi() {
   document.title = name ? `${mark}${name} — Markdown Preview` : 'Markdown Preview';
 }
 
+// ---------- @import 先(deps)の監視登録 ----------
+// renderDocument() が返す deps(現在の描画で取り込んだファイル)を watcher に
+// 登録する。前回から無くなったものは解除し、新しく増えたものだけ登録する
+// (既に監視中のものを毎回登録し直すと lastModified の追跡がリセットされてしまう
+// ため)。
+function updateDepsWatch(nextDeps, initialLastModifiedByPath) {
+  const next = nextDeps || [];
+  const nextSet = new Set(next);
+  for (const dep of state.deps) {
+    if (!nextSet.has(dep)) watcher.unwatch(dep);
+  }
+  for (const dep of next) {
+    if (!state.deps.includes(dep)) {
+      const initial = initialLastModifiedByPath && initialLastModifiedByPath.has(dep) ? initialLastModifiedByPath.get(dep) : null;
+      watcher.watch(dep, () => scheduleRender(true), initial);
+    }
+  }
+  state.deps = next;
+}
+
+function unwatchAllDeps() {
+  for (const dep of state.deps) watcher.unwatch(dep);
+  state.deps = [];
+}
+
 // ---------- レンダリング(300ms デバウンス) ----------
 let renderTimer = null;
+let renderSeq = 0; // 描画ごとの連番(レビュー指摘: 描画の順序の保証に使う)
 function scheduleRender(immediate = false) {
   clearTimeout(renderTimer);
   if (immediate) return doRender();
@@ -160,14 +206,23 @@ function scheduleRender(immediate = false) {
 async function doRender() {
   if (!state.root || !state.currentPath) return;
   const text = editor.getText();
-  const { html, lineMap } = await renderDocument(text, {
+  const mySeq = ++renderSeq;
+  const depLastModified = new Map();
+  const { html, lineMap, deps } = await renderDocument(text, {
     path: state.currentPath,
+    alertTitles: state.settings.alertTitles,
     readText: async (relPath) => {
       const r = await readTextByPath(state.root, relPath);
+      if (r) depLastModified.set(relPath, r.lastModified);
       return r ? r.text : null;
     },
   });
+  // @import の読み込みで非同期になる分、先に始めた描画が後から解決して古い内容で
+  // 上書きすることがある(レビュー指摘)。自分より新しい描画が既に始まっていたら、
+  // この結果は使わずに破棄する。
+  if (mySeq !== renderSeq) return;
   state.lineMap = lineMap;
+  updateDepsWatch(deps, depLastModified);
   await preview.render({ html, lineMap, root: state.root, mdPath: state.currentPath });
 }
 
@@ -203,9 +258,14 @@ async function openFile(path, { updateHash = true } = {}) {
   }
 
   if (state.currentPath) watcher.unwatch(state.currentPath);
+  unwatchAllDeps();
   state.currentPath = path;
   state.lastModified = result.lastModified;
   state.dirty = false;
+  // CodeMirror は読み込み時に CRLF を LF へ正規化してしまう(editor.getText() は
+  // 常に LF になる)ため、元の改行コードを別途覚えておき、保存時に復元する
+  // (レビュー指摘: ソース書き込み型 TOC の保存で CRLF のファイルの改行が壊れる問題)。
+  state.eol = result.text.includes('\r\n') ? '\r\n' : '\n';
   setEditorTextSilently(result.text, { preserveCursor: false });
   watcher.watch(path, handleMdExternalChange, result.lastModified);
   tree.setActivePath(path);
@@ -233,6 +293,7 @@ async function reloadCurrentFile() {
   setEditorTextSilently(result.text, { preserveCursor: true });
   state.lastModified = result.lastModified;
   state.dirty = false;
+  state.eol = result.text.includes('\r\n') ? '\r\n' : '\n';
   watcher.setLastModified(state.currentPath, result.lastModified);
   syncDirtyUi();
   await scheduleRender(true);
@@ -247,6 +308,7 @@ function handleMdExternalChange(info) {
   if (!state.dirty) {
     setEditorTextSilently(info.text, { preserveCursor: true });
     state.lastModified = info.lastModified;
+    state.eol = info.text.includes('\r\n') ? '\r\n' : '\n';
     scheduleRender(true);
     statusbar.setMessage('外部の変更を取り込みました');
   } else {
@@ -278,20 +340,64 @@ async function loadCssAndWatch() {
   );
 }
 
+// ---------- 保存直前のソース書き込み型 TOC 更新 ----------
+// 展開後のテキストから見出しを集め、updateTocBlocks() で `<!-- @import "[TOC]" -->`
+// ブロックを再生成する(MPE と同じ動作)。変わった場合だけエディタの内容を
+// 置き換える(カーソル位置はできるだけ保つ)。失敗しても保存自体は続行する。
+async function applySourceTocUpdate(text) {
+  if (!state.currentPath) return text;
+  let headings;
+  try {
+    headings = await collectHeadingsFor(text, {
+      path: state.currentPath,
+      alertTitles: state.settings.alertTitles,
+      readText: async (relPath) => {
+        const r = await readTextByPath(state.root, relPath);
+        return r ? r.text : null;
+      },
+    });
+  } catch {
+    return text;
+  }
+  const updated = updateTocBlocks(text, headings);
+  // 見出しの収集(@import 先の読み込みで非同期)の間に入力があった場合は、エディタを
+  // 書き換えない(入力を消さないため)。保存するのは updated で、エディタは未保存のまま残る。
+  if (updated !== text && editor.getText() === text) {
+    setEditorTextSilently(updated, { preserveCursor: true });
+  }
+  return updated;
+}
+
 // ---------- 保存 ----------
+// 保存が終わった後の状態更新。保存処理の最中(SMB では数百 ms〜数秒かかる)に入力された
+// 変更は保存されていないので、エディタの内容が保存した内容と違えば未保存のままにする。
+function markSaved(lastModified, savedLf) {
+  state.lastModified = lastModified;
+  state.dirty = editor.getText() !== savedLf;
+  watcher.setLastModified(state.currentPath, lastModified);
+  syncDirtyUi();
+}
+
 async function doSave() {
   if (!state.root || !state.currentPath) return;
-  const text = editor.getText();
-  statusbar.setMessage('保存中...');
+  if (state.saving) return; // レビュー指摘: 保存中の再実行(二重 Ctrl+S)は無視する
+  // state.saving は await をまたぐ前に同期的に立てる(これより後に await を挟むと、
+  // ほぼ同時に呼ばれた2回目の doSave() がこのチェックをすり抜けてしまうため)。
   state.saving = true;
+  state.writeGeneration++; // 保存開始(watch.js の確認処理との競合対策)
+  let text = editor.getText();
+  let savedLf = text; // 実際に保存する内容(LF)。markSaved() でエディタの内容と比べる
   try {
+    text = await applySourceTocUpdate(text);
+    savedLf = text;
+    // CodeMirror 内部では常に LF なので、元が CRLF だったファイルはここで戻す
+    // (レビュー指摘: ソース書き込み型 TOC の更新で改行コードが壊れないようにする)。
+    if (state.eol === '\r\n') text = text.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+    statusbar.setMessage('保存中...');
     const lastModified = await writeByPath(state.root, state.currentPath, text, {
       expectedLastModified: state.lastModified,
     });
-    state.lastModified = lastModified;
-    state.dirty = false;
-    watcher.setLastModified(state.currentPath, lastModified);
-    syncDirtyUi();
+    markSaved(lastModified, savedLf);
     statusbar.setMessage('保存しました');
   } catch (e) {
     if (e instanceof ConflictError || (e && e.name === 'ConflictError')) {
@@ -299,10 +405,7 @@ async function doSave() {
       if (choice === 'overwrite') {
         try {
           const lastModified = await writeByPath(state.root, state.currentPath, text, {});
-          state.lastModified = lastModified;
-          state.dirty = false;
-          watcher.setLastModified(state.currentPath, lastModified);
-          syncDirtyUi();
+          markSaved(lastModified, savedLf);
           statusbar.setMessage('上書き保存しました');
         } catch (e2) {
           statusbar.setMessage('保存に失敗しました: ' + ((e2 && e2.message) || String(e2)), { isError: true });
@@ -317,6 +420,39 @@ async function doSave() {
     }
   } finally {
     state.saving = false;
+    state.writeGeneration++; // 保存終了
+  }
+}
+
+// ---------- HTML 出力 ----------
+function closeExportMenu() {
+  els.exportMenu.style.display = 'none';
+}
+
+async function doExport(kind) {
+  closeExportMenu();
+  if (!state.root || !state.currentPath) return;
+  await scheduleRender(true); // 最新の内容で出力する
+  const args = {
+    root: state.root,
+    mdPath: state.currentPath,
+    doc: preview.getDocument(),
+    wrapperEl: preview.getWrapperElement(),
+  };
+  try {
+    if (kind === 'normal') {
+      const { path } = await exportNormal(args);
+      statusbar.setMessage('HTML を出力しました: ' + path);
+    } else {
+      const { path, failedImageCount } = await exportStandalone(args);
+      statusbar.setMessage(
+        failedImageCount > 0
+          ? `HTML(1ファイル)を出力しました: ${path}(埋め込めなかった画像: ${failedImageCount}件)`
+          : 'HTML(1ファイル)を出力しました: ' + path
+      );
+    }
+  } catch (e) {
+    statusbar.setMessage('HTML 出力に失敗しました: ' + ((e && e.message) || String(e)), { isError: true });
   }
 }
 
@@ -373,10 +509,14 @@ function setViewMode(mode) {
 // ---------- 設定の変更 ----------
 function handleSettingsChange(newSettings) {
   const cssPathChanged = newSettings.cssPath !== state.settings.cssPath;
+  const alertTitlesChanged = JSON.stringify(newSettings.alertTitles) !== JSON.stringify(state.settings.alertTitles);
   state.settings = newSettings;
   watcher.reschedule();
   if (cssPathChanged && state.root) {
     loadCssAndWatch();
+  }
+  if (alertTitlesChanged && state.currentPath) {
+    scheduleRender(true);
   }
 }
 
@@ -398,6 +538,17 @@ function bindStaticUi() {
   setViewMode(savedViewMode);
 
   els.saveBtn.addEventListener('click', () => doSave());
+
+  els.exportBtn.addEventListener('click', () => {
+    els.exportMenu.style.display = els.exportMenu.style.display === 'none' ? '' : 'none';
+  });
+  document.addEventListener('click', (e) => {
+    if (!els.exportMenu || els.exportMenu.style.display === 'none') return;
+    if (e.target === els.exportBtn || els.exportMenu.contains(e.target)) return;
+    closeExportMenu();
+  });
+  els.exportNormalBtn.addEventListener('click', () => doExport('normal'));
+  els.exportStandaloneBtn.addEventListener('click', () => doExport('standalone'));
 
   els.switchFolderBtn.addEventListener('click', async () => {
     if (!(await confirmDiscardIfDirty())) return;
@@ -442,6 +593,13 @@ async function setup() {
   preview.init();
   await preview.whenReady();
 
+  attachImagePasteAndDrop({
+    view: editor.view,
+    getRoot: () => state.root,
+    getMdPath: () => state.currentPath,
+    setStatusMessage: (text, opts) => statusbar.setMessage(text, opts),
+  });
+
   scrollSync = createScrollSync({
     editor,
     getPreviewRoot: () => preview.getScrollContext(),
@@ -454,7 +612,23 @@ async function setup() {
     getRoot: () => state.root,
     getSettings: () => state.settings,
     isWriting: () => state.saving,
+    getWriteGeneration: () => state.writeGeneration,
   });
+
+  imageEdit = createImageEdit({
+    preview,
+    getRoot: () => state.root,
+    getMdPath: () => state.currentPath,
+    getEditorText: () => editor.getText(),
+    replaceEditorText: (next) => {
+      setEditorTextSilently(next, { preserveCursor: true });
+      state.dirty = true;
+      syncDirtyUi();
+    },
+    setStatusMessage: (text, opts) => statusbar.setMessage(text, opts),
+    requestRerender: () => scheduleRender(true),
+  });
+  imageEdit.attach();
 
   notifyBar = createNotifyBar({
     container: els.notifyBar,
@@ -483,6 +657,13 @@ async function setup() {
     pollEnabledInput: els.settingPollEnabled,
     pollIntervalInput: els.settingPollInterval,
     cssPathInput: els.settingCssPath,
+    alertTitleInputs: {
+      note: els.settingAlertTitleNote,
+      tip: els.settingAlertTitleTip,
+      important: els.settingAlertTitleImportant,
+      warning: els.settingAlertTitleWarning,
+      caution: els.settingAlertTitleCaution,
+    },
     onChange: handleSettingsChange,
   });
 
@@ -526,6 +707,8 @@ function exposeTestHooks() {
     openFile: (path) => openFile(path),
     save: () => doSave(),
     reloadCurrentFile: () => reloadCurrentFile(),
+    exportNormal: () => doExport('normal'),
+    exportStandalone: () => doExport('standalone'),
 
     getEditorText: () => editor.getText(),
     setEditorText: (text) => {
@@ -538,6 +721,8 @@ function exposeTestHooks() {
       currentPath: state.currentPath,
       dirty: state.dirty,
       lastModified: state.lastModified,
+      deps: state.deps.slice(),
+      writeGeneration: state.writeGeneration,
     }),
 
     getPreviewDocument: () => preview.getDocument(),
@@ -566,6 +751,23 @@ function exposeTestHooks() {
 
     getSettings: () => state.settings,
     getTitle: () => document.title,
+
+    // レビュー指摘1(変更検知と保存の競合)の回帰テスト専用。確認処理(watcher の
+    // checkAll)を開始してからその読み込みが発行されるのを待ち、fake-fs の delay
+    // をリセットしたうえで保存を行う。確認処理の結果(遅れて到着する)が保存後の
+    // 内容を古い内容で上書きしないことを検証できる。
+    simulateStaleWatchDuringSave: async ({ delayMs = 600, newText, settleWaitMs = 150 } = {}) => {
+      if (window.__fakeFs) await window.__fakeFs.setDelay({ read: delayMs });
+      const checkPromise = watcher.checkAll();
+      await new Promise((r) => setTimeout(r, settleWaitMs));
+      if (window.__fakeFs) await window.__fakeFs.setDelay({ read: 0 });
+      if (typeof newText === 'string') {
+        editor.setText(newText, { preserveCursor: false });
+      }
+      await doSave();
+      await checkPromise;
+      return { dirty: state.dirty, text: editor.getText() };
+    },
   };
 }
 

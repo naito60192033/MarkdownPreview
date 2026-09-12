@@ -1,6 +1,6 @@
 // src/watch.js
 //
-// 開いている md・style.css(・後で追加する @import 先)の外部変更を検知する。
+// 開いている md・style.css(・@import 先)の外部変更を検知する。
 // タイミングは「ウィンドウがフォーカスを得たとき」と「タブが表示中(visible)の間の
 // 一定間隔のポーリング」の2つ(仕様どおり)。自分がファイルへ書き込んでいる間は
 // isWriting() が true を返すようにして検知を止める(SMB での競合を増やさないため)。
@@ -9,15 +9,24 @@
 // lastModified だけを確認し、変化があったときだけ本文を読む。
 //
 // 監視対象は watch()/unwatch() で動的に増減できる(現在開いている md の切り替えや、
-// 後続フェーズでの @import 先ファイルの登録・解除に対応するため)。
+// @import 先ファイルの登録・解除に対応するため)。
+//
+// ---- 保存との競合(レビュー指摘) ----
+// checkOne() は isWriting() を最初に1回見るだけなので、保存が始まる前に読み込みを
+// 始めた確認処理が、保存が完了した後に(await の後で)結果を返すと、保存直後の
+// 内容を古い内容で上書きしてしまう恐れがある。これを防ぐため、呼び出し側
+// (src/app.js)が保存の開始時・終了時に増やす「書き込み世代番号」を
+// getWriteGeneration() で受け取り、checkOne は自分が開始した時点の世代を覚えておく。
+// 各 await の直後に、書き込み中(isWriting())か世代が変わっていないかを確認し、
+// 変わっていれば(=保存とすれ違った)その回の結果を丸ごと捨てて onChange を呼ばない。
 
 import { getFileHandleByPath } from './fs/workspace.js';
 
 /**
  * @param {{ getRoot: () => any, getSettings: () => { pollEnabled: boolean, pollIntervalMs: number },
- *           isWriting: () => boolean }} opts
+ *           isWriting: () => boolean, getWriteGeneration?: () => number }} opts
  */
-export function createWatcher({ getRoot, getSettings, isWriting }) {
+export function createWatcher({ getRoot, getSettings, isWriting, getWriteGeneration = () => 0 }) {
   const entries = new Map(); // path -> { lastModified, onChange }
   let timer = null;
   let running = false;
@@ -27,12 +36,16 @@ export function createWatcher({ getRoot, getSettings, isWriting }) {
     if (isWriting()) return;
     const root = getRoot();
     if (!root) return;
+    const genAtStart = getWriteGeneration();
+    const stale = () => isWriting() || getWriteGeneration() !== genAtStart;
+
     let file = null;
     try {
       const fh = await getFileHandleByPath(root, path, { create: false });
       file = await fh.getFile();
     } catch (e) {
       if (e && e.name === 'NotFoundError') {
+        if (stale()) return;
         if (entry.lastModified !== null) {
           const prev = entry.lastModified;
           entry.lastModified = null;
@@ -41,15 +54,17 @@ export function createWatcher({ getRoot, getSettings, isWriting }) {
       }
       return;
     }
+    if (stale()) return;
     if (file.lastModified === entry.lastModified) return;
     const prev = entry.lastModified;
-    entry.lastModified = file.lastModified;
     let text = null;
     try {
       text = await file.text();
     } catch {
       return;
     }
+    if (stale()) return;
+    entry.lastModified = file.lastModified;
     entry.onChange({ path, text, lastModified: file.lastModified, previousLastModified: prev, missing: false });
   }
 
