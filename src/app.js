@@ -479,6 +479,9 @@ async function activateRoot(handle, rootId) {
 }
 
 async function pickFolderFlow() {
+  if (!('showDirectoryPicker' in window)) {
+    throw new Error('このブラウザは File System Access API に対応していません。Google Chrome 122 以降で開いてください。');
+  }
   const handle = await window.showDirectoryPicker({ mode: 'readwrite', id: 'mdpreview-root' });
   if (!(await ensurePermission(handle))) {
     throw new Error('書き込み許可が得られませんでした');
