@@ -17,6 +17,23 @@ import { EditorState } from '@codemirror/state';
 import { keymap } from '@codemirror/view';
 import { indentWithTab } from '@codemirror/commands';
 import { markdown } from '@codemirror/lang-markdown';
+import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { tags } from '@lezer/highlight';
+
+// md 編集用の配色。basicSetup の既定の配色(フォールバック扱い)は見出しやリンクに
+// 下線を引いて読みにくいため、これを登録して置き換える(フォールバックでない配色が
+// 1 つでもあれば既定の配色は使われない)。
+const mdHighlightStyle = HighlightStyle.define([
+  { tag: tags.heading, fontWeight: 'bold', color: '#1f2328' },
+  { tag: tags.strong, fontWeight: 'bold' },
+  { tag: tags.emphasis, fontStyle: 'italic' },
+  { tag: tags.strikethrough, textDecoration: 'line-through' },
+  { tag: [tags.link, tags.url], color: '#0969da' },
+  { tag: tags.monospace, color: '#953800' },
+  { tag: tags.quote, color: '#57606a' },
+  { tag: [tags.processingInstruction, tags.contentSeparator], color: '#8c959f' },
+  { tag: tags.comment, color: '#6e7781' },
+]);
 
 /**
  * @param {{ parent: HTMLElement, doc?: string, onChange?: (text: string) => void, onCursorActivity?: () => void }} opts
@@ -37,6 +54,7 @@ export function createEditor({ parent, doc = '', onChange, onCursorActivity } = 
       basicSetup,
       EditorView.lineWrapping,
       markdown(),
+      syntaxHighlighting(mdHighlightStyle),
       keymap.of([indentWithTab]),
       updateListener,
     ],
