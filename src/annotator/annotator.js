@@ -112,15 +112,25 @@ async function loadInitialState(imageBlob) {
   }
   const srcBytes = originalBytes || bytes;
   const srcMime = (json && json.original && json.original.mime) || imageBlob.type || guessMimeFromBytes(srcBytes);
-  const dataUrl = bytesToDataUrl(srcBytes, srcMime);
-  const dims = await loadImageDimensions(dataUrl);
+
+  // 4K スクリーンショット等の大きな画像でも base64 化(data URL)を経由せずに済むよう、
+  // blob URL(URL.createObjectURL)で読み込む。エディタの <image href> にもそのまま使い、
+  // 閉じるときに revoke する(closeInstance 参照)。
+  const objectUrl = URL.createObjectURL(new Blob([srcBytes], { type: srcMime }));
+  let dims;
+  try {
+    dims = await loadImageDimensions(objectUrl);
+  } catch (e) {
+    URL.revokeObjectURL(objectUrl);
+    throw e;
+  }
 
   const restorable = json && json.original && json.original.width === dims.width && json.original.height === dims.height;
   if (restorable) {
     return {
       original: { mime: srcMime, width: dims.width, height: dims.height },
       originalBytes: srcBytes,
-      originalDataUrl: dataUrl,
+      originalObjectUrl: objectUrl,
       crop: { ...json.crop },
       scale: json.scale,
       shapes: json.shapes.map(cloneShape),
@@ -129,7 +139,7 @@ async function loadInitialState(imageBlob) {
   return {
     original: { mime: srcMime, width: dims.width, height: dims.height },
     originalBytes: srcBytes,
-    originalDataUrl: dataUrl,
+    originalObjectUrl: objectUrl,
     crop: { x: 0, y: 0, w: dims.width, h: dims.height },
     scale: 1,
     shapes: [],
@@ -142,15 +152,24 @@ function guessMimeFromBytes(bytes) {
   return 'image/png';
 }
 
-function loadImageDimensions(dataUrl) {
+// src(blob URL / data URL のいずれでも可)を Image として読み込む
+function loadImageElement(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onload = () => resolve(img);
     img.onerror = () => reject(new Error('画像の読み込みに失敗しました'));
-    img.src = dataUrl;
+    img.src = src;
   });
 }
 
+async function loadImageDimensions(src) {
+  const img = await loadImageElement(src);
+  return { width: img.naturalWidth, height: img.naturalHeight };
+}
+
+// data URL(base64)化。通常は blob URL を使うため呼ばないが、blob URL 経由の
+// <img> が万一 canvas を汚染してしまった場合の出力用フォールバックとして使う
+// (renderOutputPng 参照)。
 function bytesToBase64(bytes) {
   let binary = '';
   const chunkSize = 0x8000;
@@ -182,7 +201,7 @@ function createInstance(initial, title, resolve) {
   const st = {
     original: initial.original,
     originalBytes: initial.originalBytes,
-    originalDataUrl: initial.originalDataUrl,
+    originalObjectUrl: initial.originalObjectUrl,
     crop: initial.crop,
     scale: initial.scale,
     shapes: initial.shapes,
@@ -586,7 +605,7 @@ function render(inst) {
   svg.setAttribute('height', String(Math.round(st.original.height * st.zoom)));
   svg.setAttribute('data-tool', st.activeTool);
 
-  imageEl.setAttribute('href', st.originalDataUrl);
+  imageEl.setAttribute('href', st.originalObjectUrl);
   imageEl.setAttribute('width', String(st.original.width));
   imageEl.setAttribute('height', String(st.original.height));
 
@@ -1412,6 +1431,10 @@ function closeInstance(inst, result) {
   document.removeEventListener('keydown', inst._keydownHandler);
   if (inst.root.parentNode) inst.root.parentNode.removeChild(inst.root);
   if (currentInstance === inst) currentInstance = null;
+  if (inst.state.originalObjectUrl) {
+    URL.revokeObjectURL(inst.state.originalObjectUrl);
+    inst.state.originalObjectUrl = null;
+  }
   inst.state.resolvePromise(result);
 }
 
@@ -1458,46 +1481,97 @@ function showConfirm(inst, message, { okOnly = false } = {}) {
 }
 
 // ---------- 出力(PNG への焼き込み) ----------
+//
+// 以前は「元画像(data URL)+ 図形」をまとめた1枚の SVG を組み立て、それを
+// encodeURIComponent して Image に読み込んでいた。この方式は4Kスクリーンショット等の
+// 大きな画像(数MB〜十数MB)では、base64 化した巨大な文字列をさらに丸ごと
+// percent-encode することになり非常に重く、読み込みに失敗する恐れもあった。
+//
+// 現在は次の2段階に分けている:
+//   1. 元画像は Image 要素から直接 canvas に drawImage する(crop・出力サイズへの
+//      切り抜き・縮小も9引数の drawImage で1回に行う)。画像データを SVG や
+//      data URL に包み直さないので二重エンコードが発生しない。
+//   2. 図形だけ(image 要素を含まない、通常は小さい)を SVG の data URL にして
+//      その上から重ねて描く。図形の見た目は shapes.js の buildShapeSvg() を
+//      エディタ表示と共用する。
+//
+// 元画像は openAnnotator 内で作った blob URL(originalObjectUrl)を使う。
+// blob URL は同一ドキュメント内で生成した Blob を指すため canvas を汚染しない
+// はずだが、万一 toBlob が失敗した(canvas が汚染された)場合は、出力時だけ
+// data URL 経由の Image に切り替えて再試行する。
 
-async function renderOutputPng(st) {
-  const outSize = computeOutputSize(st.crop, st.scale);
-
+function buildShapesOnlySvgDataUrl(st, outSize) {
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('xmlns', SVG_NS);
   svg.setAttribute('viewBox', `${st.crop.x} ${st.crop.y} ${st.crop.w} ${st.crop.h}`);
   svg.setAttribute('width', String(outSize.width));
   svg.setAttribute('height', String(outSize.height));
-
-  const imageEl = svgEl('image', { x: 0, y: 0, width: st.original.width, height: st.original.height });
-  imageEl.setAttribute('href', st.originalDataUrl);
-  svg.appendChild(imageEl);
-
   const map = shapesById(st);
   for (const shape of st.shapes) {
     svg.appendChild(buildShapeSvg(document, shape, map, { measureFn: measureTextWidth }));
   }
-
   const svgText = new XMLSerializer().serializeToString(svg);
-  const svgDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgText)}`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgText)}`;
+}
 
-  const img = new Image();
-  await new Promise((resolve, reject) => {
-    img.onload = resolve;
-    img.onerror = () => reject(new Error('出力用 SVG の読み込みに失敗しました'));
-    img.src = svgDataUrl;
-  });
-
+// 元画像(crop・出力サイズを反映)を描いた canvas を作る
+function rasterizeBase(st, outSize, baseImg) {
   const canvas = document.createElement('canvas');
   canvas.width = outSize.width;
   canvas.height = outSize.height;
   const ctx = canvas.getContext('2d');
-  ctx.drawImage(img, 0, 0, outSize.width, outSize.height);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(baseImg, st.crop.x, st.crop.y, st.crop.w, st.crop.h, 0, 0, outSize.width, outSize.height);
+  return canvas;
+}
 
-  const pngBlob = await new Promise((resolve, reject) => {
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG の生成に失敗しました'))), 'image/png');
+function canvasToPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    try {
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG の生成に失敗しました'))), 'image/png');
+    } catch (e) {
+      reject(e);
+    }
   });
-  const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
+}
 
+// canvas が汚染された(origin-clean フラグが false になった)ことを示すエラーかどうか
+function isLikelyTaintedCanvasError(err) {
+  const name = err && err.name;
+  const msg = String((err && err.message) || '');
+  return name === 'SecurityError' || /tainted|insecure|cross-origin/i.test(msg);
+}
+
+async function renderOutputPng(st) {
+  const outSize = computeOutputSize(st.crop, st.scale);
+
+  // 図形だけの SVG は通常サイズが小さいので、これまでどおり data URL で問題ない
+  const shapesDataUrl = st.shapes.length > 0 ? buildShapesOnlySvgDataUrl(st, outSize) : null;
+  const shapesImg = shapesDataUrl ? await loadImageElement(shapesDataUrl) : null;
+
+  const draw = async (baseSrc) => {
+    const baseImg = await loadImageElement(baseSrc);
+    const canvas = rasterizeBase(st, outSize, baseImg);
+    if (shapesImg) {
+      canvas.getContext('2d').drawImage(shapesImg, 0, 0, outSize.width, outSize.height);
+    }
+    return canvas;
+  };
+
+  let pngBlob;
+  try {
+    const canvas = await draw(st.originalObjectUrl);
+    pngBlob = await canvasToPngBlob(canvas);
+  } catch (err) {
+    if (!isLikelyTaintedCanvasError(err)) throw err;
+    // blob URL 経由の描画で canvas が汚染された場合の救済策(出力時のみ data URL に切り替える)
+    console.warn('blob URL からの描画で canvas が汚染されたため、data URL 経由に切り替えて出力します', err);
+    const canvas = await draw(bytesToDataUrl(st.originalBytes, st.original.mime));
+    pngBlob = await canvasToPngBlob(canvas);
+  }
+
+  const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
   const json = {
     version: 1,
     original: st.original,

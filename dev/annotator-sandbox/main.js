@@ -18,29 +18,79 @@ const state = {
   pending: false,
 };
 
+// crypto.getRandomValues() で高周波なノイズの ImageData を作る(1回あたり65536バイト
+// までの制限があるためチャンクに分けて埋める)。Math.random() を8M+ 回呼ぶより大幅に速い。
+function createNoiseImageData(width, height) {
+  const data = new Uint8ClampedArray(width * height * 4);
+  const bytes = new Uint8Array(data.buffer);
+  const CHUNK = 65536;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    crypto.getRandomValues(bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+  }
+  for (let i = 3; i < bytes.length; i += 4) bytes[i] = 255; // 不透明に統一する
+  return new ImageData(data, width, height);
+}
+
 // テスト用画像を <canvas> で作って Blob にする(注釈エディタ自体はファイルを
-// 読み書きしないので、ここでのテスト画像作成もあくまでテスト用の便宜)
-function createTestImageBlob({ format = 'png', width = 800, height = 600, fillColor = '#f0f0f0' } = {}) {
+// 読み書きしないので、ここでのテスト画像作成もあくまでテスト用の便宜)。
+// noise: true にすると、グラデーション(低周波)+ ランダムノイズ(高周波)を
+// 重ねた「圧縮しにくい」画像を作る。4K スクリーンショットのように PNG が
+// 数MB以上になるケースを E2E で再現するために使う。
+function createTestImageBlob({ format = 'png', width = 800, height = 600, fillColor = '#f0f0f0', noise = false } = {}) {
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = fillColor;
-  ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = '#cccccc';
-  ctx.lineWidth = 1;
-  for (let x = 0; x < width; x += 50) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, height);
-    ctx.stroke();
+
+  if (noise) {
+    const gradient = ctx.createLinearGradient(0, 0, width, height);
+    gradient.addColorStop(0, '#204060');
+    gradient.addColorStop(0.5, '#a0c0e0');
+    gradient.addColorStop(1, '#302010');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+
+    const noiseCanvas = document.createElement('canvas');
+    noiseCanvas.width = width;
+    noiseCanvas.height = height;
+    noiseCanvas.getContext('2d').putImageData(createNoiseImageData(width, height), 0, 0);
+    ctx.globalAlpha = 0.45;
+    ctx.drawImage(noiseCanvas, 0, 0);
+    ctx.globalAlpha = 1;
+
+    // 50%縮小時のアンチエイリアス(imageSmoothingQuality)を確認するための
+    // 高コントラストな白黒の境界を右下に置く(ノイズに埋もれないよう上から不透明に塗る)。
+    // 境界(x = width-99)をわざと奇数座標にして、50%縮小(2x2ブロック→1px)の
+    // ブロック境界とずらしている。偶数座標だとブロック境界と一致してしまい、
+    // ちょうど黒/白のどちらかにきれいに分かれてしまうため、縮小アルゴリズムに
+    // 関わらず「たまたま」中間色が出ない/出るが起きてしまい、品質の確認にならない。
+    // 縦方向の範囲は [height-200, height]。
+    // dev/annotator-harness.mjs の「50%出力時の縮小品質」チェックが参照する。
+    const qx = width - 200;
+    const qy = height - 200;
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(qx, qy, 101, 200);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(qx + 101, qy, 99, 200);
+  } else {
+    ctx.fillStyle = fillColor;
+    ctx.fillRect(0, 0, width, height);
+    ctx.strokeStyle = '#cccccc';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < width; x += 50) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height);
+      ctx.stroke();
+    }
+    for (let y = 0; y < height; y += 50) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    }
   }
-  for (let y = 0; y < height; y += 50) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(width, y);
-    ctx.stroke();
-  }
+
   const mime = format === 'jpeg' ? 'image/jpeg' : 'image/png';
   return new Promise((resolve) => canvas.toBlob((b) => resolve(b), mime, 0.92));
 }
@@ -110,5 +160,20 @@ window.__annotator = {
   async getLastResultPixel(x, y) {
     if (!state.lastResult || state.lastResult === 'unset') return null;
     return getBlobPixel(state.lastResult, x, y);
+  },
+
+  // 複数の座標をまとめてサンプリングする(大きな画像を毎回デコードし直すコストを
+  // 避けるため。50%出力時の縮小画質の確認など、複数点を見たいときに使う)
+  async getLastResultPixels(points) {
+    if (!state.lastResult || state.lastResult === 'unset') return null;
+    const bmp = await createImageBitmap(state.lastResult);
+    const canvas = document.createElement('canvas');
+    canvas.width = bmp.width;
+    canvas.height = bmp.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bmp, 0, 0);
+    const result = points.map(([x, y]) => Array.from(ctx.getImageData(x, y, 1, 1).data));
+    bmp.close();
+    return result;
   },
 };

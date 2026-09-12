@@ -196,15 +196,25 @@ async function reopenLastResult(page) {
   });
 }
 
-async function saveAndWaitClosed(page) {
+// 保存ボタンを押してモーダルが閉じる(= Blob が確定する)までの時間を計測する。
+// label を渡すとテスト出力に「保存にかかった時間」として表示する
+// (大きな画像でのパフォーマンス確認のため)。
+async function saveAndWaitClosed(page, { label = null, timeout = 8000 } = {}) {
+  const start = Date.now();
   await page.click('[data-action="save"]');
   await waitFor(async () => !(await page.evaluate(() => window.__annotator.isOpen())), {
     message: '保存後にモーダルが閉じませんでした',
-    timeout: 8000,
+    timeout,
   });
   await waitFor(async () => !(await page.evaluate(() => window.__annotator.isPending())), {
     message: '保存の Promise が解決しませんでした',
+    timeout,
   });
+  const elapsedMs = Date.now() - start;
+  if (label) {
+    console.log(`    \x1b[36m[timing]\x1b[0m ${label}: ${elapsedMs}ms`);
+  }
+  return elapsedMs;
 }
 
 async function getDebugState(page) {
@@ -461,6 +471,72 @@ async function runTests(browser) {
       assert.equal(st.shapes.length, 2, 'Redo(Ctrl+Shift+Z)でさらに1つ戻るはずです');
 
       printConsoleErrors(consoleErrors, 'Undo/Redo');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n7) 大きな画像(4K・数MB以上のノイズ入りPNG)の保存');
+  await test('4Kのノイズ画像を開いて赤枠を保存できる(サイズ・画素・再読み込み・50%縮小品質を確認)', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      // グラデーション+ランダムノイズで PNG 圧縮が効きにくい(=数MB以上になる)
+      // 3840x2160 のテスト画像を作る。4Kスクリーンショット相当の負荷を再現する。
+      const info = await page.evaluate(() =>
+        window.__annotator.createTestImage({ format: 'png', width: 3840, height: 2160, noise: true })
+      );
+      console.log(`    \x1b[2mテスト画像サイズ: ${(info.size / 1024 / 1024).toFixed(1)}MiB\x1b[0m`);
+      assert.ok(
+        info.size > 2 * 1024 * 1024,
+        `テスト画像が数MB未満です(圧縮しにくいノイズ画像になっていない可能性があります): ${info.size}バイト`
+      );
+
+      await page.evaluate(() => window.__annotator.open('source'));
+      await waitFor(async () => page.evaluate(() => window.__annotator.isOpen()), {
+        message: '注釈エディタのモーダルが開きませんでした',
+        timeout: 15000,
+      });
+
+      await selectTool(page, 'rect');
+      await dragOnCanvas(page, { x: 200, y: 200 }, { x: 600, y: 600 });
+
+      const elapsedMs = await saveAndWaitClosed(page, { label: '4K画像(等倍)の保存', timeout: 30000 });
+      assert.ok(elapsedMs < 15000, `保存に時間がかかりすぎています(二重エンコードの疑い): ${elapsedMs}ms`);
+
+      const resultInfo = await page.evaluate(() => window.__annotator.getLastResultInfo());
+      assert.equal(resultInfo.type, 'image/png');
+      assertClose(resultInfo.width, 3840, 1, '出力幅');
+      assertClose(resultInfo.height, 2160, 1, '出力高さ');
+      console.log(`    \x1b[2m出力PNGサイズ: ${(resultInfo.byteSize / 1024 / 1024).toFixed(1)}MiB\x1b[0m`);
+
+      // 赤枠の上辺中央の画素が赤いこと(等倍・crop無しなので画像座標=出力座標)
+      const px = await page.evaluate(() => window.__annotator.getLastResultPixel(400, 200));
+      assert.ok(px[0] > 150 && px[0] - px[1] > 40 && px[0] - px[2] > 40, `赤枠の画素が赤くありません: ${px}`);
+
+      // 保存した4K PNGを再度開くと図形が復元されること
+      await reopenLastResult(page);
+      let st = await getDebugState(page);
+      assert.equal(st.shapes.length, 1, '再読み込み後の図形数が一致しません');
+      assert.equal(st.shapes[0].type, 'rect');
+
+      // 50%出力時の縮小品質: テスト画像の右下に置いた白黒の境界(main.js 参照)を
+      // 縮小したとき、境界付近に中間色(アンチエイリアス)が現れることを確認する
+      // (極端なジャギー=中間色が一切無い、ではないことの簡易チェック)
+      await page.click('.annotator-scale-btn[data-scale="0.5"]');
+      st = await getDebugState(page);
+      assert.equal(st.scale, 0.5);
+      await saveAndWaitClosed(page, { label: '4K画像(50%)の保存', timeout: 30000 });
+
+      // main.js の白黒境界(x = width-99)に合わせる。わざと奇数座標にしてあるので
+      // 50%縮小の2x2ブロックをまたぎ、中間色(アンチエイリアス)が期待できる。
+      const boundaryOutX = Math.floor((3840 - 99) * 0.5);
+      const sampleY = Math.round((2160 - 100) * 0.5);
+      const points = [];
+      for (let dx = -3; dx <= 3; dx++) points.push([boundaryOutX + dx, sampleY]);
+      const pixels = await page.evaluate((pts) => window.__annotator.getLastResultPixels(pts), points);
+      const reds = pixels.map((p) => p[0]); // 白黒の境界なので R チャンネルだけ見ればよい
+      const hasBlend = reds.some((v) => v > 60 && v < 200);
+      assert.ok(hasBlend, `50%縮小時に境界付近で中間色が見られず、ジャギーの疑いがあります: ${reds}`);
+
+      printConsoleErrors(consoleErrors, '4K画像の保存');
       assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
     });
   });
