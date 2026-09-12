@@ -1,0 +1,62 @@
+/* src/theme/alerts.css
+ *
+ * GitHub 形式のアラート(> [!NOTE] 等、src/render/alerts.js が出力する
+ * div.markdown-alert)の既定スタイル。GitHub の見た目に近づけたもの。
+ * アイコンは追加せず、左の色付き線とタイトルの色だけで種別を表す。
+ */
+
+.markdown-alert {
+  padding: 0.5rem 1rem;
+  margin-bottom: 1rem;
+  border-left: 0.25em solid;
+  border-radius: 0.25rem;
+  background-color: rgba(128, 128, 128, 0.08);
+}
+
+.markdown-alert > :first-child {
+  margin-top: 0;
+}
+
+.markdown-alert > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-alert-title {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.markdown-alert-note {
+  border-left-color: #0969da;
+}
+.markdown-alert-note .markdown-alert-title {
+  color: #0969da;
+}
+
+.markdown-alert-tip {
+  border-left-color: #1a7f37;
+}
+.markdown-alert-tip .markdown-alert-title {
+  color: #1a7f37;
+}
+
+.markdown-alert-important {
+  border-left-color: #8250df;
+}
+.markdown-alert-important .markdown-alert-title {
+  color: #8250df;
+}
+
+.markdown-alert-warning {
+  border-left-color: #9a6700;
+}
+.markdown-alert-warning .markdown-alert-title {
+  color: #9a6700;
+}
+
+.markdown-alert-caution {
+  border-left-color: #cf222e;
+}
+.markdown-alert-caution .markdown-alert-title {
+  color: #cf222e;
+}
