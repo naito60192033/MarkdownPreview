@@ -313,24 +313,11 @@ function initPageFakeFs({ rootName }) {
         if (!res.ok) throw makeError(res.code || 'NotFoundError', 'not found: ' + relPath);
         observedGen = typeof res.gen === 'number' ? res.gen : null;
         const bytes = base64ToBytes(res.dataB64);
-        const lastModified = res.lastModified;
-        const size = res.size;
         const type = guessMimeType(name);
-        return {
-          name,
-          lastModified,
-          size,
-          type,
-          async text() {
-            return new TextDecoder('utf-8').decode(bytes);
-          },
-          async arrayBuffer() {
-            return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-          },
-          slice() {
-            throw makeError('NotSupportedError', 'slice() is not implemented in fake-fs');
-          },
-        };
+        // 本物の File(Blob のサブクラス)を返す。実際の FSA の getFile() も File を
+        // 返すため、URL.createObjectURL() 等がそのまま使える(手組みのオブジェクトだと
+        // "Overload resolution failed" で弾かれ、blob URL 化のテストができない)。
+        return new File([bytes], name, { type, lastModified: res.lastModified });
       },
       async createWritable() {
         const chunks = [];

@@ -1,208 +1,415 @@
 // src/app.js
 //
-// フェーズ0の技術検証用の最小実装。後のフェーズ(1〜)で作り直す前提のため、
-// 過剰な作り込みはしない。ここで検証するのは次の4点:
-//   1. iframe srcdoc の中身を親から(再読み込みせずに)更新できること
-//   2. インライン化した mermaid が SVG を描画できること
-//   3. FSA でフォルダを選び、test.md の読み書き・バイナリの読み書きができること
-//   4. IndexedDB に保存したフォルダハンドルがページ再読み込み後に復元できること
+// アプリ全体のオーケストレーション。各モジュール(エディタ・プレビュー・ツリー・
+// 監視・設定パネル等)を組み立て、ワークスペースの選択からファイルの
+// 開く/保存/外部変更の取り込みまでを1箇所で配線する。
 //
-// FSA まわりの実処理は src/fs/workspace.js(task-kanri 同等品質、後のフェーズで
-// そのまま再利用する)に委譲する。
+// localStorage のキーはすべて `mdpreview.` 接頭辞を付ける(file:// では
+// task-kanri と保存領域を共有するため)。
 
-import MarkdownIt from 'markdown-it';
-import mermaid from 'mermaid';
-import {
-  pickFolder as fsPickFolder,
-  tryRestoreFolder as fsTryRestoreFolder,
-  readFile,
-  writeFileWithRetry,
-} from './fs/workspace.js';
+import { createEditor } from './editor.js';
+import { createPreview } from './ui/preview.js';
+import { createTree } from './ui/tree.js';
+import { createStartScreen } from './ui/start.js';
+import { createSettingsPanel } from './ui/settings-panel.js';
+import { createConflictModal } from './ui/conflict-modal.js';
+import { createNotifyBar } from './ui/notify-bar.js';
+import { createStatusBar } from './ui/statusbar.js';
+import { createResizer } from './ui/resizer.js';
+import { createWatcher } from './watch.js';
+import { createScrollSync } from './scroll-sync.js';
+import { loadSettings } from './settings.js';
+import { renderDocument } from './render/pipeline.js';
+import { ensurePermission, readTextByPath, writeByPath, ConflictError } from './fs/workspace.js';
+import { rememberRoot, reconnectRoot, checkRootPermission } from './fs/recent-roots.js';
 
-const TEST_FILE = 'test.md';
-const IDB_KEY = 'mdpreview-root';
+const LAST_ROOT_ID_KEY = 'mdpreview.lastRootId';
+const VIEW_MODE_KEY = 'mdpreview.viewMode';
 
 const state = {
-  dirHandle: null,
+  root: null,
+  rootId: null,
+  currentPath: null,
+  currentCssPath: null,
   lastModified: null,
+  dirty: false,
+  saving: false,
+  suppressChangeEvents: false,
+  lineMap: [],
+  settings: loadSettings(),
 };
 
-// ---------- markdown-it: ```mermaid コードブロックをプレースホルダに変換 ----------
-const md = new MarkdownIt({ html: false, linkify: true, breaks: false });
+let els = {};
+let editor, preview, tree, watcher, scrollSync;
+let startScreen, settingsPanel, conflictModal, notifyBar, statusbar, resizer;
 
-let currentMermaidBlocks = [];
-const defaultFenceRule =
-  md.renderer.rules.fence || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options, env));
-md.renderer.rules.fence = (tokens, idx, options, env, self) => {
-  const token = tokens[idx];
-  const info = (token.info || '').trim().toLowerCase();
-  if (info === 'mermaid') {
-    const id = 'mermaid-block-' + currentMermaidBlocks.length;
-    currentMermaidBlocks.push({ id, src: token.content });
-    return `<div class="mermaid-block" id="${id}">図を描画中...</div>`;
+// ---------- localStorage ヘルパー ----------
+function lastFileKey(rootId) {
+  return `mdpreview.lastFile.${rootId}`;
+}
+function getLastFilePath(rootId) {
+  try {
+    return localStorage.getItem(lastFileKey(rootId));
+  } catch {
+    return null;
   }
-  return defaultFenceRule(tokens, idx, options, env, self);
-};
-
-function renderMarkdownToHtml(src) {
-  currentMermaidBlocks = [];
-  const html = md.render(src);
-  return { html, mermaidBlocks: currentMermaidBlocks };
+}
+function setLastFile(rootId, path) {
+  try {
+    localStorage.setItem(lastFileKey(rootId), path);
+  } catch {
+    /* noop */
+  }
 }
 
-mermaid.initialize({ startOnLoad: false });
-let mermaidRenderSeq = 0;
+function getHashFile() {
+  const m = /^#file=(.+)$/.exec(location.hash);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return null;
+  }
+}
+function setHashFile(path) {
+  history.replaceState(null, '', '#file=' + encodeURIComponent(path));
+}
 
 // ---------- DOM 参照 ----------
-let els = {};
+function cacheEls() {
+  els = {
+    startScreen: document.getElementById('startScreen'),
+    pickFolderBtn: document.getElementById('pickFolderBtn'),
+    reconnectBtn: document.getElementById('reconnectBtn'),
+    recentRootsSection: document.getElementById('recentRootsSection'),
+    recentRootsList: document.getElementById('recentRootsList'),
+    startError: document.getElementById('startError'),
 
-function setStatus(text, isError = false) {
-  if (!els.status) return;
-  els.status.textContent = text;
-  els.status.classList.toggle('error', !!isError);
+    appScreen: document.getElementById('appScreen'),
+    toggleSidebarBtn: document.getElementById('toggleSidebarBtn'),
+    workspaceName: document.getElementById('workspaceName'),
+    viewModeBtns: Array.from(document.querySelectorAll('.view-mode-btn')),
+    saveBtn: document.getElementById('saveBtn'),
+    settingsBtn: document.getElementById('settingsBtn'),
+    switchFolderBtn: document.getElementById('switchFolderBtn'),
+
+    notifyBar: document.getElementById('notifyBar'),
+    notifyBarText: document.getElementById('notifyBarText'),
+    notifyReloadBtn: document.getElementById('notifyReloadBtn'),
+    notifyDismissBtn: document.getElementById('notifyDismissBtn'),
+
+    mainArea: document.getElementById('mainArea'),
+    treeContainer: document.getElementById('tree'),
+    editorPane: document.getElementById('editorPane'),
+    editorHost: document.getElementById('editorHost'),
+    previewResizer: document.getElementById('previewResizer'),
+    previewPane: document.getElementById('previewPane'),
+    preview: document.getElementById('preview'),
+
+    statusPath: document.getElementById('statusPath'),
+    statusSaved: document.getElementById('statusSaved'),
+    statusMessage: document.getElementById('statusMessage'),
+
+    settingsPanel: document.getElementById('settingsPanel'),
+    settingsCloseBtn: document.getElementById('settingsCloseBtn'),
+    settingPollEnabled: document.getElementById('settingPollEnabled'),
+    settingPollInterval: document.getElementById('settingPollInterval'),
+    settingCssPath: document.getElementById('settingCssPath'),
+
+    conflictModal: document.getElementById('conflictModal'),
+    conflictCancelBtn: document.getElementById('conflictCancelBtn'),
+    conflictReloadBtn: document.getElementById('conflictReloadBtn'),
+    conflictOverwriteBtn: document.getElementById('conflictOverwriteBtn'),
+  };
 }
 
-// ---------- プレビュー更新 ----------
-// iframe の再読み込み(srcdoc の再代入)ではなく、contentDocument.body を
-// 直接書き換えることでスクロール位置などを保つ。
-async function updatePreview() {
-  const src = els.editor.value;
-  const { html, mermaidBlocks } = renderMarkdownToHtml(src);
-  const doc = els.preview.contentDocument;
-  if (!doc || !doc.body) return;
-  doc.body.innerHTML = html;
-
-  for (const block of mermaidBlocks) {
-    const el = doc.getElementById(block.id);
-    if (!el) continue;
-    try {
-      const renderId = 'mmd-render-' + mermaidRenderSeq++;
-      const { svg } = await mermaid.render(renderId, block.src);
-      el.innerHTML = svg;
-    } catch (e) {
-      el.textContent = 'mermaid の描画に失敗しました: ' + (e && e.message ? e.message : String(e));
-    }
-  }
+// ---------- 画面切り替え ----------
+function showAppScreen() {
+  els.startScreen.style.display = 'none';
+  els.appScreen.style.display = '';
+  if (resizer) resizer.reapply();
 }
 
-let updateTimer = null;
-function scheduleUpdatePreview() {
-  clearTimeout(updateTimer);
-  updateTimer = setTimeout(updatePreview, 150);
+// ---------- 未保存の確認 ----------
+async function confirmDiscardIfDirty() {
+  if (!state.dirty) return true;
+  return window.confirm('保存されていない変更があります。破棄して続けますか?');
 }
 
-// ---------- ワークスペース ----------
-async function loadTestFile() {
-  if (!state.dirHandle) return;
-  setStatus('読み込み中...');
-  try {
-    const file = await readFile(state.dirHandle, TEST_FILE);
-    if (file) {
-      els.editor.value = await file.text();
-      state.lastModified = file.lastModified;
-    } else {
-      els.editor.value = '';
-      state.lastModified = null;
-    }
-    await updatePreview();
-    setStatus(`読込完了: ${TEST_FILE}`);
-  } catch (e) {
-    console.error(e);
-    setStatus('読み込みに失敗しました: ' + e.message, true);
-  }
+// ---------- 表示状態(ファイルパス・保存状態・タイトル) ----------
+function syncDirtyUi() {
+  const mark = state.dirty ? '● ' : '';
+  statusbar.setPath(mark + (state.currentPath || ''));
+  statusbar.setSaved(state.dirty);
+  const name = state.currentPath ? state.currentPath.split('/').pop() : '';
+  document.title = name ? `${mark}${name} — Markdown Preview` : 'Markdown Preview';
 }
 
-async function doPickFolder({ forcePicker = false } = {}) {
-  try {
-    const handle = await fsPickFolder({ idbKey: IDB_KEY, forcePicker });
-    state.dirHandle = handle;
-    els.reconnectBtn.style.display = 'none';
-    await loadTestFile();
-  } catch (e) {
-    if (e.name !== 'AbortError') {
-      console.error(e);
-      setStatus('フォルダの選択に失敗しました: ' + e.message, true);
-    }
-  }
-}
-
-async function doSave() {
-  if (!state.dirHandle) {
-    setStatus('先にフォルダを選んでください', true);
-    return;
-  }
-  setStatus('保存中...');
-  try {
-    await writeFileWithRetry(state.dirHandle, TEST_FILE, els.editor.value, {
-      expectedLastModified: state.lastModified,
-    });
-    const file = await readFile(state.dirHandle, TEST_FILE);
-    state.lastModified = file ? file.lastModified : null;
-    setStatus('保存しました');
-  } catch (e) {
-    console.error(e);
-    setStatus('保存に失敗しました: ' + e.message, true);
-  }
-}
-
-// ---------- バイナリファイルの読み書き(技術検証用) ----------
-// テストコードとのやり取りは base64 文字列で行う(dev/fake-fs.mjs と同じ方式)。
-function base64ToBytes(b64) {
-  const binary = atob(b64 || '');
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-function bytesToBase64(bytes) {
-  let binary = '';
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
-}
-
-async function writeBinaryFile(name, base64) {
-  if (!state.dirHandle) throw new Error('フォルダが選択されていません');
-  await writeFileWithRetry(state.dirHandle, name, base64ToBytes(base64));
-}
-
-async function readBinaryFileAsBase64(name) {
-  if (!state.dirHandle) throw new Error('フォルダが選択されていません');
-  const file = await readFile(state.dirHandle, name);
-  if (!file) return null;
-  const buf = await file.arrayBuffer();
-  return bytesToBase64(new Uint8Array(buf));
-}
-
-// ---------- 初期化 ----------
-function waitForPreviewReady() {
-  return new Promise((resolve) => {
-    const doc = els.preview.contentDocument;
-    if (doc && doc.body) {
-      resolve();
-      return;
-    }
-    els.preview.addEventListener('load', () => resolve(), { once: true });
+// ---------- レンダリング(300ms デバウンス) ----------
+let renderTimer = null;
+function scheduleRender(immediate = false) {
+  clearTimeout(renderTimer);
+  if (immediate) return doRender();
+  return new Promise((resolve, reject) => {
+    renderTimer = setTimeout(() => {
+      doRender().then(resolve, reject);
+    }, 300);
   });
 }
 
-async function setup() {
-  els = {
-    editor: document.getElementById('editor'),
-    preview: document.getElementById('preview'),
-    pickFolderBtn: document.getElementById('pickFolderBtn'),
-    reconnectBtn: document.getElementById('reconnectBtn'),
-    saveBtn: document.getElementById('saveBtn'),
-    status: document.getElementById('status'),
-  };
+async function doRender() {
+  if (!state.root || !state.currentPath) return;
+  const text = editor.getText();
+  const { html, lineMap } = await renderDocument(text, {
+    path: state.currentPath,
+    readText: async (relPath) => {
+      const r = await readTextByPath(state.root, relPath);
+      return r ? r.text : null;
+    },
+  });
+  state.lineMap = lineMap;
+  await preview.render({ html, lineMap, root: state.root, mdPath: state.currentPath });
+}
 
-  els.pickFolderBtn.addEventListener('click', () => doPickFolder({ forcePicker: true }));
-  els.reconnectBtn.addEventListener('click', () => doPickFolder({ forcePicker: false }));
+// ---------- エディタの変更 ----------
+function handleEditorChange() {
+  if (state.suppressChangeEvents) return;
+  if (!state.dirty) {
+    state.dirty = true;
+    syncDirtyUi();
+  }
+  scheduleRender(false);
+}
+
+function setEditorTextSilently(text, { preserveCursor = true } = {}) {
+  state.suppressChangeEvents = true;
+  editor.setText(text, { preserveCursor });
+  state.suppressChangeEvents = false;
+}
+
+// ---------- ファイルを開く ----------
+async function openFile(path, { updateHash = true } = {}) {
+  if (!(await confirmDiscardIfDirty())) return false;
+  let result;
+  try {
+    result = await readTextByPath(state.root, path);
+  } catch (e) {
+    statusbar.setMessage('開けませんでした: ' + ((e && e.message) || String(e)), { isError: true });
+    return false;
+  }
+  if (!result) {
+    statusbar.setMessage('ファイルが見つかりません: ' + path, { isError: true });
+    return false;
+  }
+
+  if (state.currentPath) watcher.unwatch(state.currentPath);
+  state.currentPath = path;
+  state.lastModified = result.lastModified;
+  state.dirty = false;
+  setEditorTextSilently(result.text, { preserveCursor: false });
+  watcher.watch(path, handleMdExternalChange, result.lastModified);
+  tree.setActivePath(path);
+  syncDirtyUi();
+  if (updateHash) setHashFile(path);
+  setLastFile(state.rootId, path);
+  await scheduleRender(true);
+  scrollSync.attachPreviewScrollListener();
+  return true;
+}
+
+async function reloadCurrentFile() {
+  if (!state.currentPath) return;
+  let result;
+  try {
+    result = await readTextByPath(state.root, state.currentPath);
+  } catch (e) {
+    statusbar.setMessage('再読込に失敗しました: ' + ((e && e.message) || String(e)), { isError: true });
+    return;
+  }
+  if (!result) {
+    statusbar.setMessage('ファイルが見つかりません: ' + state.currentPath, { isError: true });
+    return;
+  }
+  setEditorTextSilently(result.text, { preserveCursor: true });
+  state.lastModified = result.lastModified;
+  state.dirty = false;
+  watcher.setLastModified(state.currentPath, result.lastModified);
+  syncDirtyUi();
+  await scheduleRender(true);
+}
+
+// ---------- 外部変更の取り込み ----------
+function handleMdExternalChange(info) {
+  if (info.missing) {
+    statusbar.setMessage('ディスク上のファイルが見つからなくなりました: ' + info.path, { isError: true });
+    return;
+  }
+  if (!state.dirty) {
+    setEditorTextSilently(info.text, { preserveCursor: true });
+    state.lastModified = info.lastModified;
+    scheduleRender(true);
+    statusbar.setMessage('外部の変更を取り込みました');
+  } else {
+    notifyBar.show('ディスク上のファイルが更新されました', { onReload: () => reloadCurrentFile() });
+  }
+}
+
+// ---------- style.css の読み込みと監視 ----------
+async function loadCssAndWatch() {
+  const cssPath = state.settings.cssPath;
+  if (state.currentCssPath && state.currentCssPath !== cssPath) {
+    watcher.unwatch(state.currentCssPath);
+  }
+  state.currentCssPath = cssPath;
+
+  let result = null;
+  try {
+    result = await readTextByPath(state.root, cssPath);
+  } catch {
+    /* noop (存在しない場合は空扱い) */
+  }
+  preview.setUserCss(result ? result.text : '');
+  watcher.watch(
+    cssPath,
+    (info) => {
+      preview.setUserCss(info.text || '');
+    },
+    result ? result.lastModified : null
+  );
+}
+
+// ---------- 保存 ----------
+async function doSave() {
+  if (!state.root || !state.currentPath) return;
+  const text = editor.getText();
+  statusbar.setMessage('保存中...');
+  state.saving = true;
+  try {
+    const lastModified = await writeByPath(state.root, state.currentPath, text, {
+      expectedLastModified: state.lastModified,
+    });
+    state.lastModified = lastModified;
+    state.dirty = false;
+    watcher.setLastModified(state.currentPath, lastModified);
+    syncDirtyUi();
+    statusbar.setMessage('保存しました');
+  } catch (e) {
+    if (e instanceof ConflictError || (e && e.name === 'ConflictError')) {
+      const choice = await conflictModal.open();
+      if (choice === 'overwrite') {
+        try {
+          const lastModified = await writeByPath(state.root, state.currentPath, text, {});
+          state.lastModified = lastModified;
+          state.dirty = false;
+          watcher.setLastModified(state.currentPath, lastModified);
+          syncDirtyUi();
+          statusbar.setMessage('上書き保存しました');
+        } catch (e2) {
+          statusbar.setMessage('保存に失敗しました: ' + ((e2 && e2.message) || String(e2)), { isError: true });
+        }
+      } else if (choice === 'reload') {
+        await reloadCurrentFile();
+        statusbar.setMessage('破棄して再読込しました');
+      }
+      // cancel: 何もしない
+    } else {
+      statusbar.setMessage('保存に失敗しました: ' + ((e && e.message) || String(e)), { isError: true });
+    }
+  } finally {
+    state.saving = false;
+  }
+}
+
+// ---------- ワークスペースの切り替え ----------
+async function activateRoot(handle, rootId) {
+  state.root = handle;
+  state.rootId = rootId;
+  try {
+    localStorage.setItem(LAST_ROOT_ID_KEY, rootId);
+  } catch {
+    /* noop */
+  }
+  showAppScreen();
+  els.workspaceName.textContent = handle.name;
+  await tree.setRoot(handle);
+  watcher.start();
+  await loadCssAndWatch();
+
+  const hashPath = getHashFile();
+  const lastFilePath = hashPath || getLastFilePath(rootId);
+  if (lastFilePath) {
+    await openFile(lastFilePath, { updateHash: !hashPath });
+  }
+}
+
+async function pickFolderFlow() {
+  const handle = await window.showDirectoryPicker({ mode: 'readwrite', id: 'mdpreview-root' });
+  if (!(await ensurePermission(handle))) {
+    throw new Error('書き込み許可が得られませんでした');
+  }
+  const rootId = await rememberRoot(handle);
+  await activateRoot(handle, rootId);
+}
+
+async function openRecentFlow(id) {
+  const handle = await reconnectRoot(id);
+  if (!handle) throw new Error('許可が得られませんでした');
+  await activateRoot(handle, id);
+}
+
+// ---------- 表示モード ----------
+function setViewMode(mode) {
+  els.viewModeBtns.forEach((b) => b.classList.toggle('is-active', b.dataset.viewMode === mode));
+  els.mainArea.classList.remove('view-editor-only', 'view-preview-only');
+  if (mode === 'editor') els.mainArea.classList.add('view-editor-only');
+  if (mode === 'preview') els.mainArea.classList.add('view-preview-only');
+  try {
+    localStorage.setItem(VIEW_MODE_KEY, mode);
+  } catch {
+    /* noop */
+  }
+}
+
+// ---------- 設定の変更 ----------
+function handleSettingsChange(newSettings) {
+  const cssPathChanged = newSettings.cssPath !== state.settings.cssPath;
+  state.settings = newSettings;
+  watcher.reschedule();
+  if (cssPathChanged && state.root) {
+    loadCssAndWatch();
+  }
+}
+
+// ---------- 静的な UI の配線 ----------
+function bindStaticUi() {
+  els.toggleSidebarBtn.addEventListener('click', () => {
+    els.mainArea.classList.toggle('sidebar-collapsed');
+  });
+
+  els.viewModeBtns.forEach((btn) => {
+    btn.addEventListener('click', () => setViewMode(btn.dataset.viewMode));
+  });
+  let savedViewMode = 'both';
+  try {
+    savedViewMode = localStorage.getItem(VIEW_MODE_KEY) || 'both';
+  } catch {
+    /* noop */
+  }
+  setViewMode(savedViewMode);
+
   els.saveBtn.addEventListener('click', () => doSave());
-  els.editor.addEventListener('input', scheduleUpdatePreview);
 
-  // Ctrl+S / Cmd+S でブラウザの「ページを保存」を抑止し、アプリの保存を実行する。
+  els.switchFolderBtn.addEventListener('click', async () => {
+    if (!(await confirmDiscardIfDirty())) return;
+    try {
+      await pickFolderFlow();
+    } catch (e) {
+      if (e && e.name !== 'AbortError') {
+        statusbar.setMessage('フォルダの切り替えに失敗しました: ' + ((e && e.message) || String(e)), { isError: true });
+      }
+    }
+  });
+
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
@@ -210,44 +417,155 @@ async function setup() {
     }
   });
 
-  await waitForPreviewReady();
-  await updatePreview();
+  window.addEventListener('beforeunload', (e) => {
+    if (state.dirty) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
 
-  // 前回のフォルダの復元を試みる(許可済みなら自動で読み込む。要再許可ならボタンを出す)。
-  const restore = await fsTryRestoreFolder({ idbKey: IDB_KEY });
-  if (restore.ok) {
-    state.dirHandle = restore.handle;
-    els.reconnectBtn.style.display = 'none';
-    await loadTestFile();
-  } else if (restore.needsPermission) {
-    els.reconnectBtn.style.display = '';
-    setStatus('前回のフォルダへの再許可が必要です');
-  } else {
-    setStatus('フォルダを選んでください');
+  resizer = createResizer({
+    handle: els.previewResizer,
+    leftPane: els.editorPane,
+    container: els.mainArea,
+    storageKey: 'mdpreview.editorWidthRatio',
+    min: 240,
+  });
+}
+
+// ---------- 初期化 ----------
+async function setup() {
+  cacheEls();
+
+  editor = createEditor({ parent: els.editorHost, doc: '', onChange: handleEditorChange });
+  preview = createPreview({ iframe: els.preview, onOpenMdLink: (path) => openFile(path) });
+  preview.init();
+  await preview.whenReady();
+
+  scrollSync = createScrollSync({
+    editor,
+    getPreviewRoot: () => preview.getScrollContext(),
+    getLineMap: () => state.lineMap,
+  });
+
+  tree = createTree({ container: els.treeContainer, onOpenFile: (path) => openFile(path) });
+
+  watcher = createWatcher({
+    getRoot: () => state.root,
+    getSettings: () => state.settings,
+    isWriting: () => state.saving,
+  });
+
+  notifyBar = createNotifyBar({
+    container: els.notifyBar,
+    textEl: els.notifyBarText,
+    reloadBtn: els.notifyReloadBtn,
+    dismissBtn: els.notifyDismissBtn,
+  });
+
+  statusbar = createStatusBar({
+    pathEl: els.statusPath,
+    savedEl: els.statusSaved,
+    messageEl: els.statusMessage,
+  });
+
+  conflictModal = createConflictModal({
+    overlay: els.conflictModal,
+    overwriteBtn: els.conflictOverwriteBtn,
+    reloadBtn: els.conflictReloadBtn,
+    cancelBtn: els.conflictCancelBtn,
+  });
+
+  settingsPanel = createSettingsPanel({
+    overlay: els.settingsPanel,
+    openBtn: els.settingsBtn,
+    closeBtn: els.settingsCloseBtn,
+    pollEnabledInput: els.settingPollEnabled,
+    pollIntervalInput: els.settingPollInterval,
+    cssPathInput: els.settingCssPath,
+    onChange: handleSettingsChange,
+  });
+
+  startScreen = createStartScreen({
+    screenEl: els.startScreen,
+    pickFolderBtn: els.pickFolderBtn,
+    reconnectBtn: els.reconnectBtn,
+    recentSection: els.recentRootsSection,
+    recentList: els.recentRootsList,
+    errorEl: els.startError,
+    onPickFolder: pickFolderFlow,
+    onOpenRecent: openRecentFlow,
+  });
+
+  bindStaticUi();
+  syncDirtyUi();
+
+  let lastRootId = null;
+  try {
+    lastRootId = localStorage.getItem(LAST_ROOT_ID_KEY);
+  } catch {
+    /* noop */
   }
+  if (lastRootId) {
+    const check = await checkRootPermission(lastRootId);
+    if (check.ok) {
+      await activateRoot(check.handle, lastRootId);
+      exposeTestHooks();
+      return;
+    }
+  }
+  await startScreen.show();
+  exposeTestHooks();
+}
 
-  // ============================================================
-  // E2E テスト用フック。task-kanri の window.__taskkanri と同様、
-  // file:// 単独ページで外部からの不正アクセスを想定する必要がないため
-  // 無条件で公開する。
-  // ============================================================
+// ---------- E2E テスト用フック ----------
+function exposeTestHooks() {
   window.__mdpreview = {
-    get state() {
-      return { hasDir: !!state.dirHandle, lastModified: state.lastModified };
-    },
-    pickFolder: (opts) => doPickFolder(opts || {}),
-    tryRestoreFolder: () => fsTryRestoreFolder({ idbKey: IDB_KEY }),
+    pickFolder: () => pickFolderFlow(),
+    openRecent: (id) => openRecentFlow(id),
+    openFile: (path) => openFile(path),
     save: () => doSave(),
-    getEditorText: () => els.editor.value,
+    reloadCurrentFile: () => reloadCurrentFile(),
+
+    getEditorText: () => editor.getText(),
     setEditorText: (text) => {
-      els.editor.value = text;
-      return updatePreview();
+      editor.setText(text, { preserveCursor: false });
+      return scheduleRender(true);
     },
-    updatePreview: () => updatePreview(),
-    getPreviewBodyHtml: () => els.preview.contentDocument.body.innerHTML,
-    getPreviewSvgCount: () => els.preview.contentDocument.querySelectorAll('svg').length,
-    writeBinaryFile,
-    readBinaryFileAsBase64,
+
+    getState: () => ({
+      hasRoot: !!state.root,
+      currentPath: state.currentPath,
+      dirty: state.dirty,
+      lastModified: state.lastModified,
+    }),
+
+    getPreviewDocument: () => preview.getDocument(),
+    getStatusMessage: () => els.statusMessage.textContent,
+    getStatusPath: () => els.statusPath.textContent,
+
+    isNotifyBarVisible: () => els.notifyBar.style.display !== 'none',
+    clickNotifyReload: () => els.notifyReloadBtn.click(),
+    clickNotifyDismiss: () => els.notifyDismissBtn.click(),
+
+    isConflictModalVisible: () => els.conflictModal.style.display !== 'none',
+    resolveConflict: (choice) => {
+      if (choice === 'overwrite') els.conflictOverwriteBtn.click();
+      else if (choice === 'reload') els.conflictReloadBtn.click();
+      else els.conflictCancelBtn.click();
+    },
+
+    setViewMode: (mode) => setViewMode(mode),
+    getViewMode: () => {
+      try {
+        return localStorage.getItem(VIEW_MODE_KEY) || 'both';
+      } catch {
+        return 'both';
+      }
+    },
+
+    getSettings: () => state.settings,
+    getTitle: () => document.title,
   };
 }
 

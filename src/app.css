@@ -1,7 +1,21 @@
 /* src/app.css
- * フェーズ0の技術検証用の最小スタイル。後のフェーズで作り直す前提のため、
- * 作り込みはせず最低限のレイアウトのみを定義する。
+ * アプリ全体(起動画面・ツールバー・ツリー・エディタ/プレビューの外枠・
+ * ステータスバー・モーダル類)の見た目。業務ツールとして落ち着いた配色にする。
+ * プレビューの中身(iframe 内)は src/theme/base.css が別に担当する。
  */
+
+:root {
+  --color-bg: #f5f6f8;
+  --color-panel: #ffffff;
+  --color-border: #d9dce1;
+  --color-text: #1f2328;
+  --color-text-muted: #6a737d;
+  --color-accent: #0969da;
+  --color-accent-hover: #0757ba;
+  --color-danger: #cf222e;
+  --color-danger-hover: #a4121b;
+  --sidebar-width: 260px;
+}
 
 * {
   box-sizing: border-box;
@@ -11,61 +25,481 @@ html,
 body {
   margin: 0;
   height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", sans-serif;
+  color: var(--color-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo,
+    sans-serif;
+  font-size: 14px;
 }
 
-body {
+button {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.screen {
+  height: 100vh;
+}
+
+/* ---------- 起動画面 ---------- */
+.start-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg);
+}
+
+.start-card {
+  width: 480px;
+  max-width: calc(100vw - 40px);
+  padding: 32px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+}
+
+.start-card h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.start-desc {
+  margin: 0 0 20px;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+}
+
+.start-actions {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.recent-roots h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.recent-roots-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.recent-root-item {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.recent-root-item:last-child {
+  border-bottom: none;
+}
+
+.recent-root-name {
+  flex: 1;
+  text-align: left;
+  padding: 10px 12px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--color-text);
+}
+
+.recent-root-name:hover {
+  background: var(--color-bg);
+}
+
+.recent-root-forget {
+  border: none;
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 8px 12px;
+}
+
+.recent-root-forget:hover {
+  color: var(--color-danger);
+}
+
+.start-error {
+  margin: 16px 0 0;
+  padding: 10px 12px;
+  background: #fff1f0;
+  border: 1px solid #ffccc7;
+  border-radius: 6px;
+  color: var(--color-danger);
+  font-size: 13px;
+}
+
+/* ---------- ボタン共通 ---------- */
+.btn {
+  padding: 6px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-panel);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--color-bg);
+}
+
+.btn-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.btn-danger {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: #fff;
+}
+
+.btn-danger:hover {
+  background: var(--color-danger-hover);
+  border-color: var(--color-danger-hover);
+}
+
+.btn-small {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  background: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--color-text);
+}
+
+.icon-btn:hover {
+  background: var(--color-bg);
+  border-color: var(--color-border);
+}
+
+/* ---------- メイン画面: ツールバー ---------- */
+.app-screen {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  background: var(--color-bg);
 }
 
 .toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid #ddd;
-  background: #f7f7f7;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-panel);
   flex: 0 0 auto;
 }
 
-.toolbar button {
-  padding: 4px 10px;
+.workspace-name {
+  font-weight: 600;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
+
+.toolbar-spacer {
+  flex: 1;
+}
+
+.view-mode-group {
+  display: flex;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.view-mode-btn {
+  padding: 5px 12px;
+  border: none;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-panel);
+  color: var(--color-text-muted);
   cursor: pointer;
 }
 
-.status {
-  margin-left: auto;
-  color: #555;
-  font-size: 13px;
+.view-mode-btn:last-child {
+  border-right: none;
 }
 
-.status.error {
-  color: #c00;
-  font-weight: bold;
+.view-mode-btn.is-active {
+  background: var(--color-accent);
+  color: #fff;
 }
 
+/* ---------- 通知バー ---------- */
+.notify-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: #fff8e6;
+  border-bottom: 1px solid #f0d98c;
+  color: #6b5300;
+  flex: 0 0 auto;
+}
+
+.notify-bar-text {
+  flex: 1;
+}
+
+.notify-bar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ---------- 3ペイン ---------- */
 .main {
   flex: 1;
   display: flex;
   min-height: 0;
 }
 
-.editor {
-  flex: 1;
-  border: none;
-  border-right: 1px solid #ddd;
-  padding: 12px;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 14px;
-  line-height: 1.5;
-  resize: none;
-  outline: none;
+.sidebar {
+  flex: 0 0 var(--sidebar-width);
+  width: var(--sidebar-width);
+  overflow: auto;
+  background: var(--color-panel);
+  border-right: 1px solid var(--color-border);
 }
 
-.preview {
+.main.sidebar-collapsed .sidebar {
+  display: none;
+}
+
+.tree {
+  padding: 8px 4px;
+  font-size: 13px;
+}
+
+.tree ul {
+  list-style: none;
+  margin: 0;
+  padding-left: 14px;
+}
+
+.tree-root {
+  padding-left: 0 !important;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-row:hover {
+  background: var(--color-bg);
+}
+
+.tree-file-row.active {
+  background: #e7f1ff;
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.tree-caret {
+  display: inline-block;
+  width: 12px;
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+
+.tree-error {
+  padding: 6px;
+  color: var(--color-danger);
+  font-size: 12px;
+}
+
+.pane {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-pane {
+  flex: 1 1 50%;
+  border-right: 1px solid var(--color-border);
+}
+
+.editor-host {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.editor-host .cm-editor {
+  height: 100%;
+}
+
+.resizer {
+  flex: 0 0 auto;
+}
+
+.resizer-vertical {
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.resizer-vertical:hover {
+  background: var(--color-border);
+}
+
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.preview-pane {
+  flex: 1 1 50%;
+}
+
+.preview-frame {
   flex: 1;
   border: none;
   background: #fff;
+  width: 100%;
+  height: 100%;
+}
+
+/* 表示モードの切替(エディタのみ / 両方 / プレビューのみ) */
+.main.view-editor-only .preview-pane,
+.main.view-editor-only .resizer-vertical {
+  display: none;
+}
+
+.main.view-editor-only .editor-pane {
+  border-right: none;
+}
+
+.main.view-preview-only .editor-pane,
+.main.view-preview-only .resizer-vertical {
+  display: none;
+}
+
+/* ---------- ステータスバー ---------- */
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 4px 12px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-panel);
+  color: var(--color-text-muted);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.status-path {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-saved.dirty {
+  color: #9a6700;
+  font-weight: 600;
+}
+
+.status-message {
+  flex: 1;
+  text-align: right;
+  color: var(--color-text-muted);
+}
+
+.status-message.error {
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+/* ---------- モーダル ---------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  width: 420px;
+  max-width: calc(100vw - 40px);
+  background: var(--color-panel);
+  border-radius: 8px;
+  padding: 24px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+
+.modal h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.modal p {
+  margin: 0 0 16px;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.settings-input-number {
+  width: 70px;
+}
+
+.settings-input-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.modal-footer .right {
+  display: flex;
+  gap: 8px;
 }

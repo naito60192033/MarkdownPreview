@@ -11,22 +11,23 @@
   - `</script` は esbuild の inline-script でエスケープする。`<!--` と `<script` が同時に現れた場合はビルドを止める
 
 ## フェーズ 1: ワークスペース
-- [ ] フォルダの選択と再許可(最近使ったルートを複数保持)
-- [ ] ファイルツリー(遅延読み込み、.md とフォルダのみ)、最後に開いたファイル、`#file=`
-- [ ] 開く・保存(Ctrl+S、未保存の印、競合チェック、withRetry)
-- [ ] 変更検知(フォーカス時と表示中の 2 秒ポーリング、書き込み中は停止、通知バー)
+- [x] フォルダの選択と再許可(最近使ったルートを複数保持) — src/fs/recent-roots.js、src/ui/start.js
+- [x] ファイルツリー(遅延読み込み、.md とフォルダのみ)、最後に開いたファイル、`#file=` — src/ui/tree.js、src/app.js
+- [x] 開く・保存(Ctrl+S、未保存の印、競合チェック、withRetry) — src/app.js、src/ui/conflict-modal.js
+- [x] 変更検知(フォーカス時と表示中の 2 秒ポーリング、書き込み中は停止、通知バー) — src/watch.js、src/ui/notify-bar.js
 
 ## フェーズ 2: エディタ + プレビュー
-- [ ] CodeMirror 6、markdown-it、highlight.js、mermaid
-- [ ] iframe srcdoc プレビュー(MPE と同じ構造 `crossnote markdown-preview`)
-- [ ] base.css + style.css の即時反映
-- [ ] 画像の blob URL 化、スクロール同期(data-line)
+- [x] CodeMirror 6、markdown-it、highlight.js、mermaid — src/editor.js、src/render/markdown.js、src/ui/preview.js
+- [x] iframe srcdoc プレビュー(MPE と同じ構造 `crossnote markdown-preview`) — src/ui/preview.js
+- [x] base.css + style.css の即時反映 — src/theme/base.css、src/ui/preview.js
+- [x] 画像の blob URL 化、スクロール同期(data-line) — src/ui/preview.js、src/scroll-sync.js
 
 ## フェーズ 3: MPE 互換
-- [ ] 見出し id(heading-id-generator の移植 + uslug)、`{#id .class}`、`{width=}`
-- [ ] @import "x.md"(2 形式、入れ子、循環検出、相対パスの書き換え、行番号の対応表)
-- [ ] TOC: `[TOC]` とソース書き込み型(code_chunk_output)
-- [ ] アラート `> [!NOTE]` 等
+- [x] 見出し id(heading-id-generator の移植 + uslug)、`{#id .class}`、`{width=}` — モジュール完成(src/render/slug.js)
+- [x] @import "x.md"(2 形式、入れ子、循環検出、相対パスの書き換え、行番号の対応表) — src/render/imports.js
+- [x] TOC: `[TOC]` とソース書き込み型(code_chunk_output) — src/render/toc.js
+- [x] アラート `> [!NOTE]` 等 — src/render/alerts.js、src/theme/alerts.css
+- [ ] アプリへの組み込み(pipeline に expandImports とプラグインを登録、保存時の updateTocBlocks、@import 先の変更監視、E2E)
 
 ## フェーズ 4: 画像の貼り付けとドロップ
 - [ ] images/<md名>-YYYYMMDD-HHmmss.png に保存して参照を挿入

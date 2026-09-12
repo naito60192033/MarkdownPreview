@@ -1,0 +1,329 @@
+/* src/theme/base.css
+ *
+ * プレビュー(iframe の中身)の既定テーマ。GitHub 風の見やすいスタイルにする。
+ * <ルート>/style.css(設定で変更可)はこの後に読み込まれ、必要な箇所だけ
+ * 上書きできる。
+ *
+ * このファイルは JS から文字列として取り込まれ(build.mjs の esbuild text
+ * ローダー)、iframe 内の <style> に直接書き込まれる。HTML 出力(フェーズ6)でも
+ * 同じ文字列をそのまま埋め込む想定のため、iframe 前提のセレクタは書かない。
+ */
+
+/* プレビュー用 iframe 自身の body/html の余白を消す(offsetTop ベースの
+ * スクロール同期計算がずれないようにするため)。 */
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+.crossnote.markdown-preview {
+  box-sizing: border-box;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 32px 40px 80px;
+  color: #24292e;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN",
+    "Yu Gothic", Meiryo, sans-serif;
+  font-size: 16px;
+  line-height: 1.7;
+  word-wrap: break-word;
+}
+
+.crossnote.markdown-preview * {
+  box-sizing: border-box;
+}
+
+/* ---------- 見出し ---------- */
+.crossnote.markdown-preview h1,
+.crossnote.markdown-preview h2,
+.crossnote.markdown-preview h3,
+.crossnote.markdown-preview h4,
+.crossnote.markdown-preview h5,
+.crossnote.markdown-preview h6 {
+  margin-top: 1.6em;
+  margin-bottom: 0.6em;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.crossnote.markdown-preview h1:first-child,
+.crossnote.markdown-preview h2:first-child {
+  margin-top: 0;
+}
+
+.crossnote.markdown-preview h1 {
+  padding-bottom: 0.3em;
+  font-size: 2em;
+  border-bottom: 1px solid #eaecef;
+}
+
+.crossnote.markdown-preview h2 {
+  padding-bottom: 0.3em;
+  font-size: 1.5em;
+  border-bottom: 1px solid #eaecef;
+}
+
+.crossnote.markdown-preview h3 {
+  font-size: 1.25em;
+}
+
+.crossnote.markdown-preview h4 {
+  font-size: 1.1em;
+}
+
+.crossnote.markdown-preview h5 {
+  font-size: 1em;
+}
+
+.crossnote.markdown-preview h6 {
+  font-size: 0.9em;
+  color: #6a737d;
+}
+
+/* ---------- 段落・リンク ---------- */
+.crossnote.markdown-preview p {
+  margin: 0.8em 0;
+}
+
+.crossnote.markdown-preview a {
+  color: #0366d6;
+  text-decoration: none;
+}
+
+.crossnote.markdown-preview a:hover {
+  text-decoration: underline;
+}
+
+/* ---------- リスト ---------- */
+.crossnote.markdown-preview ul,
+.crossnote.markdown-preview ol {
+  padding-left: 2em;
+  margin: 0.6em 0;
+}
+
+.crossnote.markdown-preview li + li {
+  margin-top: 0.2em;
+}
+
+.crossnote.markdown-preview li > p {
+  margin: 0.4em 0;
+}
+
+/* markdown-it-task-lists のチェックボックス */
+.crossnote.markdown-preview .task-list-item {
+  list-style: none;
+  margin-left: -1.5em;
+}
+
+.crossnote.markdown-preview .task-list-item input[type="checkbox"] {
+  margin-right: 0.5em;
+}
+
+/* ---------- 引用 ---------- */
+.crossnote.markdown-preview blockquote {
+  margin: 0.8em 0;
+  padding: 0 1em;
+  color: #6a737d;
+  border-left: 0.25em solid #dfe2e5;
+}
+
+.crossnote.markdown-preview blockquote > :first-child {
+  margin-top: 0;
+}
+
+.crossnote.markdown-preview blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+/* ---------- コード ---------- */
+.crossnote.markdown-preview code {
+  padding: 0.2em 0.4em;
+  font-size: 85%;
+  background-color: rgba(27, 31, 35, 0.05);
+  border-radius: 3px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.crossnote.markdown-preview pre {
+  padding: 16px;
+  overflow: auto;
+  font-size: 85%;
+  line-height: 1.45;
+  background-color: #f6f8fa;
+  border-radius: 6px;
+}
+
+.crossnote.markdown-preview pre code {
+  padding: 0;
+  background-color: transparent;
+  border-radius: 0;
+  font-size: 100%;
+}
+
+/* ---------- 表 ---------- */
+.crossnote.markdown-preview table {
+  width: auto;
+  max-width: 100%;
+  margin: 0.8em 0;
+  border-collapse: collapse;
+  overflow: auto;
+  display: block;
+}
+
+.crossnote.markdown-preview table th,
+.crossnote.markdown-preview table td {
+  padding: 6px 13px;
+  border: 1px solid #dfe2e5;
+}
+
+.crossnote.markdown-preview table th {
+  font-weight: 600;
+  background-color: #f6f8fa;
+}
+
+.crossnote.markdown-preview table tr:nth-child(2n) {
+  background-color: #f6f8fa;
+}
+
+/* ---------- 画像・水平線 ---------- */
+.crossnote.markdown-preview img {
+  max-width: 100%;
+  box-sizing: content-box;
+}
+
+.crossnote.markdown-preview hr {
+  height: 1px;
+  padding: 0;
+  margin: 24px 0;
+  background-color: #e1e4e8;
+  border: 0;
+}
+
+/* ---------- mermaid ---------- */
+.crossnote.markdown-preview .mermaid-block {
+  margin: 1em 0;
+  text-align: center;
+  color: #6a737d;
+}
+
+.crossnote.markdown-preview .mermaid-block svg {
+  max-width: 100%;
+}
+
+.crossnote.markdown-preview .mermaid-block.mermaid-error {
+  padding: 12px;
+  text-align: left;
+  color: #b31d28;
+  background-color: #ffeef0;
+  border: 1px solid #f5b6c0;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 13px;
+}
+
+/* ---------- 脚注(markdown-it-footnote) ---------- */
+.crossnote.markdown-preview .footnotes {
+  margin-top: 2em;
+  padding-top: 1em;
+  border-top: 1px solid #eaecef;
+  font-size: 0.9em;
+  color: #6a737d;
+}
+
+/* ---------- highlight.js(GitHub テーマ) ---------- */
+.crossnote.markdown-preview .hljs {
+  color: #24292e;
+  background: #ffffff;
+}
+.crossnote.markdown-preview .hljs-doctag,
+.crossnote.markdown-preview .hljs-keyword,
+.crossnote.markdown-preview .hljs-meta .hljs-keyword,
+.crossnote.markdown-preview .hljs-template-tag,
+.crossnote.markdown-preview .hljs-template-variable,
+.crossnote.markdown-preview .hljs-type,
+.crossnote.markdown-preview .hljs-variable.language_ {
+  color: #d73a49;
+}
+.crossnote.markdown-preview .hljs-title,
+.crossnote.markdown-preview .hljs-title.class_,
+.crossnote.markdown-preview .hljs-title.class_.inherited__,
+.crossnote.markdown-preview .hljs-title.function_ {
+  color: #6f42c1;
+}
+.crossnote.markdown-preview .hljs-attr,
+.crossnote.markdown-preview .hljs-attribute,
+.crossnote.markdown-preview .hljs-literal,
+.crossnote.markdown-preview .hljs-meta,
+.crossnote.markdown-preview .hljs-number,
+.crossnote.markdown-preview .hljs-operator,
+.crossnote.markdown-preview .hljs-variable,
+.crossnote.markdown-preview .hljs-selector-attr,
+.crossnote.markdown-preview .hljs-selector-class,
+.crossnote.markdown-preview .hljs-selector-id {
+  color: #005cc5;
+}
+.crossnote.markdown-preview .hljs-regexp,
+.crossnote.markdown-preview .hljs-string,
+.crossnote.markdown-preview .hljs-meta .hljs-string {
+  color: #032f62;
+}
+.crossnote.markdown-preview .hljs-built_in,
+.crossnote.markdown-preview .hljs-symbol {
+  color: #e36209;
+}
+.crossnote.markdown-preview .hljs-comment,
+.crossnote.markdown-preview .hljs-code,
+.crossnote.markdown-preview .hljs-formula {
+  color: #6a737d;
+}
+.crossnote.markdown-preview .hljs-name,
+.crossnote.markdown-preview .hljs-quote,
+.crossnote.markdown-preview .hljs-selector-tag,
+.crossnote.markdown-preview .hljs-selector-pseudo {
+  color: #22863a;
+}
+.crossnote.markdown-preview .hljs-subst {
+  color: #24292e;
+}
+.crossnote.markdown-preview .hljs-section {
+  color: #005cc5;
+  font-weight: bold;
+}
+.crossnote.markdown-preview .hljs-bullet {
+  color: #735c0f;
+}
+.crossnote.markdown-preview .hljs-emphasis {
+  color: #24292e;
+  font-style: italic;
+}
+.crossnote.markdown-preview .hljs-strong {
+  color: #24292e;
+  font-weight: bold;
+}
+.crossnote.markdown-preview .hljs-addition {
+  color: #22863a;
+  background-color: #f0fff4;
+}
+.crossnote.markdown-preview .hljs-deletion {
+  color: #b31d28;
+  background-color: #ffeef0;
+}
+
+/* ---------- 印刷 ---------- */
+@media print {
+  .crossnote.markdown-preview {
+    max-width: none;
+    padding: 0;
+  }
+  .crossnote.markdown-preview a {
+    color: inherit;
+    text-decoration: underline;
+  }
+  .crossnote.markdown-preview pre,
+  .crossnote.markdown-preview blockquote,
+  .crossnote.markdown-preview table {
+    page-break-inside: avoid;
+  }
+}

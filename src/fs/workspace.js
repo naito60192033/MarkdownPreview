@@ -3,13 +3,17 @@
 // File System Access API (FSA) まわりの共通ヘルパー。task-kanri
 // (`index.html` の 1672 行付近の IndexedDB ヘルパー、1900〜2010 行の
 // ensurePermission / withRetry / isTransientFsError / refreshDirState /
-// writeData、2183〜2282 行の pickFolder / tryRestoreFolder)を踏襲しつつ、
-// mdpreview 用に汎用化したもの。DOM に依存しないので node:test からも
-// 呼び出しやすい(ただし実際の FSA API 呼び出しはブラウザ専用)。
+// writeData)を踏襲しつつ、mdpreview 用に汎用化したもの。DOM に依存しないので
+// node:test からも呼び出しやすい(ただし実際の FSA API 呼び出しはブラウザ専用)。
+//
+// フォルダの選択・再許可・最近使ったルートの一覧は src/fs/recent-roots.js に
+// 分けている(このファイルはハンドル単位の低レベル操作が担当)。
 //
 // file:// のページは同一オリジン(null)として IndexedDB / localStorage を
 // 共有するため、task-kanri と衝突しないよう DB 名・ストア名には
 // `mdpreview` の接頭辞を付けている。
+
+import { dirname, basename } from './paths.js';
 
 // ---------- IndexedDB: ハンドルの永続化 ----------
 export const IDB_NAME = 'mdpreview-handles';
@@ -182,67 +186,69 @@ export async function writeFileWithRetry(dirHandle, fileName, data, opts = {}) {
   return withRetry(() => writeFile(dirHandle, fileName, data, opts));
 }
 
-// ---------- フォルダの選択・再許可 ----------
+// ---------- パス指定のヘルパー(ルート相対パスでの読み書き) ----------
+// パスは常に src/fs/paths.js の規約(ルートからの相対パス、'/' 区切り、ルート自身は '')
+// に従う。
+
 /**
- * フォルダを選ぶ。`forcePicker` が false の場合、まず IndexedDB に保存済みの
- * ハンドルへの再許可を試み、成功すればピッカーを出さずに返す
- * (task-kanri の pickFolder() と同じ流れ)。
+ * root から見て dirPath(ルート相対のフォルダパス)のディレクトリハンドルを返す。
+ * dirPath === '' はルート自身。`create: true` なら途中のフォルダも作成する。
  */
-export async function pickFolder({ idbKey = 'rootDirHandle', forcePicker = false } = {}) {
-  if (!('showDirectoryPicker' in window)) {
-    const e = new Error('このブラウザは File System Access API に対応していません。Chrome で開いてください。');
-    e.name = 'NotSupportedError';
-    throw e;
+export async function getDirHandle(root, dirPath, { create = false } = {}) {
+  let dir = root;
+  const segs = dirPath ? dirPath.split('/').filter(Boolean) : [];
+  for (const seg of segs) {
+    dir = await dir.getDirectoryHandle(seg, { create });
   }
+  return dir;
+}
 
-  if (!forcePicker) {
-    let saved = null;
-    try {
-      saved = await idbGet(idbKey);
-    } catch {
-      /* noop */
-    }
-    if (saved) {
-      try {
-        if (await ensurePermission(saved)) return saved;
-      } catch {
-        // ハンドルが無効(フォルダが移動/削除された等)。ピッカーにフォールバックする。
-      }
-    }
-  }
-
-  // id を付けると、Chrome が前回開いた場所をピッカーの初期位置として記憶する。
-  const handle = await window.showDirectoryPicker({ mode: 'readwrite', id: 'mdpreview-root' });
-  if (!(await ensurePermission(handle))) {
-    throw new Error('書き込み許可が得られませんでした');
-  }
-  await idbSet(idbKey, handle);
-  return handle;
+/** root から見て path(ルート相対のファイルパス)のファイルハンドルを返す。 */
+export async function getFileHandleByPath(root, path, { create = false } = {}) {
+  const dir = await getDirHandle(root, dirname(path), { create });
+  return dir.getFileHandle(basename(path), { create });
 }
 
 /**
- * 前回のフォルダへの再許可を試みる。ユーザ操作(クリック等)のハンドラ内で
- * 呼ぶこと(requestPermission() はユーザジェスチャを要求するため)。
- * 戻り値:
- *   - { ok: true, handle } … 許可済みで即座に使える
- *   - { ok: false, needsPermission: true, handle } … 再許可が必要
- *   - { ok: false, needsPermission: false } … 保存済みのハンドルが無い
+ * テキストファイルを読む。存在しなければ null を返す。
+ * 戻り値: { text, lastModified }
  */
-export async function tryRestoreFolder({ idbKey = 'rootDirHandle' } = {}) {
-  let handle = null;
+export async function readTextByPath(root, path) {
+  let fh;
   try {
-    handle = await idbGet(idbKey);
-  } catch {
-    /* noop */
+    fh = await getFileHandleByPath(root, path, { create: false });
+  } catch (e) {
+    if (e && e.name === 'NotFoundError') return null;
+    throw e;
   }
-  if (!handle) return { ok: false, needsPermission: false };
+  const file = await fh.getFile();
+  const text = await file.text();
+  return { text, lastModified: file.lastModified };
+}
 
+/**
+ * バイナリファイル(画像等)を File(Blob 相当。lastModified を含む)として読む。
+ * 存在しなければ null を返す。
+ * 戻り値: { blob, lastModified }
+ */
+export async function readBlobByPath(root, path) {
+  let fh;
   try {
-    if ((await handle.queryPermission({ mode: 'readwrite' })) === 'granted') {
-      return { ok: true, handle };
-    }
-  } catch {
-    return { ok: false, needsPermission: false };
+    fh = await getFileHandleByPath(root, path, { create: false });
+  } catch (e) {
+    if (e && e.name === 'NotFoundError') return null;
+    throw e;
   }
-  return { ok: false, needsPermission: true, handle };
+  const file = await fh.getFile();
+  return { blob: file, lastModified: file.lastModified };
+}
+
+/**
+ * root から見て path にデータを書き込む。親フォルダは無ければ作成する。
+ * refreshDirState・withRetry・競合チェック(ConflictError)は writeFileWithRetry /
+ * writeFile 側の既存の手順にそのまま乗る。
+ */
+export async function writeByPath(root, path, data, opts = {}) {
+  const dir = await getDirHandle(root, dirname(path), { create: true });
+  return writeFileWithRetry(dir, basename(path), data, opts);
 }

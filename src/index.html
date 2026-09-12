@@ -7,16 +7,104 @@
 <!--@inline-css-->
 </head>
 <body>
-  <header class="toolbar">
-    <button id="pickFolderBtn" type="button">📁 フォルダを選ぶ</button>
-    <button id="reconnectBtn" type="button" style="display:none;">🔓 前回のフォルダを再許可</button>
-    <button id="saveBtn" type="button">💾 保存</button>
-    <span id="status" class="status"></span>
-  </header>
-  <main class="main">
-    <textarea id="editor" class="editor" spellcheck="false" placeholder="# ここに Markdown を入力してください"></textarea>
-    <iframe id="preview" class="preview" title="プレビュー" srcdoc="<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body></body></html>"></iframe>
-  </main>
+  <!-- 起動画面: フォルダを選ぶ / 前回のフォルダを再許可 / 最近使ったフォルダ -->
+  <div id="startScreen" class="screen start-screen">
+    <div class="start-card">
+      <h1>Markdown Preview</h1>
+      <p class="start-desc">Markdown を編集・プレビューします。まずワークスペースにするフォルダを選んでください。</p>
+      <div class="start-actions">
+        <button id="pickFolderBtn" type="button" class="btn btn-primary">フォルダを選ぶ</button>
+        <button id="reconnectBtn" type="button" class="btn" style="display:none;">前回のフォルダを再許可</button>
+      </div>
+      <div id="recentRootsSection" class="recent-roots" style="display:none;">
+        <h2>最近使ったフォルダ</h2>
+        <ul id="recentRootsList" class="recent-roots-list"></ul>
+      </div>
+      <p id="startError" class="start-error" style="display:none;"></p>
+    </div>
+  </div>
+
+  <!-- メイン画面: ツリー | エディタ | プレビュー -->
+  <div id="appScreen" class="screen app-screen" style="display:none;">
+    <header class="toolbar">
+      <button id="toggleSidebarBtn" type="button" class="icon-btn" title="サイドバーの表示切替">☰</button>
+      <span id="workspaceName" class="workspace-name"></span>
+      <div class="toolbar-spacer"></div>
+      <div class="view-mode-group" role="group" aria-label="表示モード">
+        <button data-view-mode="editor" type="button" class="view-mode-btn">エディタのみ</button>
+        <button data-view-mode="both" type="button" class="view-mode-btn is-active">両方</button>
+        <button data-view-mode="preview" type="button" class="view-mode-btn">プレビューのみ</button>
+      </div>
+      <button id="saveBtn" type="button" class="btn btn-primary">保存</button>
+      <button id="settingsBtn" type="button" class="icon-btn" title="設定">⚙</button>
+      <button id="switchFolderBtn" type="button" class="icon-btn" title="フォルダを切り替え">📁</button>
+    </header>
+
+    <div id="notifyBar" class="notify-bar" style="display:none;">
+      <span id="notifyBarText" class="notify-bar-text"></span>
+      <div class="notify-bar-actions">
+        <button id="notifyReloadBtn" type="button" class="btn btn-small">再読込</button>
+        <button id="notifyDismissBtn" type="button" class="btn btn-small">無視</button>
+      </div>
+    </div>
+
+    <div class="main" id="mainArea">
+      <aside id="sidebar" class="sidebar">
+        <div id="tree" class="tree"></div>
+      </aside>
+      <div id="editorPane" class="pane editor-pane">
+        <div id="editorHost" class="editor-host"></div>
+      </div>
+      <div id="previewResizer" class="resizer resizer-vertical"></div>
+      <div id="previewPane" class="pane preview-pane">
+        <iframe id="preview" class="preview-frame" title="プレビュー"></iframe>
+      </div>
+    </div>
+
+    <footer class="statusbar">
+      <span id="statusPath" class="status-path"></span>
+      <span id="statusSaved" class="status-saved"></span>
+      <span id="statusMessage" class="status-message"></span>
+    </footer>
+  </div>
+
+  <!-- 設定パネル -->
+  <div id="settingsPanel" class="modal-overlay" style="display:none;">
+    <div class="modal settings-modal">
+      <h2>設定</h2>
+      <label class="settings-row">
+        <input type="checkbox" id="settingPollEnabled" />
+        外部での変更を自動検知する
+      </label>
+      <label class="settings-row">
+        <span>検知間隔(秒)</span>
+        <input type="number" id="settingPollInterval" min="1" step="1" class="settings-input-number" />
+      </label>
+      <label class="settings-row">
+        <span>CSS のパス(ルート相対)</span>
+        <input type="text" id="settingCssPath" class="settings-input-text" />
+      </label>
+      <div class="modal-footer">
+        <div></div>
+        <button id="settingsCloseBtn" type="button" class="btn btn-primary">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 保存時の競合モーダル -->
+  <div id="conflictModal" class="modal-overlay" style="display:none;">
+    <div class="modal conflict-modal">
+      <h2>保存できませんでした</h2>
+      <p>読み込んだ後に、ディスク上のファイルが他で更新されています。</p>
+      <div class="modal-footer">
+        <button id="conflictCancelBtn" type="button" class="btn">キャンセル</button>
+        <div class="right">
+          <button id="conflictReloadBtn" type="button" class="btn">破棄して再読込</button>
+          <button id="conflictOverwriteBtn" type="button" class="btn btn-danger">上書き保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
 <!--@inline-js-->
 </body>
 </html>

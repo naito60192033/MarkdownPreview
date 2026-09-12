@@ -1,0 +1,216 @@
+// src/ui/preview.js
+//
+// プレビュー(iframe srcdoc)の管理。iframe は最初に1度だけ作り、以降は
+// 親から本文(<div class="crossnote markdown-preview"> の中身)だけを
+// 差し替えることでスクロール位置を保つ。
+//
+// 担当範囲:
+//   - base.css(文字列として bundle に取り込み済み)→ style.css の順で <style> に反映
+//   - mermaid のプレースホルダを親ドキュメント側で mermaid.render() して SVG に差し替える
+//     (同じソースは再描画しない。失敗時はその場にエラー表示する)
+//   - 相対パスの <img> を FSA で読んで blob URL に置き換える(パス+lastModified でキャッシュ)
+//   - プレビュー内のリンククリックの振り分け(#見出し / 相対 .md / 外部)
+//
+// iframe には sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" を
+// 付け、md 内の <script> やインラインイベントハンドラ属性が実行されないようにする。
+// allow-same-origin により、親スクリプトからは contentDocument への同一オリジンアクセス
+// (addEventListener・DOM 書き換え・スクロール制御)が可能(iframe 自身の script 実行とは別の話)。
+
+import mermaid from 'mermaid';
+import baseCss from '../theme/base.css';
+import { dirname, joinPath, isExternalUrl, urlToPath, extname } from '../fs/paths.js';
+import { getFileHandleByPath } from '../fs/workspace.js';
+
+mermaid.initialize({ startOnLoad: false });
+
+const SKELETON_HTML =
+  '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+  '<style id="mdpreview-base-style"></style>' +
+  '<style id="mdpreview-user-style"></style>' +
+  '</head><body><div class="crossnote markdown-preview" id="mdpreview-root"></div></body></html>';
+
+function isMdPath(p) {
+  const ext = extname(p);
+  return ext === '.md' || ext === '.markdown';
+}
+
+/**
+ * @param {{ iframe: HTMLIFrameElement, onOpenMdLink?: (resolvedPath: string) => void }} opts
+ */
+export function createPreview({ iframe, onOpenMdLink }) {
+  let ready = false;
+  let readyPromise = null;
+  let wrapperEl = null;
+  let docRef = null;
+
+  let currentRoot = null;
+  let currentMdDir = '';
+  let currentLineMap = [];
+
+  const mermaidCache = new Map(); // source -> { ok: true, svg } | { ok: false, message }
+  const imageCache = new Map(); // resolvedPath -> { lastModified, blobUrl }
+  let mermaidSeq = 0;
+  let renderSeq = 0;
+
+  function attachLinkHandler() {
+    wrapperEl.addEventListener('click', (e) => {
+      const a = e.target.closest && e.target.closest('a[href]');
+      if (!a) return;
+      const href = a.getAttribute('href');
+      if (!href) return;
+
+      if (href.startsWith('#')) {
+        e.preventDefault();
+        const id = decodeURIComponent(href.slice(1));
+        const target = docRef.getElementById(id);
+        if (target) target.scrollIntoView({ block: 'start' });
+        return;
+      }
+
+      if (isExternalUrl(href)) {
+        e.preventDefault();
+        window.open(href, '_blank', 'noopener');
+        return;
+      }
+
+      e.preventDefault();
+      const rel = urlToPath(href);
+      const resolved = joinPath(currentMdDir, rel);
+      if (resolved != null && isMdPath(resolved) && typeof onOpenMdLink === 'function') {
+        onOpenMdLink(resolved);
+      }
+    });
+  }
+
+  function init() {
+    iframe.setAttribute('sandbox', 'allow-same-origin allow-popups allow-popups-to-escape-sandbox');
+    readyPromise = new Promise((resolve) => {
+      iframe.addEventListener(
+        'load',
+        () => {
+          docRef = iframe.contentDocument;
+          wrapperEl = docRef.getElementById('mdpreview-root');
+          const baseStyleEl = docRef.getElementById('mdpreview-base-style');
+          if (baseStyleEl) baseStyleEl.textContent = baseCss;
+          attachLinkHandler();
+          ready = true;
+          resolve();
+        },
+        { once: true }
+      );
+    });
+    iframe.srcdoc = SKELETON_HTML;
+  }
+
+  async function whenReady() {
+    if (!ready) await readyPromise;
+  }
+
+  /** style.css の中身をそのまま反映する(即時反映。iframe の再読み込みはしない)。 */
+  function setUserCss(text) {
+    if (!docRef) return;
+    const el = docRef.getElementById('mdpreview-user-style');
+    if (el) el.textContent = text || '';
+  }
+
+  function applyMermaidResult(el, result) {
+    if (result.ok) {
+      el.classList.remove('mermaid-error');
+      el.innerHTML = result.svg;
+    } else {
+      el.classList.add('mermaid-error');
+      el.textContent = 'mermaid の描画に失敗しました: ' + result.message;
+    }
+  }
+
+  async function renderMermaidBlocks(mySeq) {
+    const blocks = Array.from(wrapperEl.querySelectorAll('.mermaid-block'));
+    await Promise.all(
+      blocks.map(async (el) => {
+        const srcEl = el.querySelector('.mermaid-source');
+        const source = srcEl ? srcEl.textContent : '';
+        const cached = mermaidCache.get(source);
+        if (cached) {
+          applyMermaidResult(el, cached);
+          return;
+        }
+        let result;
+        try {
+          const id = 'mdpreview-mermaid-' + mermaidSeq++;
+          const { svg } = await mermaid.render(id, source);
+          result = { ok: true, svg };
+        } catch (err) {
+          result = { ok: false, message: (err && err.message) || String(err) };
+        }
+        mermaidCache.set(source, result);
+        // 描画中に別のレンダリングが走っていたら(ユーザが入力を続けた等)、
+        // 古い結果で DOM を書き換えない。
+        if (mySeq !== renderSeq) return;
+        applyMermaidResult(el, result);
+      })
+    );
+  }
+
+  async function resolveImages() {
+    if (!currentRoot) return;
+    // 相対パスの画像は markdown.js 側で src を付けず data-src だけにしてある
+    // (blob URL に置き換わるまでの間、素の相対パスへの無駄な読み込みが
+    // 走ってコンソールエラーになるのを避けるため)。ここで初めて src を設定する。
+    const imgs = Array.from(wrapperEl.querySelectorAll('img[data-src]'));
+    const usedPaths = new Set();
+    for (const img of imgs) {
+      const raw = img.getAttribute('data-src');
+      if (!raw) continue;
+      const rel = urlToPath(raw);
+      const resolved = joinPath(currentMdDir, rel);
+      if (resolved == null) continue; // ルートの外を指している
+      usedPaths.add(resolved);
+      try {
+        const fh = await getFileHandleByPath(currentRoot, resolved, { create: false });
+        const file = await fh.getFile();
+        const cached = imageCache.get(resolved);
+        if (cached && cached.lastModified === file.lastModified) {
+          img.src = cached.blobUrl;
+          continue;
+        }
+        const url = URL.createObjectURL(file);
+        if (cached) URL.revokeObjectURL(cached.blobUrl);
+        imageCache.set(resolved, { lastModified: file.lastModified, blobUrl: url });
+        img.src = url;
+      } catch {
+        // 見つからない等はそのまま(壊れた画像アイコンとして表示される)
+      }
+    }
+    for (const [key, val] of imageCache) {
+      if (!usedPaths.has(key)) {
+        URL.revokeObjectURL(val.blobUrl);
+        imageCache.delete(key);
+      }
+    }
+  }
+
+  /**
+   * @param {{ html: string, lineMap: number[], root: any, mdPath: string }} args
+   */
+  async function render({ html, lineMap, root, mdPath }) {
+    await whenReady();
+    currentRoot = root;
+    currentMdDir = dirname(mdPath || '');
+    currentLineMap = lineMap || [];
+    const mySeq = ++renderSeq;
+    wrapperEl.innerHTML = html;
+    await Promise.all([renderMermaidBlocks(mySeq), resolveImages()]);
+  }
+
+  return {
+    init,
+    whenReady,
+    setUserCss,
+    render,
+    getDocument: () => docRef,
+    getWrapperElement: () => wrapperEl,
+    getLineMap: () => currentLineMap,
+    getScrollRoot: () => (docRef ? docRef.scrollingElement || docRef.documentElement : null),
+    getScrollContext: () => (docRef ? { doc: docRef, scrollRoot: docRef.scrollingElement || docRef.documentElement } : null),
+  };
+}

@@ -37,6 +37,10 @@ async function main() {
     legalComments: 'none',
     supported: { 'inline-script': true },
     logLevel: 'warning',
+    // src/theme/base.css は iframe 内の <style> に流し込む JS 文字列として
+    // 扱う(このアプリ本体の CSS ではないため、'css' ローダーで別出力に
+    // 分離させず 'text' として1つの JS 出力にまとめる)。
+    loader: { '.css': 'text' },
   });
   const jsText = jsResult.outputFiles[0].text;
 
