@@ -2,28 +2,24 @@
 //
 // エディタへの画像の貼り付け・ドロップ(フェーズ4)。
 // クリップボードに画像があれば(またはドロップされたファイルが画像であれば)
-// `<md のフォルダ>/images/<md名(拡張子なし)>-YYYYMMDD-HHmmss.<拡張子>` に保存し、
-// 貼り付け位置(ドロップの場合はドロップした座標)に `![](images/xxx.png)` を挿入する。
-// 同名のファイルが既にあれば `-2`, `-3` を付ける。複数ファイルのドロップは1行ずつ挿入する。
+// MPE(VS Code)と同じく `<md のフォルダ>/images/<md名(拡張子なし)>/image-<連番>.<拡張子>`
+// にファイルとして保存し、貼り付け位置(ドロップの場合はドロップした座標)に
+// `![](images/<md名>/image-1.png)` を挿入する(base64 の埋め込みはしない。base64 に
+// するのは HTML の1ファイル出力のときだけ = src/export.js)。
+// 連番はフォルダ内の既存の image-<N>.* の最大値 + 1(拡張子が違っても番号は重ねない。
+// 途中の番号を消しても再利用しない)。複数ファイルのドロップは1行ずつ挿入する。
 // 保存に失敗したら状態表示にエラーを出す(呼び出し側の setStatusMessage 経由)。
+// ドロップしたファイルが `xxx.drawio.png` / `xxx.drawio.svg` なら `.drawio` を残して
+// `image-<N>.drawio.png` にする(draw.io で開き直せるファイルだと分かるように)。
 //
 // 通常のテキストの貼り付け・ドロップ(画像を含まない場合)は CodeMirror の既定動作に
-// そのまま任せる(preventDefault しない)。
+// そのまま任せる(preventDefault しない)。ただし draw.io の通常のコピー(Ctrl+C)は
+// 画像ではなく図形データ(mxGraphModel の XML を URL エンコードした文字列)を
+// text/plain に入れるだけなので、それは貼り付けずに「画像としてコピー」を案内する。
+// paste はキャプチャ段階で受ける(CodeMirror は defaultPrevented なら自前の貼り付けをしない)。
 
 import { dirname, basename, relativePath, toMarkdownLinkDest } from './fs/paths.js';
-import { getFileHandleByPath, writeByPath } from './fs/workspace.js';
-
-function pad2(n) {
-  return String(n).padStart(2, '0');
-}
-
-// YYYYMMDD-HHmmss 形式のタイムスタンプ文字列。
-function timestamp(d = new Date()) {
-  return (
-    `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-` +
-    `${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`
-  );
-}
+import { getDirHandle, writeByPath } from './fs/workspace.js';
 
 const EXT_BY_MIME = {
   'image/png': '.png',
@@ -34,37 +30,62 @@ const EXT_BY_MIME = {
   'image/svg+xml': '.svg',
 };
 
-// 元のファイル名から拡張子を保つ(無ければ MIME から推測。それも無ければ .png)。
-function extFromFile(file) {
+/**
+ * 元のファイル名から拡張子を保つ(`.drawio.png` のような draw.io の二重拡張子も保つ)。
+ * 無ければ MIME から推測。それも無ければ .png。
+ * @param {{ name?: string, type?: string }} file
+ * @returns {string}
+ */
+export function extFromFile(file) {
   const name = (file && file.name) || '';
-  const m = /\.[a-z0-9]+$/i.exec(name);
+  const m = /(\.drawio)?\.[a-z0-9]+$/i.exec(name);
   if (m) return m[0].toLowerCase();
   return EXT_BY_MIME[file && file.type] || '.png';
 }
 
-async function pathExists(root, path) {
-  try {
-    const fh = await getFileHandleByPath(root, path, { create: false });
-    await fh.getFile();
-    return true;
-  } catch {
-    return false;
-  }
-}
+// draw.io の通常のコピー(Ctrl+C)が text/plain に入れる図形データの先頭
+// (draw.io の EditorUi.copyCells は encodeURIComponent(xml) を入れる。生の XML も念のため)。
+const DRAWIO_TEXT_RE = /^\s*(%3CmxGraphModel|%3Cmxfile|<mxGraphModel|<mxfile)/i;
 
-// dir/baseName.ext が既にあれば dir/baseName-2.ext, dir/baseName-3.ext ... を試す。
-async function uniquePath(root, dir, baseName, ext) {
-  let candidate = dir ? `${dir}/${baseName}${ext}` : `${baseName}${ext}`;
-  if (!(await pathExists(root, candidate))) return candidate;
-  for (let n = 2; ; n++) {
-    candidate = dir ? `${dir}/${baseName}-${n}${ext}` : `${baseName}-${n}${ext}`;
-    if (!(await pathExists(root, candidate))) return candidate;
-  }
+/** 貼り付けようとしたテキストが draw.io の図形データ(画像ではない)かどうか。 */
+export function isDrawioClipboardText(text) {
+  return typeof text === 'string' && DRAWIO_TEXT_RE.test(text);
 }
 
 /**
- * 画像ファイル(File/Blob)を `<md のフォルダ>/images/` に保存し、書き込んだ
- * ルート相対パスと、md からの相対参照(`images/xxx.png` 形式)を返す。
+ * フォルダ内のファイル名の一覧から、次に使う image-<N> の N を返す
+ * (既存の image-<N>.<拡張子> の最大値 + 1。無ければ 1)。`image-3.drawio.png` のような
+ * 二重拡張子も数える。大文字小文字は区別しない。
+ * @param {Iterable<string>} names
+ * @returns {number}
+ */
+export function nextImageSerial(names) {
+  let max = 0;
+  for (const name of names) {
+    const m = /^image-(\d+)\./i.exec(name);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return max + 1;
+}
+
+// dirPath(ルート相対)のフォルダ内のファイル名一覧。フォルダが無ければ空。
+async function listNames(root, dirPath) {
+  let dir;
+  try {
+    dir = await getDirHandle(root, dirPath, { create: false });
+  } catch (e) {
+    if (e && (e.name === 'NotFoundError' || e.name === 'TypeMismatchError')) return [];
+    throw e;
+  }
+  const names = [];
+  for await (const entry of dir.values()) names.push(entry.name);
+  return names;
+}
+
+/**
+ * 画像ファイル(File/Blob)を `<md のフォルダ>/images/<md名>/image-<連番>.<拡張子>` に
+ * 保存し、書き込んだルート相対パスと、md からの相対参照(`images/<md名>/image-1.png`
+ * 形式)を返す。
  * @param {Blob} file
  * @param {{ getRoot: () => any, getMdPath: () => string|null }} deps
  * @returns {Promise<{ path: string, ref: string }>}
@@ -74,10 +95,11 @@ export async function saveImageFile(file, { getRoot, getMdPath }) {
   const mdPath = getMdPath();
   if (!root || !mdPath) throw new Error('ファイルが開かれていません');
   const mdDir = dirname(mdPath);
-  const imagesDir = mdDir ? `${mdDir}/images` : 'images';
-  const mdBase = basename(mdPath).replace(/\.[^.]+$/, '') || 'image';
+  const mdBase = basename(mdPath).replace(/\.[^.]+$/, '') || 'untitled';
+  const imagesDir = mdDir ? `${mdDir}/images/${mdBase}` : `images/${mdBase}`;
   const ext = extFromFile(file);
-  const path = await uniquePath(root, imagesDir, `${mdBase}-${timestamp()}`, ext);
+  const serial = nextImageSerial(await listNames(root, imagesDir));
+  const path = `${imagesDir}/image-${serial}${ext}`;
   await writeByPath(root, path, file, {});
   return { path, ref: relativePath(mdDir, path) };
 }
@@ -121,21 +143,36 @@ export function attachImagePasteAndDrop({ view, getRoot, getMdPath, setStatusMes
     setStatusMessage(refs.length === 1 ? '画像を保存しました' : `画像を${refs.length}件保存しました`);
   }
 
-  view.dom.addEventListener('paste', (e) => {
-    const items = e.clipboardData && e.clipboardData.items;
-    if (!items) return;
-    const files = [];
-    for (const item of items) {
-      if (item.kind === 'file') {
-        const f = item.getAsFile();
-        if (isImageFile(f)) files.push(f);
+  // キャプチャ段階で受ける: CodeMirror の paste ハンドラ(.cm-content に付く)より先に
+  // 動き、preventDefault すれば CodeMirror はテキストを挿入しない。
+  view.dom.addEventListener(
+    'paste',
+    (e) => {
+      const data = e.clipboardData;
+      if (!data) return;
+      const files = [];
+      for (const item of data.items || []) {
+        if (item.kind === 'file') {
+          const f = item.getAsFile();
+          if (isImageFile(f)) files.push(f);
+        }
       }
-    }
-    if (files.length === 0) return; // 画像でなければ CodeMirror の既定動作に任せる
-    e.preventDefault();
-    const pos = view.state.selection.main.from;
-    handleFiles(files, pos);
-  });
+      if (files.length > 0) {
+        e.preventDefault();
+        handleFiles(files, view.state.selection.main.from);
+        return;
+      }
+      if (isDrawioClipboardText(data.getData('text/plain'))) {
+        e.preventDefault();
+        setStatusMessage(
+          'draw.io の図形データは画像ではないため貼り付けませんでした。draw.io の「画像としてコピー(Copy as Image)」(Ctrl+Alt+X)でコピーするか、PNG に書き出してドロップしてください',
+          { isError: true, timeoutMs: 15000 }
+        );
+      }
+      // それ以外(通常のテキスト)は CodeMirror の既定動作に任せる
+    },
+    true
+  );
 
   view.dom.addEventListener('dragover', (e) => {
     if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
