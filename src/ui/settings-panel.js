@@ -4,9 +4,10 @@
 // 開閉と、値が変わるたびに即座に保存し、呼び出し側に反映してもらうための
 // onChange コールバックを呼ぶだけの薄い UI。
 
-import { loadSettings, saveSettings } from '../settings.js';
+import { loadSettings, saveSettings, DEFAULT_SETTINGS } from '../settings.js';
+import { closeOnBackdropClick } from './backdrop-close.js';
 
-const ALERT_KINDS = ['note', 'tip', 'important', 'warning', 'caution'];
+const ALERT_KINDS = ['note', 'tip', 'important', 'warning', 'caution', 'link', 'memo', 'check', 'question'];
 
 export function createSettingsPanel({
   overlay,
@@ -15,9 +16,19 @@ export function createSettingsPanel({
   pollEnabledInput,
   pollIntervalInput,
   cssPathInput,
-  alertTitleInputs, // { note, tip, important, warning, caution } の input 要素
+  alertTitleInputs, // { note, tip, important, warning, caution, link, memo, check, question } の input 要素
+  alertTitleResetButtons, // 同じキーの「既定に戻す」ボタン要素(省略可)
   onChange,
 }) {
+  // 入力欄の placeholder に既定のタイトルを表示する(空欄にした場合との違いが
+  // 分かるように)。設定値に関わらず固定なので、生成時に一度だけ設定する。
+  if (alertTitleInputs) {
+    for (const kind of ALERT_KINDS) {
+      const input = alertTitleInputs[kind];
+      if (input) input.placeholder = DEFAULT_SETTINGS.alertTitles[kind] || '';
+    }
+  }
+
   function fillFromSettings(settings) {
     pollEnabledInput.checked = !!settings.pollEnabled;
     pollIntervalInput.value = String(Math.round((settings.pollIntervalMs || 2000) / 1000));
@@ -25,7 +36,9 @@ export function createSettingsPanel({
     if (alertTitleInputs) {
       for (const kind of ALERT_KINDS) {
         const input = alertTitleInputs[kind];
-        if (input) input.value = (settings.alertTitles && settings.alertTitles[kind]) || '';
+        // 「空欄(タイトルなし)」と「未設定(既定値のまま)」を区別するため、
+        // ここでは既定値へのフォールバックをしない(空文字ならそのまま空欄にする)。
+        if (input) input.value = (settings.alertTitles && settings.alertTitles[kind]) ?? '';
       }
     }
   }
@@ -58,9 +71,7 @@ export function createSettingsPanel({
 
   openBtn.addEventListener('click', open);
   closeBtn.addEventListener('click', close);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) close();
-  });
+  closeOnBackdropClick(overlay, close);
   pollEnabledInput.addEventListener('change', commit);
   pollIntervalInput.addEventListener('change', commit);
   cssPathInput.addEventListener('change', commit);
@@ -68,6 +79,17 @@ export function createSettingsPanel({
     for (const kind of ALERT_KINDS) {
       const input = alertTitleInputs[kind];
       if (input) input.addEventListener('change', commit);
+    }
+  }
+  if (alertTitleResetButtons) {
+    for (const kind of ALERT_KINDS) {
+      const btn = alertTitleResetButtons[kind];
+      const input = alertTitleInputs && alertTitleInputs[kind];
+      if (!btn || !input) continue;
+      btn.addEventListener('click', () => {
+        input.value = DEFAULT_SETTINGS.alertTitles[kind] || '';
+        commit();
+      });
     }
   }
 

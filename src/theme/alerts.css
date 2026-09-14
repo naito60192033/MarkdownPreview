@@ -1,62 +1,139 @@
 /* src/theme/alerts.css
  *
- * GitHub 形式のアラート(> [!NOTE] 等、src/render/alerts.js が出力する
- * div.markdown-alert)の既定スタイル。GitHub の見た目に近づけたもの。
- * アイコンは追加せず、左の色付き線とタイトルの色だけで種別を表す。
+ * アラート(src/render/alerts.js が出力する div.markdown-alert。GitHub 方式
+ * `> [!NOTE]` と Qiita 方式 `:::note info` のどちらも同じ HTML になる)の
+ * 既定スタイル。Qiita や note のような、角丸の枠で囲む落ち着いたデザインにする。
+ *
+ * 色は種類ごとに CSS 変数(--mdp-alert-color / --mdp-alert-border /
+ * --mdp-alert-bg)へまとめ、.markdown-alert-<kind> では変数の値を切り替える
+ * だけにしている。利用者の style.css で上書きしたい場合は、たとえば
+ * ワークスペースの style.css に次のように書けば warning の色だけ変えられる:
+ *
+ *   .markdown-alert-warning {
+ *     --mdp-alert-color: #b45309;
+ *     --mdp-alert-border: #f2c879;
+ *     --mdp-alert-bg: #fff8ea;
+ *   }
  */
 
 .markdown-alert {
-  padding: 0.5rem 1rem;
-  margin-bottom: 1rem;
-  border-left: 0.25em solid;
-  border-radius: 0.25rem;
-  background-color: rgba(128, 128, 128, 0.08);
+  --mdp-alert-color: #24292f;
+  --mdp-alert-border: #d0d7de;
+  --mdp-alert-bg: #f6f8fa;
+  margin: 16px 0;
+  padding: 12px 16px;
+  border: 1px solid var(--mdp-alert-border);
+  border-radius: 6px;
+  background-color: var(--mdp-alert-bg);
+  /* 印刷(PDF 化)でも背景色が出るようにする */
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
 }
 
-.markdown-alert > :first-child {
+/* 余白の指定は、既定テーマの `.crossnote.markdown-preview p`(詳細度 0,2,1)より
+ * 強くないと効かないため、`.markdown-preview .markdown-alert > …`(0,3,0)で書く。 */
+.markdown-preview .markdown-alert > :first-child {
   margin-top: 0;
 }
 
-.markdown-alert > :last-child {
+.markdown-preview .markdown-alert > :last-child {
   margin-bottom: 0;
 }
 
 .markdown-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 600;
-  margin-bottom: 0.5rem;
+  line-height: 1.25;
+  color: var(--mdp-alert-color);
+}
+
+.markdown-preview .markdown-alert > .markdown-alert-title {
+  margin: 0 0 8px;
+}
+
+.markdown-alert-title .octicon {
+  flex-shrink: 0;
+  fill: currentColor;
+}
+
+/* タイトルが空欄(設定でタイトル文字を消した場合)のときのレイアウト。
+ * タイトル(アイコンのみ)を左上に position: absolute で置き、本文側に
+ * アイコン分の余白を空ける。本文 1 行目の line-height に合わせた
+ * min-height で、アイコンの縦位置が本文 1 行目と揃うようにしている。 */
+.markdown-alert-notitle {
+  position: relative;
+  padding-left: 40px;
+}
+
+.markdown-alert-notitle .markdown-alert-title {
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  min-height: 1.7em;
+}
+
+.markdown-preview .markdown-alert-notitle > .markdown-alert-title {
+  margin: 0;
+}
+
+/* タイトル(アイコン)は absolute で流れの外にあるため、本文の先頭要素は :first-child に
+ * ならず既定の上マージンが残る。アイコンと本文 1 行目の縦位置を揃えるため 0 にする。 */
+.markdown-preview .markdown-alert-notitle > .markdown-alert-title + * {
+  margin-top: 0;
 }
 
 .markdown-alert-note {
-  border-left-color: #0969da;
-}
-.markdown-alert-note .markdown-alert-title {
-  color: #0969da;
+  --mdp-alert-color: #2c5f94;
+  --mdp-alert-border: #a9c1dd;
+  --mdp-alert-bg: #f4f8fc;
 }
 
 .markdown-alert-tip {
-  border-left-color: #1a7f37;
-}
-.markdown-alert-tip .markdown-alert-title {
-  color: #1a7f37;
+  --mdp-alert-color: #2d6b4f;
+  --mdp-alert-border: #a8cbb7;
+  --mdp-alert-bg: #f3f9f5;
 }
 
 .markdown-alert-important {
-  border-left-color: #8250df;
-}
-.markdown-alert-important .markdown-alert-title {
-  color: #8250df;
+  --mdp-alert-color: #5b4a94;
+  --mdp-alert-border: #c3b8df;
+  --mdp-alert-bg: #f7f5fb;
 }
 
 .markdown-alert-warning {
-  border-left-color: #9a6700;
-}
-.markdown-alert-warning .markdown-alert-title {
-  color: #9a6700;
+  --mdp-alert-color: #8a5a00;
+  --mdp-alert-border: #dcc28a;
+  --mdp-alert-bg: #fdf9ef;
 }
 
 .markdown-alert-caution {
-  border-left-color: #cf222e;
+  --mdp-alert-color: #a2372f;
+  --mdp-alert-border: #deaba6;
+  --mdp-alert-bg: #fcf5f4;
 }
-.markdown-alert-caution .markdown-alert-title {
-  color: #cf222e;
+
+.markdown-alert-link {
+  --mdp-alert-color: #44546a;
+  --mdp-alert-border: #bfc8d3;
+  --mdp-alert-bg: #f6f8fa;
+}
+
+.markdown-alert-memo {
+  --mdp-alert-color: #6b5a45;
+  --mdp-alert-border: #d6cabb;
+  --mdp-alert-bg: #faf8f5;
+}
+
+.markdown-alert-check {
+  --mdp-alert-color: #1d6a70;
+  --mdp-alert-border: #a3cdd1;
+  --mdp-alert-bg: #f2f9fa;
+}
+
+.markdown-alert-question {
+  --mdp-alert-color: #883d6f;
+  --mdp-alert-border: #dfbcd2;
+  --mdp-alert-bg: #fbf4f8;
 }

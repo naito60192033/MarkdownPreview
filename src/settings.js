@@ -19,6 +19,10 @@ export const DEFAULT_SETTINGS = {
     important: 'Important',
     warning: 'Warning',
     caution: 'Caution',
+    link: 'Link',
+    memo: 'Memo',
+    check: 'Check',
+    question: 'Question',
   },
 };
 
