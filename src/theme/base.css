@@ -300,14 +300,16 @@ html {
 }
 
 /* ---------- 画像・水平線 ---------- */
+/* 画像には既定で 1px の枠線を付ける(白地のスクリーンショットが本文に溶け込まないように)。
+ * `![](a.png){.no-border}` で枠線を消せる。`{.border}` は既定と同じ見た目(互換のため残す)。 */
 .crossnote.markdown-preview img {
   max-width: 100%;
   box-sizing: content-box;
+  border: 1px solid var(--mdp-border);
 }
 
-/* `![](a.png){.border}` で枠線を付ける。 */
-.crossnote.markdown-preview img.border {
-  border: 1px solid var(--mdp-border);
+.crossnote.markdown-preview img.no-border {
+  border: 0;
 }
 
 .crossnote.markdown-preview hr {

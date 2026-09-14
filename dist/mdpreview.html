@@ -4863,14 +4863,16 @@ html {
 }
 
 /* ---------- \u753B\u50CF\u30FB\u6C34\u5E73\u7DDA ---------- */
+/* \u753B\u50CF\u306B\u306F\u65E2\u5B9A\u3067 1px \u306E\u67A0\u7DDA\u3092\u4ED8\u3051\u308B(\u767D\u5730\u306E\u30B9\u30AF\u30EA\u30FC\u30F3\u30B7\u30E7\u30C3\u30C8\u304C\u672C\u6587\u306B\u6EB6\u3051\u8FBC\u307E\u306A\u3044\u3088\u3046\u306B)\u3002
+ * \`![](a.png){.no-border}\` \u3067\u67A0\u7DDA\u3092\u6D88\u305B\u308B\u3002\`{.border}\` \u306F\u65E2\u5B9A\u3068\u540C\u3058\u898B\u305F\u76EE(\u4E92\u63DB\u306E\u305F\u3081\u6B8B\u3059)\u3002 */
 .crossnote.markdown-preview img {
   max-width: 100%;
   box-sizing: content-box;
+  border: 1px solid var(--mdp-border);
 }
 
-/* \`![](a.png){.border}\` \u3067\u67A0\u7DDA\u3092\u4ED8\u3051\u308B\u3002 */
-.crossnote.markdown-preview img.border {
-  border: 1px solid var(--mdp-border);
+.crossnote.markdown-preview img.no-border {
+  border: 0;
 }
 
 .crossnote.markdown-preview hr {

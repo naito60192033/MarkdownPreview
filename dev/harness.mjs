@@ -950,6 +950,44 @@ async function runTests(browser) {
     }
   });
 
+  await test('画像には既定で 1px の枠線が付き、{.no-border} を付けた画像には付かない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'images'));
+      await fs.writeFile(path.join(dir, 'images', 'a.png'), Buffer.from(TEST_PNG_BASE64, 'base64'));
+      await fs.writeFile(
+        path.join(dir, 'doc.md'),
+        '# 見出し\n\n![既定](images/a.png)\n\n![枠なし](images/a.png){.no-border}\n\n<img src="images/a.png">\n',
+        'utf8'
+      );
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        await waitFor(
+          async () =>
+            page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelectorAll('img').length === 3),
+          { message: '画像が 3 枚描画されませんでした' }
+        );
+
+        const borders = await page.evaluate(() =>
+          Array.from(window.__mdpreview.getPreviewDocument().querySelectorAll('img')).map((img) => {
+            const cs = getComputedStyle(img);
+            return { width: cs.borderTopWidth, style: cs.borderTopStyle, color: cs.borderTopColor };
+          })
+        );
+        const framed = { width: '1px', style: 'solid', color: 'rgb(197, 206, 216)' };
+        assert.deepEqual(borders[0], framed, 'markdown の画像に既定の枠線が付いていません: ' + JSON.stringify(borders[0]));
+        assert.equal(borders[1].style, 'none', '{.no-border} の画像に枠線が付いています: ' + JSON.stringify(borders[1]));
+        assert.deepEqual(borders[2], framed, 'HTML で書いた画像に既定の枠線が付いていません: ' + JSON.stringify(borders[2]));
+
+        printConsoleErrors(consoleErrors, '画像の枠線');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   console.log('\n15) MPE互換: @import');
   await test('@import が入れ子・別フォルダの画像とともに展開され、外部で @import 先を書き換えると再描画される', async () => {
     const dir = await mkTmpDir();
