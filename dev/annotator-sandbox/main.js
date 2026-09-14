@@ -152,6 +152,27 @@ window.__annotator = {
     root.dispatchEvent(evt);
   },
 
+  // optsList の枚数ぶんのテスト画像を作り、1回の drop イベント(1つの DataTransfer に
+  // まとめる)として発火する(複数ファイルを同時にドロップしたときの重ならない配置の
+  // テスト用。dropTestImage を複数回呼ぶのとは異なり、ブラウザの1回のドロップ操作を再現する)。
+  async dropTestImages(optsList, point) {
+    const dt = new DataTransfer();
+    for (const opts of optsList) {
+      const blob = await createTestImageBlob(opts);
+      const file = new File([blob], 'dropped.png', { type: blob.type });
+      dt.items.add(file);
+    }
+    const root = document.querySelector('.annotator-overlay');
+    const evt = new DragEvent('drop', {
+      dataTransfer: dt,
+      bubbles: true,
+      cancelable: true,
+      clientX: point.x,
+      clientY: point.y,
+    });
+    root.dispatchEvent(evt);
+  },
+
   // 直前の保存結果(PNG)に含まれるチャンク種別の一覧(mdIM の個数を数える等に使う)
   async getLastResultChunkTypes() {
     if (!state.lastResult || state.lastResult === 'unset') return null;

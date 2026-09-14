@@ -7,7 +7,7 @@
 //
 // 幾何計算部分(normalizeRect・intersectRectFromCenter・computeArrowEndpoints・
 // findAttachTarget・computeOutputSize・computeCalloutBox・getShapeVisualBounds・
-// imageVisibleRect・imageFullRect・unionRect・computeOutputBounds)は DOM に依存せず、
+// imageVisibleRect・imageFullRect・resizeImageFromCorner・unionRect・computeOutputBounds)は DOM に依存せず、
 // テキスト幅の測定関数(measureFn)を外から差し替えられるようにしてあるので、
 // tests/annotator-shapes.test.js から node:test で直接検証できる。
 // SVG 要素を実際に作る buildShapeSvg() だけは document を必要とする(ブラウザ専用)。
@@ -63,6 +63,56 @@ export function imageVisibleRect(img) {
 /** 画像の切り抜き前の全体の矩形(キャンバス座標)。切り抜きツール中の表示に使う */
 export function imageFullRect(img) {
   return { x: img.x, y: img.y, w: img.width * img.scale, h: img.height * img.scale };
+}
+
+// crop 矩形の四隅のうち、compass('nw'|'ne'|'sw'|'se')が指す1点(元画像ピクセル座標)を返す
+function cropCornerPoint(crop, compass) {
+  return {
+    x: compass.includes('w') ? crop.x : crop.x + crop.w,
+    y: compass.includes('n') ? crop.y : crop.y + crop.h,
+  };
+}
+
+const OPPOSITE_CORNER = { nw: 'se', ne: 'sw', sw: 'ne', se: 'nw' };
+
+/**
+ * 選択ツールでの画像の拡大縮小(四隅のハンドル)。縦横比(crop.w / crop.h)は img.scale
+ * という単一の係数でしか変わらないため、常に保たれる。反対側の角(表示矩形
+ * imageVisibleRect() の corner の対角)を固定したまま、ドラッグ中の角から反対側の角へ
+ * 向かう対角線上に pt を投影し、その長さの比で新しい scale を決める(pt が対角線から
+ * 外れていても破綻しないよう投影を使う。draw.io 等と同じ「対角ドラッグで比例拡大」)。
+ * minSize: 表示矩形の短い方の辺がこれを下回らないように scale をクランプする(キャンバスpx)。
+ * 戻り値: 新しい { x, y, scale }(呼び出し側が img にそのまま代入する)。純粋関数(DOM非依存)。
+ */
+export function resizeImageFromCorner(img, corner, pt, minSize = 16) {
+  const rect = imageVisibleRect(img);
+  const corners = {
+    nw: { x: rect.x, y: rect.y },
+    ne: { x: rect.x + rect.w, y: rect.y },
+    sw: { x: rect.x, y: rect.y + rect.h },
+    se: { x: rect.x + rect.w, y: rect.y + rect.h },
+  };
+  const anchorCompass = OPPOSITE_CORNER[corner];
+  const anchor = corners[anchorCompass];
+  const orig = corners[corner];
+
+  const diagX = orig.x - anchor.x;
+  const diagY = orig.y - anchor.y;
+  const diagLen = Math.hypot(diagX, diagY) || 1;
+  const ux = diagX / diagLen;
+  const uy = diagY / diagLen;
+  const proj = (pt.x - anchor.x) * ux + (pt.y - anchor.y) * uy;
+  const factor = Math.max(proj, 0) / diagLen;
+
+  const minScale = minSize / Math.max(Math.min(img.crop.w, img.crop.h), 1e-6);
+  const newScale = Math.max(img.scale * factor, minScale);
+
+  const anchorCropPt = cropCornerPoint(img.crop, anchorCompass);
+  return {
+    x: anchor.x - anchorCropPt.x * newScale,
+    y: anchor.y - anchorCropPt.y * newScale,
+    scale: newScale,
+  };
 }
 
 // キャンバス2D測定による既定のテキスト幅計測(ブラウザ専用)。

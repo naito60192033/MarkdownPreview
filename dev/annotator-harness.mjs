@@ -1077,6 +1077,312 @@ async function runTests(browser) {
       assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
     });
   });
+
+  console.log('\n20) 画像が1枚のときは選択・移動できない');
+  await test('画像1枚のときはクリックしても選択されず、ドラッグしても動かない', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 400, height: 300 });
+
+      await clickOnCanvas(page, { x: 100, y: 100 });
+      let st = await getDebugState(page);
+      assert.equal(st.selectedImageId, null, '画像が1枚のときは選択されないはずです');
+
+      const before = await getDebugState(page);
+      await dragOnCanvas(page, { x: 100, y: 100 }, { x: 250, y: 220 });
+      const after = await getDebugState(page);
+      assertClose(after.images[0].x, before.images[0].x, 0.01, '画像が1枚のときはドラッグしても動かないはずです(x)');
+      assertClose(after.images[0].y, before.images[0].y, 0.01, '画像が1枚のときはドラッグしても動かないはずです(y)');
+      assert.equal(after.historyLength, before.historyLength, '履歴も増えないはずです');
+
+      printConsoleErrors(consoleErrors, '画像1枚のときの選択');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n21) 画像が2枚以上のときの選択・移動(4px未満はうっかりずらし防止で動かない)');
+  await test('2枚目をクリックで選択でき、ドラッグで移動できる。3px(画面上)の移動では動かず履歴も増えない', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 400, height: 300, fillColor: '#3050a0' });
+      await page.evaluate(() => window.__annotator.pasteTestImage({ format: 'png', width: 120, height: 90, fillColor: '#20a040' }));
+      await waitFor(async () => (await getDebugState(page)).images.length === 2, { message: '2枚目が追加されませんでした' });
+
+      let st = await getDebugState(page);
+      const img2 = st.images[1];
+
+      await clickOnCanvas(page, { x: img2.x + 10, y: img2.y + 10 });
+      st = await getDebugState(page);
+      assert.equal(st.selectedImageId, img2.id, '2枚目が選択されていません');
+
+      // 3px(画面上=クライアント座標、片軸のみでちょうど3pxの移動距離)のドラッグでは
+      // 移動しない(うっかりずらし防止)
+      const before = await getDebugState(page);
+      const c1 = await imgToClient(page, img2.x + 10, img2.y + 10);
+      await page.mouse.move(c1.x, c1.y);
+      await page.mouse.down();
+      await page.mouse.move(c1.x + 3, c1.y, { steps: 1 });
+      await page.mouse.up();
+      const afterSmall = await getDebugState(page);
+      assertClose(afterSmall.images[1].x, before.images[1].x, 0.01, '3px未満の移動では動かないはずです(x)');
+      assertClose(afterSmall.images[1].y, before.images[1].y, 0.01, '3px未満の移動では動かないはずです(y)');
+      assert.equal(afterSmall.historyLength, before.historyLength, '3px未満の移動では履歴が増えないはずです');
+
+      // 十分な距離のドラッグでは移動量(/zoom で正規化されたキャンバス座標の移動量)だけ動く
+      await dragOnCanvas(page, { x: img2.x + 10, y: img2.y + 10 }, { x: img2.x + 60, y: img2.y + 80 });
+      const after = await getDebugState(page);
+      assertClose(after.images[1].x, img2.x + 50, 1, 'ドラッグした分だけxが動いていません');
+      assertClose(after.images[1].y, img2.y + 70, 1, 'ドラッグした分だけyが動いていません');
+      assert.equal(after.historyLength, afterSmall.historyLength + 1, '実際に動かした移動で履歴が1つ増えるはずです');
+
+      printConsoleErrors(consoleErrors, '画像の選択と移動');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n22) 画像の四隅のハンドルで拡大縮小(縦横比維持・反対角固定)');
+  await test('四隅のハンドルで拡大縮小すると縦横比が保たれ、反対側の角が動かない', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 400, height: 300, fillColor: '#3050a0' });
+      await page.evaluate(() => window.__annotator.pasteTestImage({ format: 'png', width: 200, height: 100, fillColor: '#20a040' }));
+      await waitFor(async () => (await getDebugState(page)).images.length === 2, { message: '2枚目が追加されませんでした' });
+
+      let st = await getDebugState(page);
+      const img2 = st.images[1];
+      await clickOnCanvas(page, { x: img2.x + 10, y: img2.y + 10 });
+      st = await getDebugState(page);
+      assert.equal(st.selectedImageId, img2.id);
+
+      const nwCorner = { x: img2.x, y: img2.y };
+      const seCorner = { x: img2.x + img2.width, y: img2.y + img2.height }; // scale=1・crop無しなので表示矩形の角と一致
+
+      // se ハンドルを右下に大きくドラッグして拡大する(nw が固定されるはず)
+      await dragOnCanvas(page, seCorner, { x: seCorner.x + 100, y: seCorner.y + 50 });
+
+      st = await getDebugState(page);
+      const resized = st.images[1];
+      assertClose(resized.x, nwCorner.x, 1, '反対側の角(nw.x)が動いてしまっています');
+      assertClose(resized.y, nwCorner.y, 1, '反対側の角(nw.y)が動いてしまっています');
+      assert.ok(resized.scale > 1, '拡大されているはずです');
+
+      const origRatio = img2.width / img2.height;
+      const newW = resized.crop.w * resized.scale;
+      const newH = resized.crop.h * resized.scale;
+      assertClose(newW / newH, origRatio, 0.02, `縦横比が保たれていません: ${newW}/${newH} vs ${origRatio}`);
+
+      printConsoleErrors(consoleErrors, '画像の拡大縮小');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n23) 画像の削除(Delete)・元に戻す・保存時のmdIM件数');
+  await test('Deleteで選択中の画像を削除でき、元に戻すで復活し、保存したPNGにmdIMが2つ含まれる。最後の1枚はDeleteしても消えない', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 400, height: 300, fillColor: '#3050a0' });
+      await page.evaluate(() => window.__annotator.pasteTestImage({ format: 'png', width: 100, height: 80, fillColor: '#20a040' }));
+      await waitFor(async () => (await getDebugState(page)).images.length === 2, { message: '2枚目が追加されませんでした' });
+
+      let st = await getDebugState(page);
+      const img2 = st.images[1];
+      await clickOnCanvas(page, { x: img2.x + 10, y: img2.y + 10 });
+      st = await getDebugState(page);
+      assert.equal(st.selectedImageId, img2.id);
+
+      await page.keyboard.press('Delete');
+      st = await getDebugState(page);
+      assert.equal(st.images.length, 1, '削除後は画像が1枚になるはずです');
+      assert.equal(st.selectedImageId, null, '削除後は選択も解除されるはずです');
+
+      await page.keyboard.press('Control+Z');
+      st = await getDebugState(page);
+      assert.equal(st.images.length, 2, '元に戻すで画像が復活するはずです');
+
+      await saveAndWaitClosed(page);
+      const chunkTypes = await page.evaluate(() => window.__annotator.getLastResultChunkTypes());
+      const mdimCount = chunkTypes.filter((t) => t === 'mdIM').length;
+      assert.equal(mdimCount, 2, `復活後に保存したPNGにmdIMが2つあるはずです: ${chunkTypes}`);
+
+      // 1枚だけ残った状態ではDeleteしても画像は消えないことを確認する
+      await reopenLastResult(page);
+      st = await getDebugState(page);
+      assert.equal(st.images.length, 2);
+      const img2b = st.images[1];
+      await clickOnCanvas(page, { x: img2b.x + 10, y: img2b.y + 10 });
+      await page.keyboard.press('Delete');
+      st = await getDebugState(page);
+      assert.equal(st.images.length, 1, 'この時点では1枚になっているはずです');
+
+      await clickOnCanvas(page, { x: st.images[0].x + 10, y: st.images[0].y + 10 }); // 1枚なので選択されない
+      await page.keyboard.press('Delete');
+      st = await getDebugState(page);
+      assert.equal(st.images.length, 1, '最後の1枚はDeleteしても消えないはずです');
+
+      printConsoleErrors(consoleErrors, '画像の削除・復活');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n24) 画像の重なり順(最前面へ / 最背面へ)');
+  await test('「最前面へ」「最背面へ」で st.images の順が変わり、重なり部分の出力画素の色が変わる', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 200, height: 200, fillColor: '#e53935' }); // 赤
+      await page.evaluate(() => window.__annotator.pasteTestImage({ format: 'png', width: 200, height: 200, fillColor: '#1e88e5' })); // 青
+      await waitFor(async () => (await getDebugState(page)).images.length === 2, { message: '2枚目が追加されませんでした' });
+
+      let st = await getDebugState(page);
+      const img1 = st.images[0];
+      let img2 = st.images[1];
+
+      // 2枚目(青)を1枚目(赤)に「一部だけ」重なるよう移動する(完全に重ねてしまうと、
+      // 重なり順を変えた後に2枚目だけをクリックで再選択する手段が無くなるため)。
+      // 新しい位置: x = img1の右端-100(横方向に100pxだけ重なる)、y は揃える。
+      const targetX = img1.x + img1.width - 100;
+      await clickOnCanvas(page, { x: img2.x + 10, y: img2.y + 10 });
+      await dragOnCanvas(page, { x: img2.x + 10, y: img2.y + 10 }, { x: targetX + 10, y: img1.y + 10 });
+
+      st = await getDebugState(page);
+      img2 = st.images[1];
+      assertClose(img2.x, targetX, 1, '2枚目の移動後の位置が想定とずれています');
+
+      // 重なり領域(両方の画像が存在する点)と、2枚目だけが存在する点(重なり順に
+      // 関わらず常に2枚目をクリックで選択できる点)を求める
+      const overlapPoint = { x: Math.round(img2.x + 30 - st.outputBounds.x), y: Math.round(img2.y + 30 - st.outputBounds.y) };
+      const img2OnlyPoint = { x: img2.x + img2.width - 20, y: img2.y + 20 };
+
+      // 既定では2枚目(青)が手前
+      await saveAndWaitClosed(page);
+      let px = await page.evaluate((pt) => window.__annotator.getLastResultPixel(pt.x, pt.y), overlapPoint);
+      assert.ok(px[2] > px[0], `2枚目(青)が手前のはずです: ${px}`);
+
+      // 2枚目(青だけが存在する点をクリックして選ぶ)を選んで「最背面へ」
+      // → 1枚目(赤)が手前になる(保存済みなのでモーダルは閉じている。開き直す)
+      await reopenLastResult(page);
+      st = await getDebugState(page);
+      img2 = st.images[1];
+      await clickOnCanvas(page, img2OnlyPoint);
+      st = await getDebugState(page);
+      assert.equal(st.selectedImageId, img2.id, '2枚目だけの領域をクリックすると2枚目が選択されるはずです');
+      const beforeReorder = await getDebugState(page);
+      await page.click('[data-action="sendToBack"]');
+      st = await getDebugState(page);
+      assert.equal(st.images[0].id, img2.id, '「最背面へ」で配列の先頭に移動するはずです');
+      assert.equal(st.historyLength, beforeReorder.historyLength + 1, '重なり順の変更で履歴が1つ増えるはずです');
+
+      await saveAndWaitClosed(page);
+      px = await page.evaluate((pt) => window.__annotator.getLastResultPixel(pt.x, pt.y), overlapPoint);
+      assert.ok(px[0] > px[2], `「最背面へ」の後は1枚目(赤)が手前になっているはずです: ${px}`);
+
+      // 開き直して、2枚目だけの領域をクリックで選び「最前面へ」で元(2枚目=青が手前)に戻す
+      // (この時点で2枚目は配列の先頭=最背面にいるが、クリックによる選択は重なり順に
+      // 関わらず一貫して動くはずなので、そのことも合わせて確認できる)
+      await reopenLastResult(page);
+      st = await getDebugState(page);
+      img2 = st.images.find((i) => i.id === img2.id);
+      await clickOnCanvas(page, { x: img2.x + img2.width - 20, y: img2.y + 20 });
+      st = await getDebugState(page);
+      assert.equal(st.selectedImageId, img2.id, '重なり順が変わっても2枚目だけの領域のクリックで2枚目が選択されるはずです');
+      await page.click('[data-action="bringToFront"]');
+      st = await getDebugState(page);
+      assert.equal(st.images[1].id, img2.id, '「最前面へ」で配列の末尾に移動するはずです');
+
+      await saveAndWaitClosed(page);
+      px = await page.evaluate((pt) => window.__annotator.getLastResultPixel(pt.x, pt.y), overlapPoint);
+      assert.ok(px[2] > px[0], `「最前面へ」の後は2枚目(青)が手前に戻っているはずです: ${px}`);
+
+      printConsoleErrors(consoleErrors, '画像の重なり順');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n25) 選択ツールから切り抜きツールへの切り替えで対象を引き継ぐ');
+  await test('画像を選択してから切り抜きツールに切り替えると、その画像が切り抜き対象になる(ボタン・Cキーの両方)', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 300, height: 200, fillColor: '#3050a0' });
+      await page.evaluate(() => window.__annotator.pasteTestImage({ format: 'png', width: 100, height: 80, fillColor: '#20a040' }));
+      await waitFor(async () => (await getDebugState(page)).images.length === 2, { message: '2枚目が追加されませんでした' });
+
+      let st = await getDebugState(page);
+      const img2 = st.images[1];
+      await clickOnCanvas(page, { x: img2.x + 10, y: img2.y + 10 });
+      st = await getDebugState(page);
+      assert.equal(st.selectedImageId, img2.id);
+
+      await selectTool(page, 'crop'); // ボタンでの切り替え
+      st = await getDebugState(page);
+      assert.equal(st.cropTargetId, img2.id, 'ボタンでの切り替えでも選択中の画像が切り抜き対象を引き継ぐはずです');
+
+      await selectTool(page, 'select');
+      await clickOnCanvas(page, { x: img2.x + 10, y: img2.y + 10 });
+      st = await getDebugState(page);
+      assert.equal(st.selectedImageId, img2.id);
+      await page.keyboard.press('c'); // 'C'キーでの切り替え
+      st = await getDebugState(page);
+      assert.equal(st.cropTargetId, img2.id, 'Cキーでの切り替えでも選択中の画像が切り抜き対象を引き継ぐはずです');
+
+      printConsoleErrors(consoleErrors, '選択→切り抜きの引き継ぎ');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n26) 複数ファイルの同時ドロップで重ならない');
+  await test('2ファイルを同時にドロップすると重ならず、2枚目が1枚目の右隣(+24px・上端揃え)に配置される', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 300, height: 200, fillColor: '#3050a0' });
+      let st = await getDebugState(page);
+      const img1 = st.images[0];
+
+      // ドロップ位置の y は1枚目(ドロップした画像)の上端が既存の背景画像(img1)の
+      // 上端と一致するように選ぶ(そうしないと2枚目の基準になる「現在の出力範囲」の
+      // 上端が背景画像側になってしまい、「直前に追加した画像の右隣」の検証があいまいになる)
+      const droppedHeight = 60;
+      const dropClient = await imgToClient(page, img1.x + img1.width + 200, img1.y + droppedHeight / 2);
+      await page.evaluate(
+        ({ optsList, point }) => window.__annotator.dropTestImages(optsList, point),
+        {
+          optsList: [
+            { format: 'png', width: 80, height: droppedHeight, fillColor: '#20a040' },
+            { format: 'png', width: 50, height: 40, fillColor: '#e53935' },
+          ],
+          point: dropClient,
+        }
+      );
+      await waitFor(async () => (await getDebugState(page)).images.length === 3, {
+        message: '2ファイル同時ドロップで画像が2枚追加されませんでした',
+      });
+
+      st = await getDebugState(page);
+      const dropped1 = st.images[1];
+      const dropped2 = st.images[2];
+      assertClose(dropped1.x + dropped1.width / 2, img1.x + img1.width + 200, 1, '1枚目(ドロップ位置)の中心がずれています');
+      assertClose(dropped2.x, dropped1.x + dropped1.width + 24, 1, '2枚目のxが1枚目の右端+24になっていません');
+      assertClose(dropped2.y, dropped1.y, 1, '2枚目のyが1枚目の上端に揃っていません');
+
+      printConsoleErrors(consoleErrors, '複数ファイル同時ドロップ');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n27) 画像の上に重なった図形は図形が優先して選択される');
+  await test('画像の上にある図形をクリックすると図形が選ばれる(画像より優先)', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 400, height: 300, fillColor: '#3050a0' });
+      await page.evaluate(() => window.__annotator.pasteTestImage({ format: 'png', width: 150, height: 100, fillColor: '#20a040' }));
+      await waitFor(async () => (await getDebugState(page)).images.length === 2, { message: '2枚目が追加されませんでした' });
+
+      let st = await getDebugState(page);
+      const img2 = st.images[1];
+
+      await selectTool(page, 'rect');
+      await dragOnCanvas(page, { x: img2.x + 10, y: img2.y + 10 }, { x: img2.x + 60, y: img2.y + 60 });
+
+      await selectTool(page, 'select');
+      await clickOnCanvas(page, { x: img2.x + 30, y: img2.y + 30 }); // 図形の内側かつ画像の内側
+      st = await getDebugState(page);
+      assert.ok(st.selectedShapeId, '図形が選択されているはずです');
+      assert.equal(st.selectedImageId, null, '図形が優先され画像は選択されないはずです');
+
+      printConsoleErrors(consoleErrors, '図形と画像の当たり判定の優先順位');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
 }
 
 // ---------- エントリポイント ----------

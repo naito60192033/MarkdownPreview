@@ -21,6 +21,20 @@
 // 同じ方式)。画像ごとの切り抜きは、画像ごとの入れ子 <svg viewBox=crop> で表現する
 // (パン・ズーム用の外側の viewBox とは別物)。
 //
+// 【画像の選択・移動・拡大縮小・削除・重なり順(選択ツール)】
+// 画像が2枚以上のときだけ、選択ツールで画像自体を選べる(st.selectedImageId。
+// 図形の選択 st.selectedShapeId とは排他)。1枚のときは今までどおり画像のクリックは
+// 選択解除として扱う(移動しても出力が変わらないため)。当たり判定の優先順位は
+// ハンドル → 図形(hitLayer)→ 画像(手前優先)→ 余白(選択解除)。
+// 移動はドラッグで x, y を動かすが、画面上で4px未満の移動はうっかりずらし防止のため
+// 移動とみなさない(4pxを超えた時点から追従する。startImageMoveDrag)。
+// 拡大縮小は四隅のハンドル(data-handle="img-resize-nw" 等)をドラッグし、
+// shapes.js の resizeImageFromCorner()(縦横比を保ったまま反対側の角を固定して
+// img.scale を変える純粋関数)を使う。削除(Delete/Backspace)は画像が2枚以上の
+// ときだけでき、最後の1枚は消せない。「最前面へ/最背面へ」は st.images の並び替え
+// (注釈は常に画像より上に描く)。選択ツールで画像を選んだ状態から切り抜きツールに
+// 切り替えると、その画像を切り抜き対象(cropTargetId)として引き継ぐ。
+//
 // 【データ形式(PNG に埋め込む JSON。version 2)】
 //   {
 //     version: 2,
@@ -52,6 +66,7 @@ import {
   computeOutputBounds,
   imageVisibleRect,
   imageFullRect,
+  resizeImageFromCorner,
   computeCalloutBox,
   measureTextWidth,
   normalizeRect,
@@ -73,6 +88,8 @@ const MAX_ZOOM = 8;
 const FIT_MARGIN_SCREEN_PX = 24;
 const WHEEL_ZOOM_SENSITIVITY = 0.0015; // Ctrl+ホイール1notch(deltaY≈100)あたり約15%ズーム
 const NEW_IMAGE_GAP_CANVAS_PX = 24;
+const IMAGE_MOVE_THRESHOLD_SCREEN_PX = 4; // 画面上でこの距離未満の移動は「うっかりずらし」とみなし追従しない
+const MIN_IMAGE_DISPLAY_SIZE_CANVAS_PX = 16; // 画像の拡大縮小: 表示矩形の一辺がこれを下回らないようにする
 // 出力サイズの上限(超えたら保存を止めて出力倍率を下げるよう案内する)
 const MAX_OUTPUT_DIMENSION_PX = 16384;
 const MAX_OUTPUT_AREA_PX = 100_000_000; // 1億ピクセル
@@ -132,6 +149,7 @@ export function getAnnotatorDebugState() {
     shapes: st.shapes.map((s) => ({ ...s })),
     activeTool: st.activeTool,
     selectedShapeId: st.selectedShapeId,
+    selectedImageId: st.selectedImageId,
     cropTargetId: cropTarget ? cropTarget.id : null,
     historyIndex: st.historyIndex,
     historyLength: st.history.length,
@@ -277,6 +295,7 @@ function createInstance(initial, title, resolve) {
     currentColor: DEFAULT_COLOR,
     currentStrokeWidth: DEFAULT_WIDTH,
     selectedShapeId: null,
+    selectedImageId: null, // 画像が2枚以上のときだけ選択ツールで選べる(selectedShapeIdとは排他)
     editingShapeId: null,
     editingOriginalText: null, // openTextEditor で開いた時点の文字列(commitPendingTextEdit の変更判定用)
     cropTargetId: null, // 2枚以上のときに切り抜きツールで明示的に選んだ画像(ツール切替で解除)
@@ -396,6 +415,8 @@ function buildDom(title) {
     outputSizeLabel: toolbar.querySelector('.annotator-output-size'),
     addImageBtn: toolbar.querySelector('[data-action="addImage"]'),
     fileInput: toolbar.querySelector('.annotator-file-input'),
+    bringToFrontBtn: toolbar.querySelector('[data-action="bringToFront"]'),
+    sendToBackBtn: toolbar.querySelector('[data-action="sendToBack"]'),
     undoBtn: toolbar.querySelector('[data-action="undo"]'),
     redoBtn: toolbar.querySelector('[data-action="redo"]'),
     resetCropBtn: toolbar.querySelector('[data-action="resetCrop"]'),
@@ -450,6 +471,24 @@ function buildImageGroup() {
   input.multiple = true;
   input.className = 'annotator-file-input';
   group.appendChild(input);
+
+  // 重なり順(画像を選択中のときだけ有効。updateToolbar で disabled を切り替える)
+  const frontBtn = document.createElement('button');
+  frontBtn.type = 'button';
+  frontBtn.className = 'annotator-icon-btn';
+  frontBtn.dataset.action = 'bringToFront';
+  frontBtn.title = '最前面へ';
+  frontBtn.textContent = '最前面へ';
+  group.appendChild(frontBtn);
+
+  const backBtn = document.createElement('button');
+  backBtn.type = 'button';
+  backBtn.className = 'annotator-icon-btn';
+  backBtn.dataset.action = 'sendToBack';
+  backBtn.title = '最背面へ';
+  backBtn.textContent = '最背面へ';
+  group.appendChild(backBtn);
+
   return group;
 }
 
@@ -748,6 +787,9 @@ function applyHistorySnapshot(inst, snapshot) {
   if (st.selectedShapeId && !st.shapes.some((s) => s.id === st.selectedShapeId)) {
     st.selectedShapeId = null;
   }
+  if (st.selectedImageId && !st.images.some((i) => i.id === st.selectedImageId)) {
+    st.selectedImageId = null;
+  }
   if (st.cropTargetId && !st.images.some((i) => i.id === st.cropTargetId)) {
     st.cropTargetId = null;
   }
@@ -806,6 +848,36 @@ function deleteSelectedShape(inst) {
   detachArrowsPointingTo(st, id);
   st.shapes = st.shapes.filter((s) => s.id !== id);
   st.selectedShapeId = null;
+  pushHistory(inst);
+  render(inst);
+}
+
+// 選択中の画像を削除する(2枚以上のときだけ。最後の1枚は消せない)。
+// imageSources のバイト列はここでは消さない(閉じるまで保持し、元に戻すで復活できるようにする)。
+function deleteSelectedImage(inst) {
+  const st = inst.state;
+  if (!st.selectedImageId) return;
+  if (st.images.length <= 1) return; // 最後の1枚は削除できない
+  const id = st.selectedImageId;
+  st.images = st.images.filter((img) => img.id !== id);
+  st.selectedImageId = null;
+  if (st.cropTargetId === id) st.cropTargetId = null;
+  pushHistory(inst);
+  render(inst);
+}
+
+// 選択中の画像の重なり順を変える(注釈は常に画像より上に描かれるため、
+// st.images 配列内の並び替えだけでよい)。
+function reorderSelectedImage(inst, where) {
+  const st = inst.state;
+  if (!st.selectedImageId) return;
+  const idx = st.images.findIndex((img) => img.id === st.selectedImageId);
+  if (idx === -1) return;
+  // 既に最前面/最背面なら何もしない(元に戻すが空振りする履歴を積まない)
+  if ((where === 'front' && idx === st.images.length - 1) || (where !== 'front' && idx === 0)) return;
+  const [img] = st.images.splice(idx, 1);
+  if (where === 'front') st.images.push(img);
+  else st.images.unshift(img);
   pushHistory(inst);
   render(inst);
 }
@@ -1032,11 +1104,34 @@ function cropHandlePoints(crop) {
 function renderSelectionLayer(inst) {
   const st = inst.state;
   const { selectionLayer } = inst.dom;
+  const hp = HANDLE_SCREEN_PX / st.zoom;
+
+  if (st.selectedImageId) {
+    const img = st.images.find((i) => i.id === st.selectedImageId);
+    if (!img) return;
+    const rect = imageVisibleRect(img);
+    const outline = svgEl('rect', { x: rect.x, y: rect.y, width: rect.w, height: rect.h });
+    outline.setAttribute('class', 'annotator-selection-outline');
+    selectionLayer.appendChild(outline);
+    const corners = [
+      { name: 'nw', x: rect.x, y: rect.y },
+      { name: 'ne', x: rect.x + rect.w, y: rect.y },
+      { name: 'sw', x: rect.x, y: rect.y + rect.h },
+      { name: 'se', x: rect.x + rect.w, y: rect.y + rect.h },
+    ];
+    for (const c of corners) {
+      const handle = svgEl('rect', { x: c.x - hp / 2, y: c.y - hp / 2, width: hp, height: hp });
+      handle.setAttribute('class', 'annotator-handle');
+      handle.setAttribute('data-handle', 'img-resize-' + c.name);
+      selectionLayer.appendChild(handle);
+    }
+    return;
+  }
+
   if (!st.selectedShapeId) return;
   const shape = st.shapes.find((s) => s.id === st.selectedShapeId);
   if (!shape) return;
   const map = shapesById(st);
-  const hp = HANDLE_SCREEN_PX / st.zoom;
 
   if (shape.type === 'rect' || shape.type === 'callout') {
     const box = getShapeOutlineBox(shape, measureTextWidth);
@@ -1110,6 +1205,8 @@ function updateToolbar(inst, boundsArg) {
   dom.undoBtn.disabled = st.historyIndex <= 0;
   dom.redoBtn.disabled = st.historyIndex >= st.history.length - 1;
   dom.resetCropBtn.disabled = !getCropTarget(st);
+  dom.bringToFrontBtn.disabled = !st.selectedImageId;
+  dom.sendToBackBtn.disabled = !st.selectedImageId;
 
   dom.zoomLabel.textContent = `${Math.round(st.zoom * 100)}%`;
 }
@@ -1221,20 +1318,27 @@ function newCallout(st, tailX, tailY, boxX, boxY) {
 
 // ---------- マウス操作 ----------
 
+// ツールを切り替える(ツールバーのボタン・'C'キー等のショートカットの両方から呼ぶ)。
+// 選択ツールで画像を選んだ状態(selectedImageId)から切り抜きツールに切り替えた場合だけ、
+// その画像を切り抜き対象(cropTargetId)として引き継ぐ。それ以外はツールを切り替えたら
+// 選択・切り抜き対象を解除する(選択は選択ツール専用の概念のため)。
+function setActiveTool(inst, tool) {
+  commitPendingTextEdit(inst);
+  const st = inst.state;
+  const previousSelectedImageId = st.selectedImageId;
+  st.activeTool = tool;
+  st.selectedShapeId = null;
+  st.selectedImageId = null;
+  st.cropTargetId = tool === 'crop' && previousSelectedImageId ? previousSelectedImageId : null;
+  inst.cropDraft = null;
+  render(inst);
+}
+
 function wireEvents(inst) {
   const { dom } = inst;
 
-  function setActiveTool(tool) {
-    commitPendingTextEdit(inst);
-    inst.state.activeTool = tool;
-    inst.state.selectedShapeId = null;
-    inst.state.cropTargetId = null; // ツールを切り替えたら切り抜き対象は解除する
-    inst.cropDraft = null;
-    render(inst);
-  }
-
   for (const btn of dom.toolButtons) {
-    btn.addEventListener('click', () => setActiveTool(btn.dataset.tool));
+    btn.addEventListener('click', () => setActiveTool(inst, btn.dataset.tool));
   }
   for (const btn of dom.colorButtons) {
     btn.addEventListener('click', () => {
@@ -1270,6 +1374,8 @@ function wireEvents(inst) {
       await addImageFromBlob(inst, f, null);
     }
   });
+  dom.bringToFrontBtn.addEventListener('click', () => reorderSelectedImage(inst, 'front'));
+  dom.sendToBackBtn.addEventListener('click', () => reorderSelectedImage(inst, 'back'));
 
   dom.undoBtn.addEventListener('click', () => undo(inst));
   dom.redoBtn.addEventListener('click', () => redo(inst));
@@ -1316,13 +1422,18 @@ function wireEvents(inst) {
   inst.root.addEventListener('dragover', (e) => {
     e.preventDefault();
   });
-  inst.root.addEventListener('drop', (e) => {
+  inst.root.addEventListener('drop', async (e) => {
     e.preventDefault();
     const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
     const imageFiles = files.filter((f) => f.type && f.type.startsWith('image/'));
     if (imageFiles.length === 0) return;
     const pt = clientToCanvasPoint(inst, e.clientX, e.clientY);
-    for (const f of imageFiles) addImageFromBlob(inst, f, pt);
+    // 1つずつ順に(await して)追加する。並行して追加すると、どれも「追加前の
+    // 出力範囲」を見て位置を決めてしまい重なってしまうため。1枚目だけドロップ位置を
+    // 中心にし、2枚目以降は addImageFromBlob の既定どおり直前に追加した画像の右隣になる。
+    for (let i = 0; i < imageFiles.length; i++) {
+      await addImageFromBlob(inst, imageFiles[i], i === 0 ? pt : null);
+    }
   });
 
   // 貼り付け: エディタが開いている間、document への paste で画像があれば追加する。
@@ -1345,6 +1456,7 @@ function wireEvents(inst) {
 
 function applyColorChoice(inst, color) {
   const st = inst.state;
+  if (st.selectedImageId) return; // 画像の選択中は色ボタンは何もしない
   const shape = st.selectedShapeId ? st.shapes.find((s) => s.id === st.selectedShapeId) : null;
   if (shape) {
     shape.stroke = color;
@@ -1357,6 +1469,7 @@ function applyColorChoice(inst, color) {
 
 function applyWidthChoice(inst, width) {
   const st = inst.state;
+  if (st.selectedImageId) return; // 画像の選択中は線の太さボタンは何もしない
   const shape = st.selectedShapeId ? st.shapes.find((s) => s.id === st.selectedShapeId) : null;
   if (shape) {
     shape.strokeWidth = width;
@@ -1377,6 +1490,7 @@ function onKeyDown(inst, e) {
       commitPendingTextEdit(inst);
     } else {
       inst.state.selectedShapeId = null;
+      inst.state.selectedImageId = null;
     }
     render(inst);
     return;
@@ -1405,18 +1519,17 @@ function onKeyDown(inst, e) {
   }
   if (e.key === 'Delete' || e.key === 'Backspace') {
     e.preventDefault();
-    deleteSelectedShape(inst);
+    if (inst.state.selectedImageId) {
+      deleteSelectedImage(inst);
+    } else {
+      deleteSelectedShape(inst);
+    }
     return;
   }
   const toolKeys = { v: 'select', r: 'rect', a: 'arrow', t: 'callout', c: 'crop' };
   const tool = toolKeys[e.key.toLowerCase()];
   if (tool) {
-    commitPendingTextEdit(inst);
-    inst.state.activeTool = tool;
-    inst.state.selectedShapeId = null;
-    inst.state.cropTargetId = null;
-    inst.cropDraft = null;
-    render(inst);
+    setActiveTool(inst, tool);
   }
 }
 
@@ -1436,7 +1549,11 @@ function onCanvasMouseDown(inst, e) {
 
   if (st.activeTool === 'select') {
     if (handleName) {
-      startHandleDrag(inst, handleName, pt);
+      if (handleName.startsWith('img-resize-') && st.selectedImageId) {
+        startImageResizeDrag(inst, handleName, pt);
+      } else {
+        startHandleDrag(inst, handleName, pt);
+      }
       return;
     }
     if (shapeTarget) {
@@ -1451,17 +1568,32 @@ function onCanvasMouseDown(inst, e) {
       if (shape && shape.type === 'callout' && e.detail >= 2) {
         e.preventDefault(); // 既定動作でフォーカスが textarea から外れて即 blur → commit してしまうのを防ぐ
         st.selectedShapeId = id;
+        st.selectedImageId = null; // 図形の選択と画像の選択は排他
         render(inst);
         openTextEditor(inst, shape);
         return;
       }
       st.selectedShapeId = id;
+      st.selectedImageId = null;
       startMoveDrag(inst, shape, pt);
       render(inst);
       return;
     }
-    // 画像や余白のクリックは選択解除として扱う(画像自体の選択・移動は後半フェーズ)
+    // 画像は2枚以上のときだけ選択できる(1枚のときは今までどおり選択解除扱い。
+    // 移動しても出力が変わらないため)。当たり判定は手前(配列の後ろ)から探す。
+    if (st.images.length >= 2) {
+      const clicked = findImageAtPoint(st, pt);
+      if (clicked) {
+        st.selectedShapeId = null;
+        st.selectedImageId = clicked.id;
+        startImageMoveDrag(inst, clicked, pt);
+        render(inst);
+        return;
+      }
+    }
+    // 画像1枚だけのときの画像クリック・余白のクリックは選択解除として扱う
     st.selectedShapeId = null;
+    st.selectedImageId = null;
     render(inst);
     return;
   }
@@ -1571,6 +1703,61 @@ function applyMove(shape, startShape, dx, dy) {
     if (!startShape.from.attach) shape.from = { ...startShape.from, x: startShape.from.x + dx, y: startShape.from.y + dy };
     if (!startShape.to.attach) shape.to = { ...startShape.to, x: startShape.to.x + dx, y: startShape.to.y + dy };
   }
+}
+
+// ---- 選択ツール: 画像の移動(2枚以上のときだけ呼ばれる) ----
+// 画面上で IMAGE_MOVE_THRESHOLD_SCREEN_PX 未満の移動は「うっかりずらし」とみなし、
+// 画像を動かさない(4pxを超えた時点から追従する)。pt は withWindowDragListeners が
+// 渡すキャンバス座標なので、画面px換算は st.zoom を掛けて行う(パン・ズームは
+// ドラッグ中に変化しない前提)。
+function startImageMoveDrag(inst, img, startPt) {
+  const st = inst.state;
+  const startImg = cloneImageMeta(img);
+  let moved = false;
+  const apply = (pt) => {
+    const dx = pt.x - startPt.x;
+    const dy = pt.y - startPt.y;
+    const screenDist = Math.hypot(dx, dy) * st.zoom;
+    if (!moved && screenDist < IMAGE_MOVE_THRESHOLD_SCREEN_PX) return false;
+    moved = true;
+    img.x = startImg.x + dx;
+    img.y = startImg.y + dy;
+    return true;
+  };
+  withWindowDragListeners(
+    inst,
+    (pt) => {
+      apply(pt);
+      render(inst);
+    },
+    (pt) => {
+      apply(pt);
+      if (moved) pushHistory(inst); // 実際に動いたときだけ履歴を積む
+      render(inst);
+    }
+  );
+}
+
+// ---- 選択ツール: 画像の拡大縮小(四隅のハンドル。縦横比を保ったまま反対側の角を固定する) ----
+function startImageResizeDrag(inst, handleName, startPt) {
+  const st = inst.state;
+  const img = st.images.find((i) => i.id === st.selectedImageId);
+  if (!img) return;
+  const corner = handleName.replace('img-resize-', '');
+  const startImg = cloneImageMeta(img);
+  withWindowDragListeners(
+    inst,
+    (pt) => {
+      Object.assign(img, resizeImageFromCorner(startImg, corner, pt, MIN_IMAGE_DISPLAY_SIZE_CANVAS_PX));
+      render(inst);
+    },
+    (pt) => {
+      Object.assign(img, resizeImageFromCorner(startImg, corner, pt, MIN_IMAGE_DISPLAY_SIZE_CANVAS_PX));
+      // ハンドルを押しただけ(大きさが変わっていない)なら履歴を積まない
+      if (img.scale !== startImg.scale || img.x !== startImg.x || img.y !== startImg.y) pushHistory(inst);
+      render(inst);
+    }
+  );
 }
 
 // ---- 選択ツール: rect のリサイズ / 矢印の端点 / 吹き出しのしっぽ ----

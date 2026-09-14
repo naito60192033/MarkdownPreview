@@ -1,8 +1,12 @@
 # 実装方針(2026-09-14): 吹き出しの再編集 / 複数画像のキャンバス / 社内資料向け標準 CSS
 
-状態: 1・2 は方針承認済み(2026-09-14)。worktree `../MarkdownPreview-canvas`
-(ブランチ feature/annotator-canvas、dev から分岐)で作業中。別セッションの
-「アラートの拡張」が commit されたら dev にマージし、tasks/todo.md に統合する。
+状態(2026-09-14):
+- [x] 1. 吹き出しの再編集(feature/annotator-canvas)
+- [x] 2. 複数画像のキャンバス 前半・後半(feature/annotator-canvas。worktree `../MarkdownPreview-canvas`)
+  - 実装で確定した点: 無限キャンバス(viewBox をカメラにする)、画像は 2 枚以上のときだけ選択可、
+    余白・背景色の設定は作らない(白固定)
+- [ ] 3. 標準 CSS(dev 上で実装済み。ユーザーの目視確認待ちで未 commit)
+- [ ] feature/annotator-canvas を dev にマージ(3 の commit 後)し、dist を作り直す。tasks/todo.md に統合
 
 ユーザーの回答(2026-09-14):
 - 画像の外にはみ出した注釈も出力に含め、白背景で広げる → OK

@@ -19,6 +19,7 @@ import {
   unionRect,
   imageVisibleRect,
   imageFullRect,
+  resizeImageFromCorner,
   computeOutputBounds,
 } from '../src/annotator/shapes.js';
 
@@ -195,6 +196,56 @@ test('computeOutputBounds: 複数画像の和集合になる', () => {
   const img2 = { id: 'i2', x: 124, y: 50, scale: 1, width: 50, height: 50, crop: { x: 0, y: 0, w: 50, h: 50 } };
   assert.deepEqual(computeOutputBounds([img1, img2], []), { x: 0, y: 0, w: 174, h: 100 });
 });
+
+test('resizeImageFromCorner: se ハンドルをちょうど2倍の対角点まで引くと nw(反対の角)が固定されscaleが2倍になる', () => {
+  const img = { x: 0, y: 0, scale: 1, width: 200, height: 100, crop: { x: 0, y: 0, w: 200, h: 100 } };
+  const result = resizeImageFromCorner(img, 'se', { x: 400, y: 200 }, 16);
+  assert.deepEqual(result, { x: 0, y: 0, scale: 2 });
+});
+
+test('resizeImageFromCorner: nw ハンドルを引くと se(反対の角)が固定される(縮小)', () => {
+  const img = { x: 0, y: 0, scale: 1, width: 200, height: 100, crop: { x: 0, y: 0, w: 200, h: 100 } };
+  // se(固定角)= (200,100)。半分の位置(100,50)まで nw を引くと scale=0.5 になる
+  const result = resizeImageFromCorner(img, 'nw', { x: 100, y: 50 }, 16);
+  assert.deepEqual(result, { x: 100, y: 50, scale: 0.5 });
+  // 反対側の角(se)が動かないことを確認する
+  const rect = imageVisibleRect({ ...img, ...result });
+  assert.equal(rect.x + rect.w, 200);
+  assert.equal(rect.y + rect.h, 100);
+});
+
+test('resizeImageFromCorner: 縦横比は常に crop.w/crop.h のまま保たれる(自由な方向にドラッグしても)', () => {
+  const img = { x: 10, y: 20, scale: 1.5, width: 300, height: 100, crop: { x: 0, y: 0, w: 300, h: 100 } };
+  const result = resizeImageFromCorner(img, 'se', { x: 500, y: 150 }, 16); // 対角線から外れた点
+  const newImg = { ...img, ...result };
+  const rect = imageVisibleRect(newImg);
+  assert.ok(Math.abs(rect.w / rect.h - img.width / img.height) < 1e-9, `縦横比が変わってしまっています: ${rect.w}/${rect.h}`);
+});
+
+test('resizeImageFromCorner: 表示矩形の短辺が minSize を下回らないようクランプする', () => {
+  const img = { x: 0, y: 0, scale: 1, width: 200, height: 100, crop: { x: 0, y: 0, w: 200, h: 100 } };
+  // se を nw のすぐ近く(ほぼ0サイズ)まで引こうとしても、短辺が16px未満にはならない
+  const result = resizeImageFromCorner(img, 'se', { x: 1, y: 0.5 }, 16);
+  const rect = imageVisibleRect({ ...img, ...result });
+  assertMinSize(rect, 16);
+});
+
+function assertMinSize(rect, minSize) {
+  assert.ok(Math.min(rect.w, rect.h) >= minSize - 1e-6, `短辺が最小サイズを下回っています: ${JSON.stringify(rect)}`);
+}
+
+test('resizeImageFromCorner: 既に切り抜き・オフセットのある画像でも対角の角が固定される', () => {
+  const img = { x: 50, y: 30, scale: 2, width: 400, height: 300, crop: { x: 20, y: 10, w: 100, h: 80 } };
+  const before = imageVisibleRect(img);
+  const neFixed = { x: before.x + before.w, y: before.y }; // sw をドラッグしたときの固定角(ne)
+  const result = resizeImageFromCorner(img, 'sw', { x: before.x - 20, y: before.y + before.h + 20 }, 16);
+  const after = imageVisibleRect({ ...img, ...result });
+  assertClosePoint({ x: after.x + after.w, y: after.y }, neFixed);
+});
+
+function assertClosePoint(actual, expected, tol = 1e-6) {
+  assert.ok(Math.abs(actual.x - expected.x) < tol && Math.abs(actual.y - expected.y) < tol, `点が一致しません: actual=${JSON.stringify(actual)}, expected=${JSON.stringify(expected)}`);
+}
 
 test('buildCalloutPath: しっぽの有無・向きに応じて異なる path 文字列を作る(壊れていないことの確認)', () => {
   const box = { x: 0, y: 0, w: 100, h: 60, fontSize: 20 };
