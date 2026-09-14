@@ -1899,6 +1899,224 @@ async function runTests(browser) {
       await fs.rm(emptyDir, { recursive: true, force: true });
     }
   });
+
+  console.log('\n23) 標準 CSS(社内資料向け)');
+  await test('標準 CSS が効いている(h2 の枠線・表の display: table)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(
+        path.join(dir, 'doc.md'),
+        '# 見出し\n\n## 見出し2\n\n| a | b |\n|---|---|\n| 1 | 2 |\n',
+        'utf8'
+      );
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () => page.evaluate(() => !!window.__mdpreview.getPreviewDocument().querySelector('table')));
+
+        const styles = await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          return {
+            h2BorderLeftWidth: getComputedStyle(doc.querySelector('h2')).borderLeftWidth,
+            tableDisplay: getComputedStyle(doc.querySelector('table')).display,
+          };
+        });
+        assert.equal(styles.h2BorderLeftWidth, '6px', '標準 CSS の h2 の枠線が反映されていません');
+        assert.equal(styles.tableDisplay, 'table', '標準 CSS の表の display が table になっていません');
+
+        printConsoleErrors(consoleErrors, '標準 CSS');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('「標準 CSS を使う」をオフにすると外れる(アラートの枠・style.css は残る)。再読み込み後もオフのまま。HTML 出力にも含まれない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(
+        path.join(dir, 'doc.md'),
+        '# 見出し\n\n## 見出し2\n\n> [!NOTE]\n> 本文\n',
+        'utf8'
+      );
+      await fs.writeFile(path.join(dir, 'style.css'), '.crossnote.markdown-preview { color: rgb(50, 60, 70); }\n', 'utf8');
+
+      const context = await browser.newContext();
+      await installFakeFs(context, { rootDir: dir });
+      const page = await context.newPage();
+      const consoleErrors = [];
+      attachDebugLogging(page, consoleErrors);
+      try {
+        await page.goto(DIST_URL);
+        await ensureHooks(page);
+        await pickFolderAndOpen(page, 'doc.md');
+
+        await waitFor(async () => page.evaluate(() => !!window.__mdpreview.getPreviewDocument().querySelector('div.markdown-alert')));
+        // オンの状態の前提を確認しておく。
+        assert.equal(
+          await page.evaluate(() => getComputedStyle(window.__mdpreview.getPreviewDocument().querySelector('h2')).borderLeftWidth),
+          '6px',
+          '前提: 標準 CSS がオンの時点で h2 の枠線が付いていません'
+        );
+
+        await page.click('#settingsBtn');
+        await page.evaluate(() => {
+          const input = document.getElementById('settingUseStandardCss');
+          input.checked = false;
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        await page.click('#settingsCloseBtn');
+
+        await waitFor(
+          async () =>
+            page.evaluate(() => document.getElementById('preview').contentDocument.getElementById('mdpreview-base-style').textContent === ''),
+          { message: '標準 CSS をオフにしても #mdpreview-base-style が空になりませんでした' }
+        );
+
+        const after = await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          return {
+            h2BorderLeftWidth: getComputedStyle(doc.querySelector('h2')).borderLeftWidth,
+            alertBorderWidth: getComputedStyle(doc.querySelector('div.markdown-alert')).borderTopWidth,
+            bodyColor: getComputedStyle(doc.querySelector('.crossnote.markdown-preview')).color,
+          };
+        });
+        assert.equal(after.h2BorderLeftWidth, '0px', '標準 CSS をオフにしても h2 の枠線が残っています');
+        assert.equal(after.alertBorderWidth, '1px', 'アラートの枠線が消えてしまいました(常に適用されるはずです)');
+        assert.equal(after.bodyColor, 'rgb(50, 60, 70)', 'style.css が効かなくなりました');
+
+        // 再読み込み後もオフのまま。
+        await page.reload();
+        await ensureHooks(page);
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).hasRoot);
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'doc.md');
+        assert.equal(
+          (await page.evaluate(() => window.__mdpreview.getSettings())).useStandardCss,
+          false,
+          '再読み込み後にオンへ戻ってしまいました'
+        );
+        await waitFor(
+          async () =>
+            page.evaluate(() => document.getElementById('preview').contentDocument.getElementById('mdpreview-base-style').textContent === ''),
+          { message: '再読み込み後に標準 CSS が空でなくなりました' }
+        );
+
+        // オフの状態の HTML 出力には標準 CSS の内容が含まれない。
+        await page.evaluate(() => window.__mdpreview.exportNormal());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
+        const html = await fs.readFile(path.join(dir, 'doc.html'), 'utf8');
+        assert.ok(!html.includes('--mdp-accent'), 'オフの状態の HTML 出力に標準 CSS の内容が含まれています');
+
+        printConsoleErrors(consoleErrors, '標準 CSS オフ');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('「標準 CSS を書き出す」でワークスペースに standard.css ができる。既にある場合は上書き確認する(dismiss/accept)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 見出し\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        await page.click('#settingsBtn');
+        await page.click('#exportStandardCssBtn');
+        await waitFor(async () => existsSync(path.join(dir, 'standard.css')), { message: 'standard.css が書き出されませんでした' });
+
+        const content = await fs.readFile(path.join(dir, 'standard.css'), 'utf8');
+        assert.ok(content.includes('--mdp-accent'), '書き出した standard.css の中身が標準 CSS ではないようです');
+        assert.equal(
+          await page.evaluate(() => window.__mdpreview.getStatusMessage()),
+          '標準 CSS を書き出しました: standard.css'
+        );
+
+        // 既にある状態で押すと確認ダイアログが出る。dismiss なら上書きされない。
+        await fs.writeFile(path.join(dir, 'standard.css'), '/* 手を加えた内容 */\n', 'utf8');
+        page.once('dialog', (dialog) => dialog.dismiss());
+        await page.click('#exportStandardCssBtn');
+        await sleep(200);
+        const afterDismiss = await fs.readFile(path.join(dir, 'standard.css'), 'utf8');
+        assert.equal(afterDismiss, '/* 手を加えた内容 */\n', 'キャンセルしたのに standard.css が上書きされました');
+
+        // accept なら上書きされる。
+        page.once('dialog', (dialog) => dialog.accept());
+        await page.click('#exportStandardCssBtn');
+        await waitFor(
+          async () => (await fs.readFile(path.join(dir, 'standard.css'), 'utf8')).includes('--mdp-accent'),
+          { message: '上書きを承諾しても standard.css が更新されませんでした' }
+        );
+
+        printConsoleErrors(consoleErrors, '標準 CSS の書き出し');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('表の後に空行を挟んで {.full} を書くと table に class="full" が付き、幅いっぱいに広がる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = [
+        '# 表',
+        '',
+        '| a | b |',
+        '|---|---|',
+        '| 1 | 2 |',
+        '',
+        '| a | b |',
+        '|---|---|',
+        '| 1 | 2 |',
+        '',
+        '{.full}',
+        '',
+      ].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(
+          async () => (await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelectorAll('table').length)) === 2
+        );
+
+        // 内容が短い表だと th/td の min-width の影響で「通常の表」自体もある程度
+        // 広がるため、「通常より広い」という相対比較ではなく、{.full} の表が本文の
+        // 内側幅(container の clientWidth から padding を引いたもの)と一致する
+        // ことを直接確認する。
+        const { normalHasFull, fullHasFull, normalWidth, fullWidth, containerContentWidth } = await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          const tables = doc.querySelectorAll('table');
+          const container = doc.querySelector('.crossnote.markdown-preview');
+          const cs = getComputedStyle(container);
+          const containerContentWidth =
+            container.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+          return {
+            normalHasFull: tables[0].classList.contains('full'),
+            fullHasFull: tables[1].classList.contains('full'),
+            normalWidth: tables[0].getBoundingClientRect().width,
+            fullWidth: tables[1].getBoundingClientRect().width,
+            containerContentWidth,
+          };
+        });
+        assert.equal(normalHasFull, false, '{.full} を付けていない表に full クラスが付いています');
+        assert.equal(fullHasFull, true, '{.full} を付けた表に full クラスが付いていません');
+        assert.ok(fullWidth > normalWidth, `{.full} で幅が広がっていません(normal=${normalWidth}, full=${fullWidth})`);
+        assert.ok(
+          Math.abs(fullWidth - containerContentWidth) < 2,
+          `{.full} の表が本文幅いっぱいになっていません(full=${fullWidth}, container=${containerContentWidth})`
+        );
+
+        printConsoleErrors(consoleErrors, '表の {.full}');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
 }
 
 // ---------- エントリポイント ----------

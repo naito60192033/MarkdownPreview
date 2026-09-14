@@ -12,6 +12,9 @@ export const DEFAULT_SETTINGS = {
   pollIntervalMs: 2000,
   // プレビューに当てる CSS のパス(ルート相対)
   cssPath: 'style.css',
+  // 標準 CSS(src/theme/base.css)を使うかどうか。オフにすると CSS のパスの
+  // ファイルだけを使う(アラートの見た目は常に適用される)。
+  useStandardCss: true,
   // アラート(> [!NOTE] 等)のタイトル表記(src/render/alerts.js の既定値と同じ)
   alertTitles: {
     note: 'Note',

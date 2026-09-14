@@ -1,12 +1,42 @@
 /* src/theme/base.css
  *
- * プレビュー(iframe の中身)の既定テーマ。GitHub 風の見やすいスタイルにする。
- * <ルート>/style.css(設定で変更可)はこの後に読み込まれ、必要な箇所だけ
- * 上書きできる。
+ * これは「標準 CSS」です。社内資料向けに、見出しと表を中心とした見やすい
+ * スタイルにしています。既定でプレビューと HTML 出力の両方に適用されます。
  *
+ * 見た目を変えたい場合は、このファイルを直接編集するのではなく、次の手順で
+ * 置き換えてください。
+ *   1. 設定(⚙)の「標準 CSS を書き出す」を押すと、ワークスペース直下に
+ *      standard.css ができます
+ *   2. standard.css を好きなように編集します
+ *   3. 設定の「CSS のパス」を standard.css に変更します
+ *   4. 設定の「標準 CSS を使う」をオフにします
+ *      (オフにしないと、この標準 CSS がアラート以外の部分に重ねて効いたままになります)
+ *
+ * アラート(`> [!NOTE]` 等)の見た目はこのファイルの対象外です。標準 CSS を
+ * オフにしても常に適用されます(src/theme/alerts.css)。色を変える方法は
+ * README の「アラート」の節を参照してください。
+ *
+ * ---- CSS 変数(`.crossnote.markdown-preview` に定義。style.css で上書きすると
+ *      色やフォントを変えられます) ----
+ *   --mdp-font         本文のフォント
+ *   --mdp-font-mono    コード等の等幅フォント
+ *   --mdp-text         本文の文字色
+ *   --mdp-muted        補足的な文字色(h6・脚注など)
+ *   --mdp-accent       見出しの線などのアクセント色(紺)
+ *   --mdp-accent-soft  h2 の帯・表の見出し行の背景
+ *   --mdp-accent-line  h3 の縦線・表の見出し行の下罫線
+ *   --mdp-border       表の罫線
+ *   --mdp-border-light 水平線・コードの枠線
+ *   --mdp-link         リンクの色
+ *   --mdp-code-bg      インラインコード・コードブロックの背景
+ *   --mdp-zebra        表の縞模様(偶数行)の背景
+ *
+ * ---- 開発者向け ----
  * このファイルは JS から文字列として取り込まれ(build.mjs の esbuild text
- * ローダー)、iframe 内の <style> に直接書き込まれる。HTML 出力(フェーズ6)でも
- * 同じ文字列をそのまま埋め込む想定のため、iframe 前提のセレクタは書かない。
+ * ローダー)、iframe 内の <style> に直接書き込まれる。HTML 出力でも同じ文字列を
+ * そのまま埋め込むため、iframe 前提のセレクタは書かない。書き出したファイルを
+ * 利用者がそのまま「標準 CSS」の置き換え元として編集する前提でもあるため、
+ * `.markdown-alert` 関連のスタイルはここに書かない(alerts.css の担当)。
  */
 
 /* プレビュー用 iframe 自身の body/html の余白を消す(offsetTop ベースの
@@ -18,15 +48,28 @@ body {
 }
 
 .crossnote.markdown-preview {
+  --mdp-font: "Meiryo", "メイリオ", "BIZ UDPGothic", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    "Yu Gothic Medium", sans-serif;
+  --mdp-font-mono: Consolas, "BIZ UDGothic", "MS Gothic", "SFMono-Regular", Menlo, monospace;
+  --mdp-text: #1f2933;
+  --mdp-muted: #5b6470;
+  --mdp-accent: #1f4e79;
+  --mdp-accent-soft: #eef3f8;
+  --mdp-accent-line: #7f9cbd;
+  --mdp-border: #c5ced8;
+  --mdp-border-light: #e1e6ec;
+  --mdp-link: #1a5fa8;
+  --mdp-code-bg: #f4f6f8;
+  --mdp-zebra: #f8fafc;
+
   box-sizing: border-box;
   max-width: 900px;
   margin: 0 auto;
   padding: 32px 40px 80px;
-  color: #24292e;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN",
-    "Yu Gothic", Meiryo, sans-serif;
+  color: var(--mdp-text);
+  font-family: var(--mdp-font);
   font-size: 16px;
-  line-height: 1.7;
+  line-height: 1.75;
   word-wrap: break-word;
 }
 
@@ -41,35 +84,48 @@ body {
 .crossnote.markdown-preview h4,
 .crossnote.markdown-preview h5,
 .crossnote.markdown-preview h6 {
-  margin-top: 1.6em;
-  margin-bottom: 0.6em;
-  font-weight: 600;
-  line-height: 1.35;
+  margin: 1.8em 0 0.7em;
+  color: var(--mdp-text);
+  font-weight: 700;
+  line-height: 1.4;
+  /* 見出しの直後で改ページしない(印刷・PDF で見出しだけページ末尾に残らないようにする) */
+  break-after: avoid;
+  page-break-after: avoid;
 }
 
 .crossnote.markdown-preview h1:first-child,
-.crossnote.markdown-preview h2:first-child {
+.crossnote.markdown-preview h2:first-child,
+.crossnote.markdown-preview h3:first-child,
+.crossnote.markdown-preview h4:first-child,
+.crossnote.markdown-preview h5:first-child,
+.crossnote.markdown-preview h6:first-child {
   margin-top: 0;
 }
 
 .crossnote.markdown-preview h1 {
   padding-bottom: 0.3em;
-  font-size: 2em;
-  border-bottom: 1px solid #eaecef;
+  font-size: 1.75em;
+  border-bottom: 3px solid var(--mdp-accent);
 }
 
 .crossnote.markdown-preview h2 {
-  padding-bottom: 0.3em;
-  font-size: 1.5em;
-  border-bottom: 1px solid #eaecef;
+  padding: 0.35em 0.6em;
+  font-size: 1.4em;
+  background: var(--mdp-accent-soft);
+  border-left: 6px solid var(--mdp-accent);
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
 }
 
 .crossnote.markdown-preview h3 {
-  font-size: 1.25em;
+  padding-left: 0.55em;
+  font-size: 1.2em;
+  border-left: 4px solid var(--mdp-accent-line);
 }
 
 .crossnote.markdown-preview h4 {
-  font-size: 1.1em;
+  font-size: 1.05em;
+  color: var(--mdp-accent);
 }
 
 .crossnote.markdown-preview h5 {
@@ -77,8 +133,8 @@ body {
 }
 
 .crossnote.markdown-preview h6 {
-  font-size: 0.9em;
-  color: #6a737d;
+  font-size: 0.95em;
+  color: var(--mdp-muted);
 }
 
 /* ---------- 段落・リンク ---------- */
@@ -87,27 +143,29 @@ body {
 }
 
 .crossnote.markdown-preview a {
-  color: #0366d6;
-  text-decoration: none;
-}
-
-.crossnote.markdown-preview a:hover {
+  color: var(--mdp-link);
   text-decoration: underline;
+  text-underline-offset: 0.15em;
 }
 
 /* ---------- リスト ---------- */
 .crossnote.markdown-preview ul,
 .crossnote.markdown-preview ol {
-  padding-left: 2em;
   margin: 0.6em 0;
+  padding-left: 1.8em;
 }
 
 .crossnote.markdown-preview li + li {
-  margin-top: 0.2em;
+  margin-top: 0.25em;
 }
 
 .crossnote.markdown-preview li > p {
   margin: 0.4em 0;
+}
+
+.crossnote.markdown-preview li ul,
+.crossnote.markdown-preview li ol {
+  margin: 0;
 }
 
 /* markdown-it-task-lists のチェックボックス */
@@ -124,8 +182,8 @@ body {
 .crossnote.markdown-preview blockquote {
   margin: 0.8em 0;
   padding: 0 1em;
-  color: #6a737d;
-  border-left: 0.25em solid #dfe2e5;
+  color: var(--mdp-muted);
+  border-left: 4px solid var(--mdp-border);
 }
 
 .crossnote.markdown-preview blockquote > :first-child {
@@ -138,52 +196,74 @@ body {
 
 /* ---------- コード ---------- */
 .crossnote.markdown-preview code {
-  padding: 0.2em 0.4em;
-  font-size: 85%;
-  background-color: rgba(27, 31, 35, 0.05);
+  padding: 0.1em 0.35em;
+  font-size: 0.9em;
+  font-family: var(--mdp-font-mono);
+  background-color: var(--mdp-code-bg);
+  border: 1px solid var(--mdp-border-light);
   border-radius: 3px;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
 .crossnote.markdown-preview pre {
-  padding: 16px;
+  padding: 12px 16px;
   overflow: auto;
-  font-size: 85%;
-  line-height: 1.45;
-  background-color: #f6f8fa;
-  border-radius: 6px;
+  font-size: 0.875em;
+  line-height: 1.5;
+  background-color: var(--mdp-code-bg);
+  border: 1px solid var(--mdp-border-light);
+  border-radius: 4px;
 }
 
 .crossnote.markdown-preview pre code {
   padding: 0;
   background-color: transparent;
+  border: 0;
   border-radius: 0;
   font-size: 100%;
 }
 
 /* ---------- 表 ---------- */
 .crossnote.markdown-preview table {
+  /* block だと印刷時に見出し行がページごとに繰り返されず、改ページで崩れる
+   * ため table に戻す(横に長い表がはみ出す場合は次の {.full} や個別の
+   * style.css で対応する)。 */
+  display: table;
   width: auto;
   max-width: 100%;
-  margin: 0.8em 0;
+  margin: 1em 0;
+  font-size: 0.95em;
+  line-height: 1.6;
   border-collapse: collapse;
-  overflow: auto;
-  display: block;
 }
 
-.crossnote.markdown-preview table th,
-.crossnote.markdown-preview table td {
-  padding: 6px 13px;
-  border: 1px solid #dfe2e5;
+/* 表の直後の行に `{.full}` を付けると(markdown-it-attrs)、幅いっぱいに広げる。 */
+.crossnote.markdown-preview table.full {
+  width: 100%;
 }
 
-.crossnote.markdown-preview table th {
-  font-weight: 600;
-  background-color: #f6f8fa;
+.crossnote.markdown-preview th,
+.crossnote.markdown-preview td {
+  padding: 6px 12px;
+  border: 1px solid var(--mdp-border);
+  vertical-align: top;
+  overflow-wrap: break-word;
+  /* 日本語はどの文字の間でも改行できるため、長文のセルがあると短い列が 1 文字幅まで
+   * 縮められてしまう。2 文字の語(担当・期限・備考など)が縦に割れない幅を確保する */
+  min-width: 4em;
 }
 
-.crossnote.markdown-preview table tr:nth-child(2n) {
-  background-color: #f6f8fa;
+.crossnote.markdown-preview th {
+  /* 見出しの語の途中で改行しない(空白のある英語などは空白で改行する) */
+  word-break: keep-all;
+  font-weight: 700;
+  background-color: var(--mdp-accent-soft);
+  border-bottom: 2px solid var(--mdp-accent-line);
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.crossnote.markdown-preview tbody tr:nth-child(2n) {
+  background-color: var(--mdp-zebra);
 }
 
 /* ---------- 画像・水平線 ---------- */
@@ -192,12 +272,44 @@ body {
   box-sizing: content-box;
 }
 
+/* `![](a.png){.border}` で枠線を付ける。 */
+.crossnote.markdown-preview img.border {
+  border: 1px solid var(--mdp-border);
+}
+
 .crossnote.markdown-preview hr {
-  height: 1px;
+  height: 0;
   padding: 0;
-  margin: 24px 0;
-  background-color: #e1e4e8;
+  margin: 2em 0;
   border: 0;
+  border-top: 1px solid var(--mdp-border-light);
+}
+
+/* ---------- 強調・その他インライン要素 ---------- */
+.crossnote.markdown-preview strong {
+  font-weight: 700;
+}
+
+.crossnote.markdown-preview mark {
+  background-color: #fff3b0;
+}
+
+.crossnote.markdown-preview kbd {
+  padding: 0.15em 0.45em;
+  font-size: 0.85em;
+  font-family: var(--mdp-font-mono);
+  background-color: var(--mdp-code-bg);
+  border: 1px solid var(--mdp-border);
+  border-radius: 4px;
+}
+
+/* ---------- 定義リスト ---------- */
+.crossnote.markdown-preview dt {
+  font-weight: 700;
+}
+
+.crossnote.markdown-preview dd {
+  margin-left: 1.5em;
 }
 
 /* ---------- mermaid ---------- */
@@ -224,18 +336,25 @@ body {
 }
 
 /* ---------- 脚注(markdown-it-footnote) ---------- */
+/* プラグインが出す区切り線(hr.footnotes-sep)と .footnotes の上罫線が二重に
+ * なるため、区切り線は消して上罫線だけにする */
+.crossnote.markdown-preview .footnotes-sep {
+  display: none;
+}
+
 .crossnote.markdown-preview .footnotes {
   margin-top: 2em;
   padding-top: 1em;
-  border-top: 1px solid #eaecef;
+  border-top: 1px solid var(--mdp-border-light);
   font-size: 0.9em;
-  color: #6a737d;
+  color: var(--mdp-muted);
 }
 
 /* ---------- highlight.js(GitHub テーマ) ---------- */
 .crossnote.markdown-preview .hljs {
   color: #24292e;
-  background: #ffffff;
+  /* pre の背景と揃える(白のままだと pre の中に白い箱ができて見える) */
+  background: transparent;
 }
 .crossnote.markdown-preview .hljs-doctag,
 .crossnote.markdown-preview .hljs-keyword,
@@ -312,18 +431,34 @@ body {
 }
 
 /* ---------- 印刷 ---------- */
+@page {
+  size: A4;
+  margin: 15mm 15mm 18mm;
+}
+
 @media print {
   .crossnote.markdown-preview {
     max-width: none;
     padding: 0;
+    font-size: 10.5pt;
   }
   .crossnote.markdown-preview a {
     color: inherit;
-    text-decoration: underline;
   }
+  /* 長い行が PDF で切れないようにする */
+  .crossnote.markdown-preview pre {
+    white-space: pre-wrap;
+  }
+  /* 表全体を avoid にすると、1 ページに収まらない長い表が崩れるため、
+   * 見出し行の繰り返し + 行単位の avoid にする。 */
   .crossnote.markdown-preview pre,
-  .crossnote.markdown-preview blockquote,
-  .crossnote.markdown-preview table {
-    page-break-inside: avoid;
+  .crossnote.markdown-preview blockquote {
+    break-inside: avoid;
+  }
+  .crossnote.markdown-preview table thead {
+    display: table-header-group;
+  }
+  .crossnote.markdown-preview table tr {
+    break-inside: avoid;
   }
 }

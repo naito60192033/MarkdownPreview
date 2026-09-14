@@ -5,7 +5,8 @@
 // 差し替えることでスクロール位置を保つ。
 //
 // 担当範囲:
-//   - base.css → alerts.css → style.css の順で <style> に反映
+//   - base.css(標準 CSS。設定でオフにできる)→ alerts.css → style.css の順で
+//     <style> に反映
 //   - html を一旦(リソースを読み込まない)<template> に入れてから、外部 URL でない
 //     img[src] を data-src に退避し、その後で本文に差し込む(HTML で直接書かれた
 //     `<img src="images/a.png" width="300">` のような MPE 由来の記法にも同じ変換が
@@ -56,6 +57,9 @@ export function createPreview({ iframe, onOpenMdLink }) {
   let readyPromise = null;
   let wrapperEl = null;
   let docRef = null;
+  // setUseStandardCss() は iframe の load 前(init() 直後)にも呼ばれうるため、
+  // 値は state として持っておき、load 時に最新の値を反映する。
+  let useStandardCss = true;
 
   let currentRoot = null;
   let currentMdDir = '';
@@ -105,7 +109,7 @@ export function createPreview({ iframe, onOpenMdLink }) {
           docRef = iframe.contentDocument;
           wrapperEl = docRef.getElementById('mdpreview-root');
           const baseStyleEl = docRef.getElementById('mdpreview-base-style');
-          if (baseStyleEl) baseStyleEl.textContent = baseCss;
+          if (baseStyleEl) baseStyleEl.textContent = useStandardCss ? baseCss : '';
           const alertsStyleEl = docRef.getElementById('mdpreview-alerts-style');
           if (alertsStyleEl) alertsStyleEl.textContent = alertsCss;
           attachLinkHandler();
@@ -127,6 +131,18 @@ export function createPreview({ iframe, onOpenMdLink }) {
     if (!docRef) return;
     const el = docRef.getElementById('mdpreview-user-style');
     if (el) el.textContent = text || '';
+  }
+
+  /**
+   * 標準 CSS(base.css)を使うかどうかを切り替える。init() の直後、iframe の
+   * load が終わる前に呼ばれることもあるため値は保持しておき、load 時にも
+   * 最新の値を反映する(上の init() 内を参照)。
+   */
+  function setUseStandardCss(on) {
+    useStandardCss = !!on;
+    if (!docRef) return;
+    const el = docRef.getElementById('mdpreview-base-style');
+    if (el) el.textContent = useStandardCss ? baseCss : '';
   }
 
   function applyMermaidResult(el, result) {
@@ -240,6 +256,7 @@ export function createPreview({ iframe, onOpenMdLink }) {
     init,
     whenReady,
     setUserCss,
+    setUseStandardCss,
     render,
     getDocument: () => docRef,
     getWrapperElement: () => wrapperEl,

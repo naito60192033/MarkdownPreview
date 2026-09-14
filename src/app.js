@@ -22,6 +22,7 @@ import { createScrollSync } from './scroll-sync.js';
 import { attachImagePasteAndDrop } from './paste.js';
 import { exportNormal, exportStandalone } from './export.js';
 import { loadSettings } from './settings.js';
+import baseCss from './theme/base.css';
 import { renderDocument, collectHeadingsFor } from './render/pipeline.js';
 import { updateTocBlocks } from './render/toc.js';
 import { ensurePermission, readTextByPath, writeByPath, ConflictError } from './fs/workspace.js';
@@ -130,6 +131,8 @@ function cacheEls() {
     settingPollEnabled: document.getElementById('settingPollEnabled'),
     settingPollInterval: document.getElementById('settingPollInterval'),
     settingCssPath: document.getElementById('settingCssPath'),
+    settingUseStandardCss: document.getElementById('settingUseStandardCss'),
+    exportStandardCssBtn: document.getElementById('exportStandardCssBtn'),
     settingAlertTitleNote: document.getElementById('settingAlertTitleNote'),
     settingAlertTitleTip: document.getElementById('settingAlertTitleTip'),
     settingAlertTitleImportant: document.getElementById('settingAlertTitleImportant'),
@@ -469,6 +472,25 @@ async function doExport(kind) {
   }
 }
 
+// ---------- 標準 CSS の書き出し ----------
+// 「標準 CSS を使う」をオフにして自分の見た目に変えたい人向けに、標準 CSS
+// (base.css)の内容をそのままワークスペース直下の standard.css として書き出す。
+// 既にある場合は上書き確認する(誤って手を加えたファイルを消さないため)。
+async function doExportStandardCss() {
+  if (!state.root) {
+    statusbar.setMessage('先にワークスペースのフォルダを選んでください', { isError: true });
+    return;
+  }
+  try {
+    const existing = await readTextByPath(state.root, 'standard.css');
+    if (existing && !window.confirm('standard.css は既にあります。上書きしますか?')) return;
+    await writeByPath(state.root, 'standard.css', baseCss, {});
+    statusbar.setMessage('標準 CSS を書き出しました: standard.css');
+  } catch (e) {
+    statusbar.setMessage('標準 CSS の書き出しに失敗しました: ' + ((e && e.message) || String(e)), { isError: true });
+  }
+}
+
 // ---------- ワークスペースの切り替え ----------
 async function activateRoot(handle, rootId) {
   state.root = handle;
@@ -525,9 +547,13 @@ function setViewMode(mode) {
 // ---------- 設定の変更 ----------
 function handleSettingsChange(newSettings) {
   const cssPathChanged = newSettings.cssPath !== state.settings.cssPath;
+  const useStandardCssChanged = newSettings.useStandardCss !== state.settings.useStandardCss;
   const alertTitlesChanged = JSON.stringify(newSettings.alertTitles) !== JSON.stringify(state.settings.alertTitles);
   state.settings = newSettings;
   watcher.reschedule();
+  if (useStandardCssChanged) {
+    preview.setUseStandardCss(newSettings.useStandardCss !== false);
+  }
   if (cssPathChanged && state.root) {
     loadCssAndWatch();
   }
@@ -607,6 +633,8 @@ async function setup() {
   editor = createEditor({ parent: els.editorHost, doc: '', onChange: handleEditorChange });
   preview = createPreview({ iframe: els.preview, onOpenMdLink: (path) => openFile(path) });
   preview.init();
+  // load 前に呼んでも(setUseStandardCss 内部で)値を保持し、load 時に反映される。
+  preview.setUseStandardCss(state.settings.useStandardCss !== false);
   await preview.whenReady();
 
   attachImagePasteAndDrop({
@@ -673,6 +701,8 @@ async function setup() {
     pollEnabledInput: els.settingPollEnabled,
     pollIntervalInput: els.settingPollInterval,
     cssPathInput: els.settingCssPath,
+    useStandardCssInput: els.settingUseStandardCss,
+    exportStandardCssBtn: els.exportStandardCssBtn,
     alertTitleInputs: {
       note: els.settingAlertTitleNote,
       tip: els.settingAlertTitleTip,
@@ -696,6 +726,7 @@ async function setup() {
       question: els.resetAlertTitleQuestion,
     },
     onChange: handleSettingsChange,
+    onExportStandardCss: doExportStandardCss,
   });
 
   startScreen = createStartScreen({

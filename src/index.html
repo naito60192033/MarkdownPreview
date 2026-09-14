@@ -94,6 +94,14 @@
         <span>CSS のパス(ルート相対)</span>
         <input type="text" id="settingCssPath" class="settings-input-text" />
       </label>
+      <label class="settings-row">
+        <input type="checkbox" id="settingUseStandardCss" />
+        標準 CSS を使う
+      </label>
+      <p>オフにすると、CSS のパスのファイルだけを使います(アラートの見た目は常に適用されます)。</p>
+      <div class="settings-row">
+        <button type="button" id="exportStandardCssBtn" class="btn btn-small">標準 CSS を書き出す</button>
+      </div>
       <h3 class="settings-subheading">アラートのタイトル</h3>
       <p>空欄にすると、タイトル文字を出さずアイコンだけを表示します。</p>
       <div class="settings-row settings-row-alert">
