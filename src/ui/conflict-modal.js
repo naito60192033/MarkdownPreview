@@ -4,6 +4,8 @@
 // 更新されていた)が起きたときの確認モーダル。「上書き保存 / 破棄して再読込 /
 // キャンセル」の3択を返す。
 
+import { closeOnBackdropClick } from './backdrop-close.js';
+
 export function createConflictModal({ overlay, overwriteBtn, reloadBtn, cancelBtn }) {
   let resolver = null;
 
@@ -24,9 +26,7 @@ export function createConflictModal({ overlay, overwriteBtn, reloadBtn, cancelBt
   overwriteBtn.addEventListener('click', () => close('overwrite'));
   reloadBtn.addEventListener('click', () => close('reload'));
   cancelBtn.addEventListener('click', () => close('cancel'));
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) close('cancel');
-  });
+  closeOnBackdropClick(overlay, () => close('cancel'));
 
   return { open };
 }

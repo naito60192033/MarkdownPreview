@@ -5,6 +5,7 @@
 // onChange コールバックを呼ぶだけの薄い UI。
 
 import { loadSettings, saveSettings, DEFAULT_SETTINGS } from '../settings.js';
+import { closeOnBackdropClick } from './backdrop-close.js';
 
 const ALERT_KINDS = ['note', 'tip', 'important', 'warning', 'caution', 'link', 'memo', 'check', 'question'];
 
@@ -70,9 +71,7 @@ export function createSettingsPanel({
 
   openBtn.addEventListener('click', open);
   closeBtn.addEventListener('click', close);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) close();
-  });
+  closeOnBackdropClick(overlay, close);
   pollEnabledInput.addEventListener('change', commit);
   pollIntervalInput.addEventListener('change', commit);
   cssPathInput.addEventListener('change', commit);

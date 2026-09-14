@@ -1389,6 +1389,48 @@ async function runTests(browser) {
     }
   });
 
+  console.log('\n18-4) 設定パネル: 背景クリックで閉じる判定');
+  await test('入力欄でドラッグ選択してモーダルの外で離しても閉じない(背景のクリックでは閉じる)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 見出し\n', 'utf8');
+
+      const context = await browser.newContext();
+      await installFakeFs(context, { rootDir: dir });
+      const page = await context.newPage();
+      const consoleErrors = [];
+      attachDebugLogging(page, consoleErrors);
+      try {
+        await page.goto(DIST_URL);
+        await ensureHooks(page);
+        await pickFolderAndOpen(page, 'doc.md');
+
+        const isOpen = () => page.evaluate(() => document.getElementById('settingsPanel').style.display !== 'none');
+        await page.click('#settingsBtn');
+        assert.ok(await isOpen(), '設定パネルが開きませんでした');
+
+        // 入力欄の中でマウスを押し、モーダルの外(背景の左上)まで動かして離す
+        const box = await page.locator('#settingsPanel .modal input[type="text"]').first().boundingBox();
+        await page.mouse.move(box.x + 4, box.y + box.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(5, 5, { steps: 5 });
+        await page.mouse.up();
+        assert.ok(await isOpen(), '入力欄からドラッグしてモーダルの外で離すと閉じてしまいました');
+
+        // 背景の上で押して離す(通常のクリック)なら閉じる
+        await page.mouse.click(5, 5);
+        await waitFor(async () => !(await isOpen()), { message: '背景をクリックしても設定パネルが閉じませんでした' });
+
+        printConsoleErrors(consoleErrors, '設定パネルの背景クリック');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   console.log('\n19) MPE互換: 日本語見出しの id');
   await test('## 1. はじめに の id が 1-はじめに になる(既存 md の #見出し リンクとの互換用)', async () => {
     const dir = await mkTmpDir();
