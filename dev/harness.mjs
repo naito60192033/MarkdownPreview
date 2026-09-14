@@ -1450,7 +1450,7 @@ async function runTests(browser) {
   });
 
   console.log('\n20) 画像の貼り付けとドロップ');
-  await test('クリップボードの画像を貼り付けると images/ に保存され、参照が挿入されプレビューに表示される', async () => {
+  await test('クリップボードの画像を貼り付けると images/<md名>/image-1.png に保存され(base64 にしない)、参照が挿入されプレビューに表示される', async () => {
     const dir = await mkTmpDir();
     try {
       await fs.writeFile(path.join(dir, 'doc.md'), '# 貼り付けテスト\n', 'utf8');
@@ -1474,10 +1474,11 @@ async function runTests(browser) {
         });
 
         const text = await page.evaluate(() => window.__mdpreview.getEditorText());
-        assert.match(text, /!\[\]\(images\/doc-\d{8}-\d{6}\.png\)/, '画像参照の形式が想定と異なります: ' + text);
+        assert.match(text, /!\[\]\(images\/doc\/image-1\.png\)/, '画像参照の形式が想定と異なります: ' + text);
+        assert.ok(!text.includes('base64'), '貼り付けで base64 が埋め込まれています: ' + text);
 
-        const files = await fs.readdir(path.join(dir, 'images'));
-        assert.equal(files.length, 1, 'images/ にファイルが1つ保存されていません: ' + JSON.stringify(files));
+        const files = await fs.readdir(path.join(dir, 'images', 'doc'));
+        assert.deepEqual(files, ['image-1.png'], 'images/doc/image-1.png が保存されていません: ' + JSON.stringify(files));
 
         await waitFor(
           async () =>
@@ -1502,10 +1503,13 @@ async function runTests(browser) {
     }
   });
 
-  await test('画像ファイルのドロップで images/ に保存され、参照が挿入される(元の拡張子を保つ・複数ファイル)', async () => {
+  await test('画像ファイルのドロップで images/<md名>/ に既存の続きの連番で保存され、参照が挿入される(元の拡張子を保つ・複数ファイル)', async () => {
     const dir = await mkTmpDir();
     try {
       await fs.writeFile(path.join(dir, 'doc.md'), '# ドロップテスト\n', 'utf8');
+      // 既存の連番の続きから振られることを確かめるため、image-1.png を先に置いておく
+      await fs.mkdir(path.join(dir, 'images', 'doc'), { recursive: true });
+      await fs.writeFile(path.join(dir, 'images', 'doc', 'image-1.png'), Buffer.from(TEST_PNG_BASE64, 'base64'));
       await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
         await pickFolderAndOpen(page, 'doc.md');
         await page.click('.cm-content');
@@ -1543,13 +1547,12 @@ async function runTests(browser) {
         );
 
         const text = await page.evaluate(() => window.__mdpreview.getEditorText());
-        assert.match(text, /!\[\]\(images\/doc-\d{8}-\d{6}(-\d+)?\.png\)/, 'png の参照が見つかりません: ' + text);
-        assert.match(text, /!\[\]\(images\/doc-\d{8}-\d{6}(-\d+)?\.jpg\)/, 'jpg の参照が見つかりません: ' + text);
+        // 既存の image-1.png があるので連番は 2 から(拡張子が違っても番号は重ねない)
+        assert.match(text, /!\[\]\(images\/doc\/image-2\.png\)/, 'png の参照が見つかりません: ' + text);
+        assert.match(text, /!\[\]\(images\/doc\/image-3\.jpg\)/, 'jpg の参照が見つかりません(元の拡張子が保たれていません): ' + text);
 
-        const files = await fs.readdir(path.join(dir, 'images'));
-        assert.equal(files.length, 2, 'images/ に2ファイル保存されていません: ' + JSON.stringify(files));
-        assert.ok(files.some((f) => f.endsWith('.png')), '.png が保存されていません');
-        assert.ok(files.some((f) => f.endsWith('.jpg')), '.jpg が保存されていません(元の拡張子が保たれていません)');
+        const files = (await fs.readdir(path.join(dir, 'images', 'doc'))).sort();
+        assert.deepEqual(files, ['image-1.png', 'image-2.png', 'image-3.jpg'], 'images/doc/ の内容が想定と異なります: ' + JSON.stringify(files));
 
         printConsoleErrors(consoleErrors, '画像のドロップ');
         assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
