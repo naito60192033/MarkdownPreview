@@ -6,10 +6,16 @@
 // 描画ロジックを二重に持たないようにしている。
 //
 // 幾何計算部分(normalizeRect・intersectRectFromCenter・computeArrowEndpoints・
-// findAttachTarget・computeOutputSize・computeCalloutBox)は DOM に依存せず、
+// findAttachTarget・computeOutputSize・computeCalloutBox・getShapeVisualBounds・
+// imageVisibleRect・imageFullRect・resizeImageFromCorner・unionRect・computeOutputBounds)は DOM に依存せず、
 // テキスト幅の測定関数(measureFn)を外から差し替えられるようにしてあるので、
 // tests/annotator-shapes.test.js から node:test で直接検証できる。
 // SVG 要素を実際に作る buildShapeSvg() だけは document を必要とする(ブラウザ専用)。
+//
+// 画像(st.images[])は「キャンバス座標」を持つ(1枚目の画像を (0,0)・等倍に置いた
+// 座標系で、v1 の「元画像ピクセル座標」と同じ意味)。画像の表示矩形(切り抜き後)は
+// imageVisibleRect()、出力範囲(すべての画像 + 図形を囲む最小矩形)は
+// computeOutputBounds() で求める。
 
 export const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -25,11 +31,87 @@ export function normalizeRect(rect) {
   return { x, y, w: Math.abs(rect.w), h: Math.abs(rect.h) };
 }
 
-/** 出力サイズ(px)。crop のサイズ × scale を四捨五入する(最低 1px) */
-export function computeOutputSize(crop, scale) {
+/** 出力サイズ(px)。bounds(w/h を持つ矩形。通常は computeOutputBounds の戻り値)× scale を四捨五入する(最低 1px) */
+export function computeOutputSize(bounds, scale) {
   return {
-    width: Math.max(1, Math.round(crop.w * scale)),
-    height: Math.max(1, Math.round(crop.h * scale)),
+    width: Math.max(1, Math.round(bounds.w * scale)),
+    height: Math.max(1, Math.round(bounds.h * scale)),
+  };
+}
+
+/** 2つの矩形の和集合(両方を含む最小の矩形)。どちらかが null/undefined ならもう片方をそのまま返す */
+export function unionRect(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  const right = Math.max(a.x + a.w, b.x + b.w);
+  const bottom = Math.max(a.y + a.h, b.y + b.h);
+  return { x, y, w: right - x, h: bottom - y };
+}
+
+/** 画像の「切り抜き後」の表示矩形(キャンバス座標) */
+export function imageVisibleRect(img) {
+  return {
+    x: img.x + img.crop.x * img.scale,
+    y: img.y + img.crop.y * img.scale,
+    w: img.crop.w * img.scale,
+    h: img.crop.h * img.scale,
+  };
+}
+
+/** 画像の切り抜き前の全体の矩形(キャンバス座標)。切り抜きツール中の表示に使う */
+export function imageFullRect(img) {
+  return { x: img.x, y: img.y, w: img.width * img.scale, h: img.height * img.scale };
+}
+
+// crop 矩形の四隅のうち、compass('nw'|'ne'|'sw'|'se')が指す1点(元画像ピクセル座標)を返す
+function cropCornerPoint(crop, compass) {
+  return {
+    x: compass.includes('w') ? crop.x : crop.x + crop.w,
+    y: compass.includes('n') ? crop.y : crop.y + crop.h,
+  };
+}
+
+const OPPOSITE_CORNER = { nw: 'se', ne: 'sw', sw: 'ne', se: 'nw' };
+
+/**
+ * 選択ツールでの画像の拡大縮小(四隅のハンドル)。縦横比(crop.w / crop.h)は img.scale
+ * という単一の係数でしか変わらないため、常に保たれる。反対側の角(表示矩形
+ * imageVisibleRect() の corner の対角)を固定したまま、ドラッグ中の角から反対側の角へ
+ * 向かう対角線上に pt を投影し、その長さの比で新しい scale を決める(pt が対角線から
+ * 外れていても破綻しないよう投影を使う。draw.io 等と同じ「対角ドラッグで比例拡大」)。
+ * minSize: 表示矩形の短い方の辺がこれを下回らないように scale をクランプする(キャンバスpx)。
+ * 戻り値: 新しい { x, y, scale }(呼び出し側が img にそのまま代入する)。純粋関数(DOM非依存)。
+ */
+export function resizeImageFromCorner(img, corner, pt, minSize = 16) {
+  const rect = imageVisibleRect(img);
+  const corners = {
+    nw: { x: rect.x, y: rect.y },
+    ne: { x: rect.x + rect.w, y: rect.y },
+    sw: { x: rect.x, y: rect.y + rect.h },
+    se: { x: rect.x + rect.w, y: rect.y + rect.h },
+  };
+  const anchorCompass = OPPOSITE_CORNER[corner];
+  const anchor = corners[anchorCompass];
+  const orig = corners[corner];
+
+  const diagX = orig.x - anchor.x;
+  const diagY = orig.y - anchor.y;
+  const diagLen = Math.hypot(diagX, diagY) || 1;
+  const ux = diagX / diagLen;
+  const uy = diagY / diagLen;
+  const proj = (pt.x - anchor.x) * ux + (pt.y - anchor.y) * uy;
+  const factor = Math.max(proj, 0) / diagLen;
+
+  const minScale = minSize / Math.max(Math.min(img.crop.w, img.crop.h), 1e-6);
+  const newScale = Math.max(img.scale * factor, minScale);
+
+  const anchorCropPt = cropCornerPoint(img.crop, anchorCompass);
+  return {
+    x: anchor.x - anchorCropPt.x * newScale,
+    y: anchor.y - anchorCropPt.y * newScale,
+    scale: newScale,
   };
 }
 
@@ -68,6 +150,74 @@ export function getShapeOutlineBox(shape, measureFn = measureTextWidth) {
   if (shape.type === 'rect') return normalizeRect(shape);
   if (shape.type === 'callout') return computeCalloutBox(shape, measureFn);
   return null;
+}
+
+/**
+ * 図形の「見た目の外枠」(キャンバス座標)。computeOutputBounds() が出力範囲を
+ * 求めるのに使う(見た目からはみ出た部分が出力で切れてしまわないようにするため)。
+ *   rect: 矩形を線幅の半分だけ外側に広げたもの。
+ *   arrow: 線の両端(線幅の半分を加味)と矢じりの三角形の頂点をすべて含む矩形。
+ *   callout: 枠(computeCalloutBox)+ しっぽの先端を含み、線幅の半分だけ外側に広げたもの。
+ * shapesById は矢印の接続解決に使う(computeArrowEndpoints に渡すのと同じもの)。
+ */
+export function getShapeVisualBounds(shape, shapesById = {}, measureFn = measureTextWidth) {
+  const half = (shape.strokeWidth || 0) / 2;
+  if (shape.type === 'rect') {
+    const r = normalizeRect(shape);
+    return { x: r.x - half, y: r.y - half, w: r.w + half * 2, h: r.h + half * 2 };
+  }
+  if (shape.type === 'arrow') {
+    const { from, to } = computeArrowEndpoints(shape, shapesById, measureFn);
+    const angle = Math.atan2(to.y - from.y, to.x - from.x);
+    const headVertices = arrowheadVertices(to.x, to.y, angle, arrowHeadSize(shape.strokeWidth));
+    const points = [from, to, ...headVertices];
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const p of points) {
+      minX = Math.min(minX, p.x - half);
+      minY = Math.min(minY, p.y - half);
+      maxX = Math.max(maxX, p.x + half);
+      maxY = Math.max(maxY, p.y + half);
+    }
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  }
+  if (shape.type === 'callout') {
+    const box = computeCalloutBox(shape, measureFn);
+    let minX = box.x - half;
+    let minY = box.y - half;
+    let maxX = box.x + box.w + half;
+    let maxY = box.y + box.h + half;
+    if (shape.tail) {
+      minX = Math.min(minX, shape.tail.x);
+      minY = Math.min(minY, shape.tail.y);
+      maxX = Math.max(maxX, shape.tail.x);
+      maxY = Math.max(maxY, shape.tail.y);
+    }
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  }
+  return { x: shape.x || 0, y: shape.y || 0, w: 0, h: 0 };
+}
+
+/**
+ * 出力範囲(キャンバス座標)。すべての画像の表示矩形(imageVisibleRect)と、
+ * すべての図形の見た目の外枠(getShapeVisualBounds)の和集合。
+ * 画像が1枚だけで、注釈がその画像の内側に収まっていれば、その画像の表示矩形と
+ * 一致する(= v1 と同じ出力になる)。images・shapes がどちらも空なら幅・高さ0を返す
+ * (呼び出し側で最低1pxに丸められる: computeOutputSize)。
+ */
+export function computeOutputBounds(images, shapes, measureFn = measureTextWidth) {
+  const shapesMap = {};
+  for (const s of shapes) shapesMap[s.id] = s;
+  let bounds = null;
+  for (const img of images) {
+    bounds = unionRect(bounds, imageVisibleRect(img));
+  }
+  for (const shape of shapes) {
+    bounds = unionRect(bounds, getShapeVisualBounds(shape, shapesMap, measureFn));
+  }
+  return bounds || { x: 0, y: 0, w: 0, h: 0 };
 }
 
 /** 矩形の中心から target 方向に伸ばした半直線が、矩形の外周と交わる点を求める */
@@ -208,15 +358,30 @@ export function buildCalloutPath(box, tail, cornerRadius) {
   return d;
 }
 
-// 矢じり(三角形)の頂点座標を "x,y x,y x,y" の points 文字列にする
-function arrowheadPoints(tipX, tipY, angle, size) {
+/** 矢印線の太さ(strokeWidth)から矢じり(三角形)の大きさを決める。buildShapeSvg と
+ * getShapeVisualBounds の両方で使うことで、矢じりの大きさの計算を二重に持たないようにする */
+export function arrowHeadSize(strokeWidth) {
+  return Math.max(10, (strokeWidth || 0) * 3);
+}
+
+/** 矢じり(三角形)の3頂点の座標配列({x,y}[])を返す。1点目が先端(tip)。
+ * buildShapeSvg(描画)と getShapeVisualBounds(出力範囲の計算)の両方から呼ぶことで、
+ * 矢じりの頂点計算を二重に持たないようにする */
+export function arrowheadVertices(tipX, tipY, angle, size) {
   const a1 = angle + Math.PI * 0.82;
   const a2 = angle - Math.PI * 0.82;
-  const p1x = tipX + size * Math.cos(a1);
-  const p1y = tipY + size * Math.sin(a1);
-  const p2x = tipX + size * Math.cos(a2);
-  const p2y = tipY + size * Math.sin(a2);
-  return `${tipX},${tipY} ${p1x},${p1y} ${p2x},${p2y}`;
+  return [
+    { x: tipX, y: tipY },
+    { x: tipX + size * Math.cos(a1), y: tipY + size * Math.sin(a1) },
+    { x: tipX + size * Math.cos(a2), y: tipY + size * Math.sin(a2) },
+  ];
+}
+
+// 矢じり(三角形)の頂点座標を "x,y x,y x,y" の points 文字列にする(<polygon> 用)
+function arrowheadPoints(tipX, tipY, angle, size) {
+  return arrowheadVertices(tipX, tipY, angle, size)
+    .map((p) => `${p.x},${p.y}`)
+    .join(' ');
 }
 
 // ---------- SVG 要素の構築(エディタ表示・出力の両方で共用) ----------
@@ -257,7 +422,7 @@ export function buildShapeSvg(doc, shape, shapesById = {}, opts = {}) {
     g.appendChild(rectEl);
   } else if (shape.type === 'arrow') {
     const { from, to } = computeArrowEndpoints(shape, shapesById, measureFn);
-    const headSize = Math.max(10, shape.strokeWidth * 3);
+    const headSize = arrowHeadSize(shape.strokeWidth);
     const angle = Math.atan2(to.y - from.y, to.x - from.x);
     // 矢じりの分だけ線を手前で止め、線と三角形が重なりすぎないようにする
     const lineEnd = {

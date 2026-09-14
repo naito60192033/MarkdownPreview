@@ -251,15 +251,26 @@ async function hoverPreviewImage(page) {
   await page.mouse.move(x + 1, y + 1); // mouseover を確実に発火させる
 }
 
-// 画像注釈エディタの .annotator-svg 上で(zoom=1 前提の)画像座標系の2点間を
-// ドラッグして矩形を描く。
+// 画像注釈エディタの .annotator-svg 上でキャンバス座標(1枚目の画像は (0,0) に
+// 等倍で置かれるため元画像ピクセル座標と一致する)の2点間をドラッグして矩形を描く。
+// エディタは無限キャンバス(viewBox をカメラとして動かす方式)になっており、開いた
+// 直後の zoom・カメラ位置は画像サイズや画面サイズによって変わるため、
+// svg.viewBox.baseVal から実際の変換係数を求めて使う(zoom=1 を前提にしない)。
 async function drawRectOnAnnotator(page, from, to) {
   const box = await page.evaluate(() => {
-    const r = document.querySelector('.annotator-svg').getBoundingClientRect();
-    return { left: r.left, top: r.top };
+    const svg = document.querySelector('.annotator-svg');
+    const r = svg.getBoundingClientRect();
+    const vb = svg.viewBox.baseVal;
+    return { left: r.left, top: r.top, width: r.width, height: r.height, vbX: vb.x, vbY: vb.y, vbW: vb.width, vbH: vb.height };
   });
-  const p1 = { x: box.left + from.x, y: box.top + from.y };
-  const p2 = { x: box.left + to.x, y: box.top + to.y };
+  const scaleX = box.width / box.vbW;
+  const scaleY = box.height / box.vbH;
+  const toClient = (pt) => ({
+    x: box.left + (pt.x - box.vbX) * scaleX,
+    y: box.top + (pt.y - box.vbY) * scaleY,
+  });
+  const p1 = toClient(from);
+  const p2 = toClient(to);
   await page.mouse.move(p1.x, p1.y);
   await page.mouse.down();
   await page.mouse.move((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, { steps: 3 });
@@ -1608,7 +1619,7 @@ async function runTests(browser) {
   });
 
   console.log('\n21) 画像注釈エディタの組み込み');
-  await test('画像の編集ボタン → 赤枠を描いて保存 → ファイルが更新され mdOR チャンクが入っている', async () => {
+  await test('画像の編集ボタン → 赤枠を描いて保存 → ファイルが更新され mdIM チャンクが入っている', async () => {
     const dir = await mkTmpDir();
     try {
       await fs.mkdir(path.join(dir, 'images'));
@@ -1654,7 +1665,7 @@ async function runTests(browser) {
 
         const bytes = await fs.readFile(path.join(dir, 'images', 'shot.png'));
         const chunks = parseChunks(new Uint8Array(bytes));
-        assert.ok(findChunk(chunks, 'mdOR'), 'mdOR チャンクが見つかりません(元画像が埋め込まれていません)');
+        assert.ok(findChunk(chunks, 'mdIM'), 'mdIM チャンクが見つかりません(元画像が埋め込まれていません)');
 
         printConsoleErrors(consoleErrors, '画像注釈エディタ(PNG 上書き)');
         assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
@@ -1753,6 +1764,84 @@ async function runTests(browser) {
         printConsoleErrors(consoleErrors, '画像注釈エディタ(JPEG→PNG)');
         assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
       });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('プレビューの編集ボタンから開いたエディタでも、実際のクリップボード(Ctrl+V)で2枚目の画像を追加できる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'images'));
+      await fs.writeFile(path.join(dir, 'images', 'shot.png'), makeSolidPng(80, 80, [40, 60, 200]));
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 画像編集(クリップボード)\n\n![shot](images/shot.png)\n', 'utf8');
+
+      // withPage は使わず、クリップボード権限を付与できる自前のコンテキストを使う
+      // (合成 ClipboardEvent ではなく、実際の navigator.clipboard.write → 実際の
+      // Ctrl+V による貼り付け経路を確認するため)。
+      const browserContext = await browser.newContext();
+      await browserContext.grantPermissions(['clipboard-read', 'clipboard-write']);
+      await installFakeFs(browserContext, { rootDir: dir });
+      const page = await browserContext.newPage();
+      const consoleErrors = [];
+      attachDebugLogging(page, consoleErrors);
+      try {
+        await page.goto(DIST_URL);
+        await ensureHooks(page);
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () =>
+          page.evaluate(() => {
+            const img = window.__mdpreview.getPreviewDocument().querySelector('img');
+            return !!img && img.complete && img.naturalWidth > 0;
+          })
+        );
+
+        await hoverPreviewImage(page);
+        await waitFor(async () =>
+          page.evaluate(() => {
+            const btn = window.__mdpreview.getPreviewDocument().querySelector('.mdpreview-image-edit-btn');
+            return !!btn && btn.style.display !== 'none';
+          })
+        );
+        // 編集ボタンは iframe(プレビュー)の document 内にあるため、通常の
+        // page.click() ではなく DOM 経由でクリックする。
+        await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdpreview-image-edit-btn').click());
+        await waitFor(async () => page.evaluate(() => !!document.querySelector('.annotator-svg')), {
+          message: '注釈エディタが開きませんでした',
+        });
+
+        // 実際のクリップボードに画像を書き込む
+        await page.evaluate(async (b64) => {
+          const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+          const blob = new Blob([bytes], { type: 'image/png' });
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        }, TEST_PNG_BASE64);
+
+        // iframe 内のボタンから開いた場合でも、エディタにフォーカスが移っていて
+        // 実際の Ctrl+V が届くことを確認する(合成イベントの dispatch ではない)。
+        await page.keyboard.press('Control+v');
+
+        await waitFor(
+          async () =>
+            page.evaluate(() => document.querySelectorAll('.annotator-image-layer > svg[data-image-id]').length === 2),
+          { message: '実際のクリップボード(Ctrl+V)で2枚目の画像が追加されませんでした' }
+        );
+
+        await page.click('[data-action="save"]');
+        await waitFor(async () => !(await page.evaluate(() => !!document.querySelector('.annotator-svg'))), {
+          message: '保存後に注釈エディタが閉じませんでした',
+        });
+
+        const bytes = await fs.readFile(path.join(dir, 'images', 'shot.png'));
+        const chunks = parseChunks(new Uint8Array(bytes));
+        const mdimCount = chunks.filter((c) => c.type === 'mdIM').length;
+        assert.equal(mdimCount, 2, `保存したPNGにmdIMチャンクが2つあるはずです: ${chunks.map((c) => c.type)}`);
+
+        printConsoleErrors(consoleErrors, '実クリップボードでの画像追加');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      } finally {
+        await browserContext.close();
+      }
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }

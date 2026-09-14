@@ -3,9 +3,14 @@
 // PNG チャンクを扱う純粋な関数群。DOM に一切依存しないので node:test から
 // そのまま検証できる(ブラウザ・Node のどちらでも同じように動く)。
 //
-// annotator.js はこのモジュールを使って、注釈データ(JSON)を iTXt チャンクに、
-// 元画像のバイト列を独自チャンク mdOR に埋め込み、IEND の直前に挿入する。
-// 既に同名のチャンクがあれば置き換える(重複させない)。
+// annotator.js はこのモジュールを使って、注釈データ(JSON。v2)を iTXt チャンクに、
+// 画像ごとの元画像バイト列を独自チャンク mdIM(画像の数だけ)に埋め込み、
+// IEND の直前に挿入する。既存の注釈系チャンク(iTXt/mdOR/mdIM)は毎回すべて
+// 取り除いてから入れ直すので、重複したり古い画像が残ったりしない。
+//
+// v1(1枚の画像のみ)は元画像を mdOR チャンク1つに格納していた。v2 では mdOR は
+// 書かないが、getAnnotationData() は後方互換のため mdOR も読み取る
+// (src/annotator/model.js の normalizeLoadedModel が v1→v2 相当の内部モデルに変換する)。
 
 // ---------- PNG シグネチャ ----------
 export const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -120,6 +125,9 @@ export function findChunk(chunks, type) {
  * pngBytes 内のチャンクのうち shouldRemove(chunk) が true のものを取り除き、
  * newChunk({type, data})を IEND の直前に挿入して、新しい PNG バイト列を返す。
  * (「既にあれば置き換え、無ければ挿入」を1つの操作にまとめたもの)
+ * 単純な1種類のチャンクの挿入・置き換えに使う汎用ヘルパー。複数種類・複数個の
+ * チャンクをまとめて入れ替える場合(setAnnotationData 参照)は、チャンクの数だけ
+ * この関数を呼ぶと PNG 全体を何度もパース・組み立てし直すことになるため使わない。
  */
 export function replaceOrInsertChunk(pngBytes, newChunk, shouldRemove) {
   const chunks = parseChunks(pngBytes);
@@ -214,41 +222,82 @@ export function decodeITxt(data) {
 
 // キーワード・チャンク種別は計画書の指定どおり(呼び出し側と合わせる)
 export const ANNOTATION_KEYWORD = 'mdpreview.annotation';
+// v1: 元画像1枚をまるごと格納していたチャンク(読み込みのみ後方互換で対応)
 export const ORIGINAL_IMAGE_CHUNK_TYPE = 'mdOR';
+// v2: 画像ごとの独自チャンク(id + NUL + 元画像バイト列)。画像の数だけ入る
+export const IMAGE_CHUNK_TYPE = 'mdIM';
 
-/**
- * 注釈データ(JSON。UTF-8 で iTXt に格納)と元画像のバイト列(mdOR に生のまま格納)を
- * PNG に埋め込む。同じキーワード/チャンク種別が既にあれば置き換える(重複させない)。
- */
-export function setAnnotationData(pngBytes, { json, originalBytes }) {
-  const jsonText = JSON.stringify(json);
-  const itxtData = encodeITxt({ keyword: ANNOTATION_KEYWORD, text: jsonText });
-  let out = replaceOrInsertChunk(pngBytes, { type: 'iTXt', data: itxtData }, (c) => {
-    if (c.type !== 'iTXt') return false;
-    try {
-      return decodeITxt(c.data).keyword === ANNOTATION_KEYWORD;
-    } catch {
-      return false;
-    }
-  });
-  out = replaceOrInsertChunk(out, { type: ORIGINAL_IMAGE_CHUNK_TYPE, data: originalBytes }, (c) => c.type === ORIGINAL_IMAGE_CHUNK_TYPE);
-  return out;
+/** 画像チャンク(mdIM)のデータ部を組み立てる: id(ASCII) + NUL + 画像のバイト列 */
+function encodeImageChunkData(id, bytes) {
+  return concatBytes([latin1Encode(id), new Uint8Array([0]), bytes]);
+}
+
+/** encodeImageChunkData() の逆 */
+function decodeImageChunkData(data) {
+  let i = 0;
+  while (i < data.length && data[i] !== 0) i++;
+  const id = latin1Decode(data.subarray(0, i));
+  const bytes = data.subarray(i + 1);
+  return { id, bytes };
+}
+
+function isAnnotationITxt(chunk) {
+  if (chunk.type !== 'iTXt') return false;
+  try {
+    return decodeITxt(chunk.data).keyword === ANNOTATION_KEYWORD;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * setAnnotationData() で埋め込んだデータを取り出す。
- * 両方(または片方)が無ければ null を返す(呼び出し側で「新規画像として扱う」判断に使う)。
- * 戻り値: { json: object|null, originalBytes: Uint8Array|null }
+ * 注釈データ(JSON。UTF-8 で iTXt に格納)と、画像ごとの元画像バイト列(mdIM に
+ * 生のまま格納。images の数だけチャンクができる)を PNG に埋め込む。
+ * 既存の注釈系チャンク(iTXt(このキーワードのもの)・mdOR・mdIM)はすべて取り除いてから
+ * 入れ直すので、重複したり削除済みの画像のチャンクが残ったりしない。
+ * PNG 全体のパース・組み立てはそれぞれ1回だけ行う(画像の数だけ繰り返さない)。
+ *
+ * json: 埋め込む JSON(呼び出し側で version: 2 等を含めて組み立てる)
+ * images: [{ id, bytes }] (bytes は Uint8Array)
+ */
+export function setAnnotationData(pngBytes, { json, images = [] }) {
+  const chunks = parseChunks(pngBytes);
+  const kept = chunks.filter(
+    (c) => c.type !== ORIGINAL_IMAGE_CHUNK_TYPE && c.type !== IMAGE_CHUNK_TYPE && !isAnnotationITxt(c)
+  );
+
+  const jsonText = JSON.stringify(json);
+  const newChunks = [{ type: 'iTXt', data: encodeITxt({ keyword: ANNOTATION_KEYWORD, text: jsonText }) }];
+  for (const { id, bytes } of images) {
+    newChunks.push({ type: IMAGE_CHUNK_TYPE, data: encodeImageChunkData(id, bytes) });
+  }
+
+  const iendIndex = kept.findIndex((c) => c.type === 'IEND');
+  const insertAt = iendIndex === -1 ? kept.length : iendIndex;
+  const result = [...kept.slice(0, insertAt), ...newChunks, ...kept.slice(insertAt)];
+  return serializeChunks(result.map((c) => ({ type: c.type, data: c.data })));
+}
+
+/**
+ * setAnnotationData() で埋め込んだデータ(または v1 が埋め込んだデータ)を取り出す。
+ * 戻り値: {
+ *   json: object|null,                    // iTXt から読んだ JSON(無ければ null)
+ *   originalBytes: Uint8Array|null,       // v1 の mdOR チャンク(無ければ null)
+ *   imageBytes: Map<string, Uint8Array>,  // v2 の mdIM チャンク(id → バイト列)
+ * }
+ * 何も埋め込まれていない通常の PNG に対しては { json: null, originalBytes: null,
+ * imageBytes: 空の Map } を返す(呼び出し側で「新規画像として扱う」判断に使う)。
  */
 export function getAnnotationData(pngBytes) {
   let chunks;
   try {
     chunks = parseChunks(pngBytes);
   } catch {
-    return { json: null, originalBytes: null };
+    return { json: null, originalBytes: null, imageBytes: new Map() };
   }
   let json = null;
   let originalBytes = null;
+  const imageBytes = new Map();
   for (const c of chunks) {
     if (c.type === 'iTXt') {
       try {
@@ -261,7 +310,10 @@ export function getAnnotationData(pngBytes) {
       }
     } else if (c.type === ORIGINAL_IMAGE_CHUNK_TYPE) {
       originalBytes = c.data.slice();
+    } else if (c.type === IMAGE_CHUNK_TYPE) {
+      const { id, bytes } = decodeImageChunkData(c.data);
+      imageBytes.set(id, bytes.slice());
     }
   }
-  return { json, originalBytes };
+  return { json, originalBytes, imageBytes };
 }

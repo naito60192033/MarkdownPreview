@@ -16,6 +16,7 @@ import {
   isPngBytes,
   ANNOTATION_KEYWORD,
   ORIGINAL_IMAGE_CHUNK_TYPE,
+  IMAGE_CHUNK_TYPE,
 } from '../src/annotator/pngmeta.js';
 
 // 1x1 の赤いピクセルからなる最小の有効な PNG(dev/harness.mjs と同じ既知のバイト列)
@@ -24,6 +25,18 @@ const MIN_PNG_BASE64 =
 
 function minPngBytes() {
   return new Uint8Array(Buffer.from(MIN_PNG_BASE64, 'base64'));
+}
+
+function v2Json(overrides = {}) {
+  return {
+    version: 2,
+    images: [
+      { id: 'i1', mime: 'image/png', width: 10, height: 20, x: 0, y: 0, scale: 1, crop: { x: 0, y: 0, w: 10, h: 20 } },
+    ],
+    shapes: [],
+    scale: 1,
+    ...overrides,
+  };
 }
 
 test('crc32: IEND(データ長0)の CRC は既知の値 AE426082 になる', () => {
@@ -86,48 +99,98 @@ test('replaceOrInsertChunk: IEND の直前に挿入される', () => {
   assert.equal(chunks[idx + 1].type, 'IEND', '挿入したチャンクの直後が IEND ではありません');
 });
 
-test('setAnnotationData/getAnnotationData: JSON(日本語含む)と元画像バイト列を往復できる', () => {
-  const json = {
+test('setAnnotationData/getAnnotationData: v2(1枚)の JSON(日本語含む)と画像バイト列を往復できる', () => {
+  const json = v2Json({
+    shapes: [{ id: 's1', type: 'callout', x: 1, y: 1, text: '注釈テキスト\n2行目', tail: { x: 0, y: 0 } }],
+  });
+  const imageBytes = new Uint8Array([10, 20, 30, 40, 250, 255, 0]);
+  const out = setAnnotationData(minPngBytes(), { json, images: [{ id: 'i1', bytes: imageBytes }] });
+
+  assert.ok(isPngBytes(out));
+  const { json: gotJson, imageBytes: gotMap, originalBytes } = getAnnotationData(out);
+  assert.deepEqual(gotJson, json);
+  assert.equal(originalBytes, null, 'v2 では mdOR は書かれないはず');
+  assert.equal(gotMap.size, 1);
+  assert.deepEqual(Array.from(gotMap.get('i1')), Array.from(imageBytes));
+});
+
+test('setAnnotationData: 複数画像(mdIM)を1回の呼び出しで往復できる', () => {
+  const json = v2Json({
+    images: [
+      { id: 'i1', mime: 'image/png', width: 10, height: 20, x: 0, y: 0, scale: 1, crop: { x: 0, y: 0, w: 10, h: 20 } },
+      { id: 'i2', mime: 'image/png', width: 5, height: 5, x: 34, y: 0, scale: 1, crop: { x: 0, y: 0, w: 5, h: 5 } },
+    ],
+  });
+  const images = [
+    { id: 'i1', bytes: new Uint8Array([1, 2, 3]) },
+    { id: 'i2', bytes: new Uint8Array([9, 9]) },
+  ];
+  const out = setAnnotationData(minPngBytes(), { json, images });
+
+  const chunks = parseChunks(out);
+  const imChunks = chunks.filter((c) => c.type === IMAGE_CHUNK_TYPE);
+  assert.equal(imChunks.length, 2, 'mdIM チャンクが2つあるはずです');
+
+  const { json: gotJson, imageBytes } = getAnnotationData(out);
+  assert.deepEqual(gotJson, json);
+  assert.equal(imageBytes.size, 2);
+  assert.deepEqual(Array.from(imageBytes.get('i1')), [1, 2, 3]);
+  assert.deepEqual(Array.from(imageBytes.get('i2')), [9, 9]);
+});
+
+test('setAnnotationData: 既にチャンクがある PNG に対して呼ぶと、重複せず置き換わる(画像の数が変わっても古いものが残らない)', () => {
+  const json1 = v2Json();
+  const images1 = [{ id: 'i1', bytes: new Uint8Array([1]) }];
+  const json2 = v2Json({
+    images: [
+      { id: 'i1', mime: 'image/png', width: 10, height: 20, x: 0, y: 0, scale: 1, crop: { x: 0, y: 0, w: 10, h: 20 } },
+      { id: 'i2', mime: 'image/png', width: 3, height: 3, x: 34, y: 0, scale: 1, crop: { x: 0, y: 0, w: 3, h: 3 } },
+    ],
+    scale: 0.5,
+  });
+  const images2 = [
+    { id: 'i1', bytes: new Uint8Array([2, 3]) },
+    { id: 'i2', bytes: new Uint8Array([4, 5, 6]) },
+  ];
+  const once = setAnnotationData(minPngBytes(), { json: json1, images: images1 });
+  const twice = setAnnotationData(once, { json: json2, images: images2 });
+
+  const chunks = parseChunks(twice);
+  const itxtChunks = chunks.filter((c) => c.type === 'iTXt');
+  const imChunks = chunks.filter((c) => c.type === IMAGE_CHUNK_TYPE);
+  assert.equal(itxtChunks.length, 1, 'iTXt チャンクが重複しています');
+  assert.equal(imChunks.length, 2, '1回目の mdIM が残らず、2回目の2枚だけになっているはずです');
+
+  const { json, imageBytes } = getAnnotationData(twice);
+  assert.deepEqual(json, json2);
+  assert.deepEqual(Array.from(imageBytes.get('i1')), [2, 3]);
+  assert.deepEqual(Array.from(imageBytes.get('i2')), [4, 5, 6]);
+});
+
+test('getAnnotationData: v1(mdOR + version無し)の PNG も読み込める(後方互換)', () => {
+  // v1 は replaceOrInsertChunk を2回呼ぶ形で組み立てていた(旧 setAnnotationData 相当)。
+  // 本テストでは buildChunk 等の低レベル API で v1 相当のチャンクを直接組み立てる。
+  const v1Json = {
     version: 1,
     original: { mime: 'image/png', width: 10, height: 20 },
     crop: { x: 0, y: 0, w: 10, h: 20 },
     scale: 1,
-    shapes: [{ id: 's1', type: 'callout', x: 1, y: 1, text: '注釈テキスト\n2行目', tail: { x: 0, y: 0 } }],
-  };
-  const originalBytes = new Uint8Array([10, 20, 30, 40, 250, 255, 0]);
-  const out = setAnnotationData(minPngBytes(), { json, originalBytes });
-
-  assert.ok(isPngBytes(out));
-  const { json: gotJson, originalBytes: gotBytes } = getAnnotationData(out);
-  assert.deepEqual(gotJson, json);
-  assert.deepEqual(Array.from(gotBytes), Array.from(originalBytes));
-});
-
-test('setAnnotationData: 既にチャンクがある PNG に対して呼ぶと、重複せず置き換わる', () => {
-  const json1 = { version: 1, original: { mime: 'image/png', width: 1, height: 1 }, crop: { x: 0, y: 0, w: 1, h: 1 }, scale: 1, shapes: [] };
-  const json2 = {
-    version: 1,
-    original: { mime: 'image/png', width: 1, height: 1 },
-    crop: { x: 0, y: 0, w: 1, h: 1 },
-    scale: 0.5,
     shapes: [{ id: 's1', type: 'rect', x: 0, y: 0, w: 1, h: 1, stroke: '#e53935', strokeWidth: 4 }],
   };
-  const once = setAnnotationData(minPngBytes(), { json: json1, originalBytes: new Uint8Array([1]) });
-  const twice = setAnnotationData(once, { json: json2, originalBytes: new Uint8Array([2, 3]) });
+  const itxtData = encodeITxt({ keyword: ANNOTATION_KEYWORD, text: JSON.stringify(v1Json) });
+  const originalBytes = new Uint8Array([5, 6, 7]);
+  let out = replaceOrInsertChunk(minPngBytes(), { type: 'iTXt', data: itxtData }, () => false);
+  out = replaceOrInsertChunk(out, { type: ORIGINAL_IMAGE_CHUNK_TYPE, data: originalBytes }, () => false);
 
-  const chunks = parseChunks(twice);
-  const itxtChunks = chunks.filter((c) => c.type === 'iTXt');
-  const mdorChunks = chunks.filter((c) => c.type === ORIGINAL_IMAGE_CHUNK_TYPE);
-  assert.equal(itxtChunks.length, 1, 'iTXt チャンクが重複しています');
-  assert.equal(mdorChunks.length, 1, 'mdOR チャンクが重複しています');
-
-  const { json, originalBytes } = getAnnotationData(twice);
-  assert.deepEqual(json, json2);
-  assert.deepEqual(Array.from(originalBytes), [2, 3]);
+  const { json, originalBytes: gotOriginal, imageBytes } = getAnnotationData(out);
+  assert.deepEqual(json, v1Json);
+  assert.deepEqual(Array.from(gotOriginal), Array.from(originalBytes));
+  assert.equal(imageBytes.size, 0, 'v1 には mdIM は無いはず');
 });
 
-test('getAnnotationData: チャンクが無い通常の PNG に対しては null を返す', () => {
-  const { json, originalBytes } = getAnnotationData(minPngBytes());
+test('getAnnotationData: チャンクが無い通常の PNG に対しては json/originalBytes が null、imageBytes は空になる', () => {
+  const { json, originalBytes, imageBytes } = getAnnotationData(minPngBytes());
   assert.equal(json, null);
   assert.equal(originalBytes, null);
+  assert.equal(imageBytes.size, 0);
 });

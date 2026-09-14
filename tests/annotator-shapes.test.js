@@ -14,7 +14,13 @@ import {
   findAttachTarget,
   computeCalloutBox,
   getShapeOutlineBox,
+  getShapeVisualBounds,
   buildCalloutPath,
+  unionRect,
+  imageVisibleRect,
+  imageFullRect,
+  resizeImageFromCorner,
+  computeOutputBounds,
 } from '../src/annotator/shapes.js';
 
 // テスト用の決定的なテキスト幅計測(1文字 = fontSize * 0.5px とみなす)
@@ -126,6 +132,120 @@ test('computeCalloutBox: テキストの行数・幅に応じて箱のサイズ�
   assert.equal(box.h, 2 * lineHeight + padding * 2);
   assert.deepEqual(box.lines, ['A', 'BBB']);
 });
+
+// ---------- 複数画像キャンバス向けの幾何計算 ----------
+
+test('unionRect: 2つの矩形を囲む最小の矩形になる。null はもう片方をそのまま返す', () => {
+  assert.deepEqual(unionRect({ x: 0, y: 0, w: 10, h: 10 }, { x: 5, y: -5, w: 10, h: 10 }), { x: 0, y: -5, w: 15, h: 15 });
+  assert.deepEqual(unionRect(null, { x: 1, y: 2, w: 3, h: 4 }), { x: 1, y: 2, w: 3, h: 4 });
+  assert.deepEqual(unionRect({ x: 1, y: 2, w: 3, h: 4 }, null), { x: 1, y: 2, w: 3, h: 4 });
+});
+
+test('imageVisibleRect/imageFullRect: 画像の配置(x,y,scale)と切り抜き(crop)からキャンバス座標の矩形を求める', () => {
+  const img = { x: 100, y: 50, scale: 2, width: 200, height: 100, crop: { x: 10, y: 20, w: 80, h: 40 } };
+  assert.deepEqual(imageVisibleRect(img), { x: 120, y: 90, w: 160, h: 80 });
+  assert.deepEqual(imageFullRect(img), { x: 100, y: 50, w: 400, h: 200 });
+});
+
+test('getShapeVisualBounds: rect は線幅の半分だけ外側に広がる', () => {
+  const shape = { type: 'rect', x: 10, y: 10, w: 100, h: 50, strokeWidth: 8 };
+  assert.deepEqual(getShapeVisualBounds(shape), { x: 6, y: 6, w: 108, h: 58 });
+});
+
+test('getShapeVisualBounds: arrow は線の両端(線幅考慮)と矢じりの頂点をすべて含む', () => {
+  const shape = { type: 'arrow', from: { x: 0, y: 0, attach: null }, to: { x: 100, y: 0, attach: null }, strokeWidth: 4 };
+  const bounds = getShapeVisualBounds(shape, {}, () => 0);
+  const half = 2;
+  // 矢じりは to(100,0) の手前に三角形として張り出すため、上下(y方向)にもはみ出す
+  assert.ok(Math.abs(bounds.x - (0 - half)) < 1e-9, `from 側の線幅半分を含んでいません: ${JSON.stringify(bounds)}`);
+  assert.ok(bounds.x + bounds.w > 100 + half - 1e-9, `to 側/矢じりの右端を含んでいません: ${JSON.stringify(bounds)}`);
+  assert.ok(bounds.y < -half + 1e-9 && bounds.y + bounds.h > half - 1e-9, `矢じりの上下への張り出しを含んでいません: ${JSON.stringify(bounds)}`);
+});
+
+test('getShapeVisualBounds: callout は枠 + しっぽの先端を含み、線幅の半分だけ外側に広がる', () => {
+  const shape = { type: 'callout', x: 0, y: 0, text: 'AB', fontSize: 20, strokeWidth: 4, tail: { x: 200, y: 5 } };
+  const bounds = getShapeVisualBounds(shape, {}, fakeMeasureFn);
+  // computeCalloutBox: w=44, h=51(このファイル先頭の computeCalloutBox テスト参照の式と同じ)
+  assert.equal(bounds.x, -2);
+  assert.equal(bounds.y, -2);
+  assert.equal(bounds.x + bounds.w, 200, 'しっぽの先端(x=200)まで広がっているはずです');
+  assert.equal(bounds.y + bounds.h, 53, '枠の下端+線幅半分(51+2)までのはずです');
+});
+
+test('computeOutputBounds: 画像1枚・注釈なしならその画像の表示矩形と一致する', () => {
+  const img = { id: 'i1', x: 0, y: 0, scale: 1, width: 800, height: 600, crop: { x: 0, y: 0, w: 800, h: 600 } };
+  assert.deepEqual(computeOutputBounds([img], []), { x: 0, y: 0, w: 800, h: 600 });
+});
+
+test('computeOutputBounds: 画像1枚+内側に収まる図形なら出力は画像の表示矩形のまま(= v1と同じ出力)', () => {
+  const img = { id: 'i1', x: 0, y: 0, scale: 1, width: 800, height: 600, crop: { x: 0, y: 0, w: 800, h: 600 } };
+  const rect = { id: 's1', type: 'rect', x: 100, y: 100, w: 50, h: 50, strokeWidth: 2 };
+  assert.deepEqual(computeOutputBounds([img], [rect]), { x: 0, y: 0, w: 800, h: 600 });
+});
+
+test('computeOutputBounds: 図形が画像の外にはみ出すと出力範囲が広がる', () => {
+  const img = { id: 'i1', x: 0, y: 0, scale: 1, width: 800, height: 600, crop: { x: 0, y: 0, w: 800, h: 600 } };
+  const callout = { id: 's1', type: 'callout', x: 50, y: -80, text: 'A', fontSize: 20, strokeWidth: 2 };
+  const bounds = computeOutputBounds([img], [callout], fakeMeasureFn);
+  assert.ok(bounds.y < 0, `上にはみ出た分だけ出力範囲が広がるはずです: ${JSON.stringify(bounds)}`);
+  assert.equal(bounds.x, 0, 'x は画像の左端のまま');
+});
+
+test('computeOutputBounds: 複数画像の和集合になる', () => {
+  const img1 = { id: 'i1', x: 0, y: 0, scale: 1, width: 100, height: 100, crop: { x: 0, y: 0, w: 100, h: 100 } };
+  const img2 = { id: 'i2', x: 124, y: 50, scale: 1, width: 50, height: 50, crop: { x: 0, y: 0, w: 50, h: 50 } };
+  assert.deepEqual(computeOutputBounds([img1, img2], []), { x: 0, y: 0, w: 174, h: 100 });
+});
+
+test('resizeImageFromCorner: se ハンドルをちょうど2倍の対角点まで引くと nw(反対の角)が固定されscaleが2倍になる', () => {
+  const img = { x: 0, y: 0, scale: 1, width: 200, height: 100, crop: { x: 0, y: 0, w: 200, h: 100 } };
+  const result = resizeImageFromCorner(img, 'se', { x: 400, y: 200 }, 16);
+  assert.deepEqual(result, { x: 0, y: 0, scale: 2 });
+});
+
+test('resizeImageFromCorner: nw ハンドルを引くと se(反対の角)が固定される(縮小)', () => {
+  const img = { x: 0, y: 0, scale: 1, width: 200, height: 100, crop: { x: 0, y: 0, w: 200, h: 100 } };
+  // se(固定角)= (200,100)。半分の位置(100,50)まで nw を引くと scale=0.5 になる
+  const result = resizeImageFromCorner(img, 'nw', { x: 100, y: 50 }, 16);
+  assert.deepEqual(result, { x: 100, y: 50, scale: 0.5 });
+  // 反対側の角(se)が動かないことを確認する
+  const rect = imageVisibleRect({ ...img, ...result });
+  assert.equal(rect.x + rect.w, 200);
+  assert.equal(rect.y + rect.h, 100);
+});
+
+test('resizeImageFromCorner: 縦横比は常に crop.w/crop.h のまま保たれる(自由な方向にドラッグしても)', () => {
+  const img = { x: 10, y: 20, scale: 1.5, width: 300, height: 100, crop: { x: 0, y: 0, w: 300, h: 100 } };
+  const result = resizeImageFromCorner(img, 'se', { x: 500, y: 150 }, 16); // 対角線から外れた点
+  const newImg = { ...img, ...result };
+  const rect = imageVisibleRect(newImg);
+  assert.ok(Math.abs(rect.w / rect.h - img.width / img.height) < 1e-9, `縦横比が変わってしまっています: ${rect.w}/${rect.h}`);
+});
+
+test('resizeImageFromCorner: 表示矩形の短辺が minSize を下回らないようクランプする', () => {
+  const img = { x: 0, y: 0, scale: 1, width: 200, height: 100, crop: { x: 0, y: 0, w: 200, h: 100 } };
+  // se を nw のすぐ近く(ほぼ0サイズ)まで引こうとしても、短辺が16px未満にはならない
+  const result = resizeImageFromCorner(img, 'se', { x: 1, y: 0.5 }, 16);
+  const rect = imageVisibleRect({ ...img, ...result });
+  assertMinSize(rect, 16);
+});
+
+function assertMinSize(rect, minSize) {
+  assert.ok(Math.min(rect.w, rect.h) >= minSize - 1e-6, `短辺が最小サイズを下回っています: ${JSON.stringify(rect)}`);
+}
+
+test('resizeImageFromCorner: 既に切り抜き・オフセットのある画像でも対角の角が固定される', () => {
+  const img = { x: 50, y: 30, scale: 2, width: 400, height: 300, crop: { x: 20, y: 10, w: 100, h: 80 } };
+  const before = imageVisibleRect(img);
+  const neFixed = { x: before.x + before.w, y: before.y }; // sw をドラッグしたときの固定角(ne)
+  const result = resizeImageFromCorner(img, 'sw', { x: before.x - 20, y: before.y + before.h + 20 }, 16);
+  const after = imageVisibleRect({ ...img, ...result });
+  assertClosePoint({ x: after.x + after.w, y: after.y }, neFixed);
+});
+
+function assertClosePoint(actual, expected, tol = 1e-6) {
+  assert.ok(Math.abs(actual.x - expected.x) < tol && Math.abs(actual.y - expected.y) < tol, `点が一致しません: actual=${JSON.stringify(actual)}, expected=${JSON.stringify(expected)}`);
+}
 
 test('buildCalloutPath: しっぽの有無・向きに応じて異なる path 文字列を作る(壊れていないことの確認)', () => {
   const box = { x: 0, y: 0, w: 100, h: 60, fontSize: 20 };
