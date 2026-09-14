@@ -86,7 +86,7 @@
 - [x] ```` ```mark ```` の枠(`pre.mark-box`、空白・改行を保持)。枠内の `==強調==` は黄色 + 赤枠(`span.mark-text`)
 - [x] CSS は src/theme/markbox.css(アラートと同じく常に適用)。標準 CSS の pre に負けない詳細度。色は CSS 変数
 - [x] テスト(単体・E2E)、README、dist
-- [ ] ユーザーの目視確認後に dev へマージ
+- [x] ユーザーの目視確認後に dev へマージ
 
 ## 将来やりたいこと(バックログ)
 - [ ] プロジェクト(ワークスペース)ごとの favicon 設定と、favicon を作る機能
