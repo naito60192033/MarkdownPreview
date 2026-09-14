@@ -570,31 +570,43 @@ async function doRenameCommit(kind, path, newName) {
       return;
     }
 
-    if (kind === 'dir') tree.renamed(path, result.path);
-    await tree.refresh();
+    // ディスク上の名前の変更はここで完了している。後続(ツリー・開いている md の付け替え・
+    // 再描画)の前に完了を出す(後続が失敗・停滞しても、変更できたこととその方式が分かるように)。
+    // move かコピー方式かは実機の確認に使うため、次の操作まで消さない(timeoutMs: 0)。
+    const doneMsg = result.method === 'move' ? '名前を変更しました' : '名前を変更しました(コピー方式)';
+    statusbar.setMessage(doneMsg, { timeoutMs: 0 });
 
-    if (isCurrentFile || isCurrentInsideDir) {
-      const newCurrentPath = isCurrentFile ? result.path : result.path + state.currentPath.slice(path.length);
-      state.currentPath = newCurrentPath;
-      // 新しいファイルの lastModified を読み直す(次の保存で競合モーダルが誤って
-      // 出ないように)。編集中の内容と未保存状態(state.dirty)はそのまま引き継ぐ。
-      let fresh = null;
-      try {
-        fresh = await readTextByPath(state.root, newCurrentPath);
-      } catch {
-        /* noop */
+    try {
+      if (kind === 'dir') tree.renamed(path, result.path);
+      await tree.refresh();
+
+      if (isCurrentFile || isCurrentInsideDir) {
+        const newCurrentPath = isCurrentFile ? result.path : result.path + state.currentPath.slice(path.length);
+        state.currentPath = newCurrentPath;
+        // 新しいファイルの lastModified を読み直す(次の保存で競合モーダルが誤って
+        // 出ないように)。編集中の内容と未保存状態(state.dirty)はそのまま引き継ぐ。
+        let fresh = null;
+        try {
+          fresh = await readTextByPath(state.root, newCurrentPath);
+        } catch {
+          /* noop */
+        }
+        state.lastModified = fresh ? fresh.lastModified : null;
+        watcher.watch(newCurrentPath, handleMdExternalChange, state.lastModified);
+        setHashFile(newCurrentPath);
+        setLastFile(state.rootId, newCurrentPath);
+        tree.setActivePath(newCurrentPath);
+        syncDirtyUi();
+        // 相対 @import・画像の基準(パス)が変わるため再描画する。
+        await scheduleRender(true);
       }
-      state.lastModified = fresh ? fresh.lastModified : null;
-      watcher.watch(newCurrentPath, handleMdExternalChange, state.lastModified);
-      setHashFile(newCurrentPath);
-      setLastFile(state.rootId, newCurrentPath);
-      tree.setActivePath(newCurrentPath);
-      syncDirtyUi();
-      // 相対 @import・画像の基準(パス)が変わるため再描画する。
-      await scheduleRender(true);
+    } catch (e) {
+      console.error(e);
+      statusbar.setMessage(`${doneMsg}が、画面の更新に失敗しました: ${(e && e.message) || String(e)}`, {
+        isError: true,
+        timeoutMs: 0,
+      });
     }
-
-    statusbar.setMessage(result.method === 'move' ? '名前を変更しました' : '名前を変更しました(コピー方式)');
   });
 }
 

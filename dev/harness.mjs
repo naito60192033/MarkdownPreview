@@ -3334,6 +3334,10 @@ async function runTests(browser) {
         await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'renamed.md', {
           message: '名前の変更後に currentPath が付け替わりませんでした',
         });
+        // 完了の文言は操作の直後に確かめる(後の保存で「保存しました」に置き換わるため)。
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getStatusMessage())) === '名前を変更しました', {
+          message: 'move での名前の変更の完了がステータスバーに出ていません',
+        });
         const stateAfterRename = await page.evaluate(() => window.__mdpreview.getState());
         assert.equal(stateAfterRename.dirty, true, '未保存の印が消えています');
         assert.ok((await page.evaluate(() => window.__mdpreview.getEditorText())).includes('未保存の本文'), '編集中の内容が失われました');
@@ -3358,9 +3362,6 @@ async function runTests(browser) {
         );
         const onDisk = await fs.readFile(path.join(dir, 'renamed.md'), 'utf8');
         assert.ok(onDisk.includes('未保存の本文'), '保存後のディスクの内容が正しくありません');
-
-        const msg = await page.evaluate(() => window.__mdpreview.getStatusMessage());
-        assert.ok(!msg.includes('コピー方式'), 'move が使える環境でコピー方式のメッセージが出ています: ' + msg);
 
         printConsoleErrors(consoleErrors, '名前の変更(move・未保存の引き継ぎ)');
         assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
@@ -3388,8 +3389,10 @@ async function runTests(browser) {
         await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'copied.md', {
           message: 'コピー方式での名前の変更後に currentPath が付け替わりませんでした',
         });
-        const msg = await page.evaluate(() => window.__mdpreview.getStatusMessage());
-        assert.ok(msg.includes('コピー方式'), 'コピー方式で行われたことがステータスバーに出ていません: ' + msg);
+        await waitFor(
+          async () => (await page.evaluate(() => window.__mdpreview.getStatusMessage())) === '名前を変更しました(コピー方式)',
+          { message: 'コピー方式で行われたことがステータスバーに出ていません' }
+        );
 
         await fs.access(path.join(dir, 'doc.md')).then(
           () => assert.fail('旧ファイル doc.md が残っています'),
@@ -3422,6 +3425,9 @@ async function runTests(browser) {
 
         await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'LOWER.md', {
           message: '大文字小文字だけの変更後に currentPath が付け替わりませんでした',
+        });
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getStatusMessage())) === '名前を変更しました', {
+          message: '大文字小文字だけの変更の完了がステータスバーに出ていません',
         });
 
         const names = await readDirNames(dir);
@@ -3459,6 +3465,10 @@ async function runTests(browser) {
         await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'proj2/note.md', {
           message: 'フォルダの名前の変更後に currentPath が付け替わりませんでした',
         });
+        await waitFor(
+          async () => (await page.evaluate(() => window.__mdpreview.getStatusMessage())) === '名前を変更しました(コピー方式)',
+          { message: 'フォルダの名前の変更の完了がステータスバーに出ていません' }
+        );
 
         await fs.access(path.join(dir, 'proj')).then(
           () => assert.fail('元のフォルダ proj が残っています'),
