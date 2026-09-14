@@ -1,6 +1,6 @@
 # 実装方針(2026-09-14): ファイル操作(新規 md・新規フォルダ・名前の変更・削除)
 
-状態(2026-09-14): 実装・テスト完了(feature/fileops)。Windows 実機での確認待ち。進捗は tasks/todo.md で管理する。
+状態(2026-09-14): 実装・テスト・Windows 実機での確認完了。dev へマージ済み。進捗は tasks/todo.md で管理する。
 
 ## Context
 MarkdownPreview(`/workspaces/cc-projects/MarkdownPreview`、単独 HTML の md エディタ)には、ツリーでファイルを
@@ -61,7 +61,8 @@ MarkdownPreview(`/workspaces/cc-projects/MarkdownPreview`、単独 HTML の md �
   同名があれば `AlreadyExistsError`
 - `renameEntry(root, path, newName, { onProgress })`。調査結果(2026-09-14): フォルダの `move()` は Chrome に無い
   (`FileSystemDirectoryHandle.prototype.move` 未定義)。ファイルの `move()` はピッカー由来(OPFS 外)では
-  「フラグの裏」と公式ドキュメントにあり、実機で動くかは不確定。そのため:
+  「フラグの裏」と公式ドキュメントにあり、実機で動くかは不確定。そのため
+  (2026-09-14: ユーザーの Windows の Chrome ではファイルの move() が使われることを確認。フォールバックは残す):
   - **ファイル**: `fh.move(newName)` があれば試す。失敗したら「元が残っていて、移動先が無い」ことを確かめてから
     コピー方式(読む → 新しい名前で書く → サイズを照合 → 元を削除)で行う
   - **フォルダ**: 常にコピー方式(中身を md 以外・ドット始まりも含めて再帰コピー → 件数とサイズを照合 → 元を
