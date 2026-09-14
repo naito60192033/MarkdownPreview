@@ -4,8 +4,10 @@
 //
 // 既定で footnote / task-lists / attrs(既定の `{` `}`)を登録し、その後に
 // 呼び出し側が渡す plugins([plugin, options] または plugin の配列)を登録する。
-// 見出し id(slug)・TOC・アラートは別モジュール(担当外)が用意するプラグインを
-// この plugins 経由で後から差し込む想定で、ここはその「組み込み口」だけを用意する。
+// 見出し id(slug)・TOC・アラート・蛍光ペン(markdown-it-mark)・マーカー付き
+// テキスト枠(```mark。src/render/markbox.js)は別モジュール(担当外)が用意する
+// プラグインをこの plugins 経由で後から差し込む想定で、ここはその「組み込み口」
+// だけを用意する。
 //
 // data-line: 展開後テキスト上の 0 始まり行番号を、対象のブロックトークン
 // (paragraph/heading/list_item/table/blockquote/fence/code_block/hr/html_block)
@@ -13,7 +15,8 @@
 //
 // ```mermaid コードブロックは通常のコードとして色付けせず、元のソースを保持した
 // プレースホルダ要素に変換する(実際の描画は iframe を持つ親ドキュメント側で行う。
-// src/ui/preview.js を参照)。
+// src/ui/preview.js を参照)。```mark コードブロック(src/render/markbox.js)も
+// 同じ作法で、通常のコードとは別のレンダラに差し替える。
 //
 // 画像の src はここでは書き換えない(markdown の `![]()` も HTML の生 `<img src>`
 // も相対パスのまま出力する)。相対パスを blob URL に差し替えるまでの間に素の
@@ -39,6 +42,11 @@ const DATA_LINE_TYPES = new Set([
   'hr',
   'html_block',
 ]);
+
+// hljs クラスを付けない(=自前のレンダラで描画する)フェンスの言語。
+// mermaid は図として描画するプレースホルダ、mark はマーカー付きテキスト枠
+// (src/render/markbox.js)で、どちらも色付け対象の通常のコードではないため。
+const NO_HLJS_LANGS = new Set(['mermaid', 'mark']);
 
 export function createMarkdown({ plugins = [] } = {}) {
   const md = new MarkdownIt({
@@ -85,7 +93,7 @@ function applyPostProcessing(md) {
       }
       if (token.type === 'fence') {
         const lang = (token.info || '').trim().split(/\s+/)[0]?.toLowerCase() || '';
-        if (lang !== 'mermaid') {
+        if (!NO_HLJS_LANGS.has(lang)) {
           token.attrJoin('class', 'hljs');
         }
       }

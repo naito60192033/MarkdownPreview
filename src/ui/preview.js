@@ -6,8 +6,9 @@
 //
 // 担当範囲:
 //   - base.css(標準 CSS。設定でオフにできる)→ alerts.css → outline.css →
-//     style.css の順で <style> に反映(outline.css は見出しの連番・字下げの
-//     見た目。alerts.css と同じく標準 CSS のオン/オフに関係なく常に適用する)
+//     markbox.css → style.css の順で <style> に反映(outline.css は見出しの
+//     連番・字下げ、markbox.css は蛍光ペン・マーカー付きテキスト枠の見た目。
+//     どちらも alerts.css と同じく標準 CSS のオン/オフに関係なく常に適用する)
 //   - html を一旦(リソースを読み込まない)<template> に入れてから、外部 URL でない
 //     img[src] を data-src に退避し、その後で本文に差し込む(HTML で直接書かれた
 //     `<img src="images/a.png" width="300">` のような MPE 由来の記法にも同じ変換が
@@ -34,6 +35,7 @@ import mermaid from 'mermaid';
 import baseCss from '../theme/base.css';
 import alertsCss from '../theme/alerts.css';
 import outlineCss from '../theme/outline.css';
+import markboxCss from '../theme/markbox.css';
 import { dirname, joinPath, isExternalUrl, urlToPath, extname } from '../fs/paths.js';
 import { getFileHandleByPath } from '../fs/workspace.js';
 import { applyOutline } from '../render/outline.js';
@@ -45,6 +47,7 @@ const SKELETON_HTML =
   '<style id="mdpreview-base-style"></style>' +
   '<style id="mdpreview-alerts-style"></style>' +
   '<style id="mdpreview-outline-style"></style>' +
+  '<style id="mdpreview-markbox-style"></style>' +
   '<style id="mdpreview-user-style"></style>' +
   '</head><body><div class="crossnote markdown-preview" id="mdpreview-root"></div></body></html>';
 
@@ -120,6 +123,8 @@ export function createPreview({ iframe, onOpenMdLink }) {
           if (alertsStyleEl) alertsStyleEl.textContent = alertsCss;
           const outlineStyleEl = docRef.getElementById('mdpreview-outline-style');
           if (outlineStyleEl) outlineStyleEl.textContent = outlineCss;
+          const markboxStyleEl = docRef.getElementById('mdpreview-markbox-style');
+          if (markboxStyleEl) markboxStyleEl.textContent = markboxCss;
           attachLinkHandler();
           ready = true;
           resolve();

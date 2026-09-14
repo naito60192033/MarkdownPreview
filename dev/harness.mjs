@@ -2593,6 +2593,171 @@ async function runTests(browser) {
       await fs.rm(dir, { recursive: true, force: true });
     }
   });
+
+  console.log('\n25) 蛍光ペン・マーカー付きテキスト枠(常に適用)');
+  const MARKBOX_DOC = [
+    '# 蛍光ペン',
+    '',
+    '段落の ==黄色== と ==赤枠=={.mark-text} です。',
+    '',
+    '```mark',
+    '枠内 ==強調== です。',
+    '```',
+    '',
+  ].join('\n');
+
+  // 標準 CSS のオン/オフどちらでも同じであるべき計算済みスタイルをまとめて取得する。
+  async function readMarkboxStyles(page) {
+    return page.evaluate(() => {
+      const doc = window.__mdpreview.getPreviewDocument();
+      const plainMark = doc.querySelector('mark:not(.mark-text)');
+      const markText = doc.querySelector('mark.mark-text');
+      const preBox = doc.querySelector('pre.mark-box');
+      const spanMark = preBox ? preBox.querySelector('span.mark-text') : null;
+      const pick = (el) => {
+        if (!el) return null;
+        const cs = getComputedStyle(el);
+        return {
+          tagName: el.tagName,
+          backgroundColor: cs.backgroundColor,
+          borderTopWidth: cs.borderTopWidth,
+          borderTopStyle: cs.borderTopStyle,
+          borderTopColor: cs.borderTopColor,
+        };
+      };
+      return {
+        plainMark: pick(plainMark),
+        markText: pick(markText),
+        preBox: pick(preBox),
+        spanMark: pick(spanMark),
+        preHasCode: !!(preBox && preBox.querySelector('code')),
+      };
+    });
+  }
+
+  function assertMarkboxStyles(styles, label) {
+    assert.ok(styles.plainMark, `${label}: 素の <mark> が見つかりません`);
+    assert.equal(styles.plainMark.backgroundColor, 'rgb(255, 245, 157)', `${label}: <mark> の背景色が想定と異なります`);
+
+    assert.ok(styles.markText, `${label}: <mark class="mark-text"> が見つかりません`);
+    assert.equal(styles.markText.tagName, 'MARK');
+    assert.equal(styles.markText.backgroundColor, 'rgb(255, 245, 157)', `${label}: mark.mark-text の背景色が想定と異なります`);
+    assert.equal(styles.markText.borderTopWidth, '2px', `${label}: mark.mark-text の枠線の太さが想定と異なります`);
+    assert.equal(styles.markText.borderTopStyle, 'solid', `${label}: mark.mark-text の枠線が実線ではありません`);
+    assert.equal(styles.markText.borderTopColor, 'rgb(229, 57, 53)', `${label}: mark.mark-text の枠線色が想定と異なります`);
+
+    assert.ok(styles.preBox, `${label}: pre.mark-box が見つかりません`);
+    assert.equal(styles.preBox.backgroundColor, 'rgb(245, 245, 245)', `${label}: pre.mark-box の背景色が想定と異なります`);
+    assert.equal(styles.preBox.borderTopWidth, '1px', `${label}: pre.mark-box の枠線の太さが想定と異なります`);
+    assert.equal(styles.preBox.borderTopColor, 'rgb(224, 224, 224)', `${label}: pre.mark-box の枠線色が想定と異なります`);
+    assert.equal(styles.preHasCode, false, `${label}: pre.mark-box の中に <code> があります`);
+
+    assert.ok(styles.spanMark, `${label}: pre.mark-box の中の span.mark-text が見つかりません`);
+    assert.equal(styles.spanMark.tagName, 'SPAN');
+    assert.equal(styles.spanMark.backgroundColor, 'rgb(255, 245, 157)', `${label}: span.mark-text の背景色が想定と異なります`);
+    assert.equal(styles.spanMark.borderTopWidth, '2px', `${label}: span.mark-text の枠線の太さが想定と異なります`);
+    assert.equal(styles.spanMark.borderTopColor, 'rgb(229, 57, 53)', `${label}: span.mark-text の枠線色が想定と異なります`);
+  }
+
+  await test('標準 CSS がオンのとき、mark・.mark-text(span/mark)・pre.mark-box が指定の見た目になる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), MARKBOX_DOC, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () => page.evaluate(() => !!window.__mdpreview.getPreviewDocument().querySelector('pre.mark-box')));
+
+        assertMarkboxStyles(await readMarkboxStyles(page), '標準 CSS オン');
+
+        printConsoleErrors(consoleErrors, '蛍光ペン・マーカー付きテキスト枠(標準 CSS オン)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('「標準 CSS を使う」をオフにしても、蛍光ペン・マーカー付きテキスト枠の見た目は変わらない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), MARKBOX_DOC, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () => page.evaluate(() => !!window.__mdpreview.getPreviewDocument().querySelector('pre.mark-box')));
+
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingUseStandardCss', false);
+        await page.click('#settingsCloseBtn');
+        await waitFor(
+          async () =>
+            page.evaluate(() => document.getElementById('preview').contentDocument.getElementById('mdpreview-base-style').textContent === ''),
+          { message: '標準 CSS をオフにしても #mdpreview-base-style が空になりませんでした' }
+        );
+
+        assertMarkboxStyles(await readMarkboxStyles(page), '標準 CSS オフ');
+
+        printConsoleErrors(consoleErrors, '蛍光ペン・マーカー付きテキスト枠(標準 CSS オフ)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('HTML 出力に markbox.css の内容(蛍光ペン・マーカー付きテキスト枠のスタイル)が含まれる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), MARKBOX_DOC, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () => page.evaluate(() => !!window.__mdpreview.getPreviewDocument().querySelector('pre.mark-box')));
+
+        await page.evaluate(() => window.__mdpreview.exportNormal());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
+        const html = await fs.readFile(path.join(dir, 'doc.html'), 'utf8');
+        assert.ok(html.includes('--mdp-markbox-bg'), 'HTML 出力に markbox.css の内容が含まれていません');
+        assert.ok(html.includes('mark-box'), 'HTML 出力に pre.mark-box が含まれていません');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('目視確認用に、蛍光ペン・マーカー付きテキスト枠(複数行・字下げ・枠内の強調 2 か所)のスクリーンショットを保存する', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = [
+        '# 蛍光ペン・マーカー付きテキスト枠',
+        '',
+        '段落の ==黄色== と ==赤枠=={.mark-text} です。',
+        '',
+        '```mark',
+        'ここは普通の文字 ==ここを強調== 続き',
+        '  字下げされた行 ==ここも強調==',
+        '```',
+        '',
+      ].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await page.setViewportSize({ width: 1200, height: 800 });
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () =>
+          page.evaluate(
+            () => window.__mdpreview.getPreviewDocument().querySelectorAll('pre.mark-box span.mark-text').length === 2
+          )
+        );
+
+        await page.click('.view-mode-btn[data-view-mode="preview"]');
+        await sleep(200); // レイアウト安定待ち
+
+        await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+        await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'markbox.png') });
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
 }
 
 // ---------- エントリポイント ----------

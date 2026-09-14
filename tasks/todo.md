@@ -80,6 +80,14 @@
 - [x] 描画後の DOM に適用(src/render/outline.js)。CSS は標準 CSS と別(src/theme/outline.css、常に適用)
 - [x] テスト・README・スクリーンショットで確認(設定パネルは縦に長くなったのでパネル内スクロール)
 
+## 追加要望(2026-09-14): 蛍光ペンとマーカー付きテキスト枠
+方針の詳細: tasks/plan-2026-09-14-markbox.md(feature/markbox)
+- [x] 段落などの `==強調==` → `<mark>`(黄色のみ、MPE 互換。markdown-it-mark)、`==強調=={.mark-text}` で黄色 + 赤枠
+- [x] ```` ```mark ```` の枠(`pre.mark-box`、空白・改行を保持)。枠内の `==強調==` は黄色 + 赤枠(`span.mark-text`)
+- [x] CSS は src/theme/markbox.css(アラートと同じく常に適用)。標準 CSS の pre に負けない詳細度。色は CSS 変数
+- [x] テスト(単体・E2E)、README、dist
+- [ ] ユーザーの目視確認後に dev へマージ
+
 ## 将来やりたいこと(バックログ)
 - [ ] プロジェクト(ワークスペース)ごとの favicon 設定と、favicon を作る機能
   - ねらい: 複数のプロジェクトをタブで開いたときに見分けやすくする
