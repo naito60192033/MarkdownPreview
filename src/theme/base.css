@@ -12,9 +12,10 @@
  *   4. 設定の「標準 CSS を使う」をオフにします
  *      (オフにしないと、この標準 CSS がアラート以外の部分に重ねて効いたままになります)
  *
- * アラート(`> [!NOTE]` 等)の見た目はこのファイルの対象外です。標準 CSS を
- * オフにしても常に適用されます(src/theme/alerts.css)。色を変える方法は
- * README の「アラート」の節を参照してください。
+ * アラート(`> [!NOTE]` 等)・蛍光ペン(`==強調==`)・マーカー付きテキスト枠
+ * (```` ```mark ````)の見た目はこのファイルの対象外です。標準 CSS をオフにしても
+ * 常に適用されます(src/theme/alerts.css、src/theme/markbox.css)。色を変える
+ * 方法は README の「アラート」「蛍光ペン」の節を参照してください。
  *
  * ---- CSS 変数(`.crossnote.markdown-preview` に定義。style.css で上書きすると
  *      色やフォントを変えられます) ----
@@ -39,7 +40,8 @@
  * ローダー)、iframe 内の <style> に直接書き込まれる。HTML 出力でも同じ文字列を
  * そのまま埋め込むため、iframe 前提のセレクタは書かない。書き出したファイルを
  * 利用者がそのまま「標準 CSS」の置き換え元として編集する前提でもあるため、
- * `.markdown-alert` 関連のスタイルはここに書かない(alerts.css の担当)。
+ * `.markdown-alert` 関連のスタイルはここに書かない(alerts.css の担当)。同様に
+ * `mark` / `.mark-text` / `.mark-box` 関連のスタイルも書かない(markbox.css の担当)。
  */
 
 /* プレビュー用 iframe 自身の body/html の余白を消す(offsetTop ベースの
@@ -319,10 +321,6 @@ html {
 /* ---------- 強調・その他インライン要素 ---------- */
 .crossnote.markdown-preview strong {
   font-weight: 700;
-}
-
-.crossnote.markdown-preview mark {
-  background-color: #fff3b0;
 }
 
 .crossnote.markdown-preview kbd {

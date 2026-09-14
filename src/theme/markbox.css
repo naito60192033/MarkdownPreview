@@ -1,0 +1,59 @@
+/* src/theme/markbox.css
+ *
+ * 蛍光ペン(段落などの `==強調==` -> `<mark>`。`==強調=={.mark-text}` ->
+ * `<mark class="mark-text">`)と、マーカー付きテキスト枠(```` ```mark ````。
+ * src/render/markbox.js が出力する `<pre class="mark-box">`。枠内の `==強調==` は
+ * `<span class="mark-text">`)の既定スタイル。既存資料の生 HTML
+ * `<pre class="mark-box">…<span class="mark-text">…</span>…</pre>` も同じ見た目になる。
+ *
+ * alerts.css / outline.css と同じく、標準 CSS(base.css)を「使う」をオフにしても
+ * 常に適用される(見た目を独自の style.css に置き換えても、蛍光ペン・枠の表示が
+ * 崩れないため)。
+ *
+ * ---- CSS 変数(`.crossnote.markdown-preview` に定義。style.css で上書きすれば
+ *      色を変えられる) ----
+ *   --mdp-mark-bg         蛍光ペン(<mark>)の背景色
+ *   --mdp-mark-border     黄色 + 赤枠(.mark-text)の枠線色
+ *   --mdp-markbox-bg      マーカー付きテキスト枠(pre.mark-box)の背景色
+ *   --mdp-markbox-border  マーカー付きテキスト枠の枠線色
+ */
+
+.crossnote.markdown-preview {
+  --mdp-mark-bg: #fff59d;
+  --mdp-mark-border: #e53935;
+  --mdp-markbox-bg: #f5f5f5;
+  --mdp-markbox-border: #e0e0e0;
+}
+
+/* 蛍光ペン本体(markdown-it-mark が出力する既定の <mark>)。黄色のみ(MPE と同じ見た目)。 */
+.crossnote.markdown-preview mark {
+  background-color: var(--mdp-mark-bg);
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+/* 黄色 + 赤枠(`{.mark-text}` を付けた <mark>、```mark 枠内の <span>)。span / mark の
+ * どちらでも、マーカー付きテキスト枠の外でも効くようタグ名は指定しない。 */
+.crossnote.markdown-preview .mark-text {
+  padding: 0 2px;
+  background-color: var(--mdp-mark-bg);
+  border: 2px solid var(--mdp-mark-border);
+  border-radius: 2px;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+/* マーカー付きテキスト枠(```mark、または既存資料の生 HTML <pre class="mark-box">)。
+ * 標準 CSS の `.crossnote.markdown-preview pre`(詳細度 0,2,1)に勝たせるため、
+ * pre.mark-box(0,3,1)まで詳細度を上げる。 */
+.crossnote.markdown-preview pre.mark-box {
+  padding: 12px 16px;
+  background-color: var(--mdp-markbox-bg);
+  border: 1px solid var(--mdp-markbox-border);
+  border-radius: 4px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  white-space: pre-wrap;
+  font-size: small;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}

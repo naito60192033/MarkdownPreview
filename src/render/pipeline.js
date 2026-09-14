@@ -6,7 +6,8 @@
 // 手順: YAML front matter の除去(行位置がずれないよう同じ行数の空行に置き換える。
 // @import で取り込む先の front matter も同様に除去する)→ `@import "x.md"` の
 // 展開(src/render/imports.js。path と readText が渡されたときだけ行う)→
-// markdown-it での描画(見出し id・[TOC]・アラートのプラグインを差し込んだもの)。
+// markdown-it での描画(見出し id・[TOC]・アラート・蛍光ペン・マーカー付きテキスト枠の
+// プラグインを差し込んだもの)。
 //
 // lineMap は「展開後テキストの行 → 最上位ファイルの元の行」の対応表(imports.js の
 // 結果をそのまま使う)。deps は展開で取り込んだファイル(@import 先)のルート相対
@@ -17,6 +18,8 @@ import { expandImports } from './imports.js';
 import { headingIdPlugin } from './slug.js';
 import { tocPlugin, collectHeadings } from './toc.js';
 import { alertsPlugin } from './alerts.js';
+import markdownItMark from 'markdown-it-mark';
+import { markBoxPlugin } from './markbox.js';
 
 // markdown-it インスタンスはプラグイン登録のコストがあるため、アラートの
 // タイトル設定(alertTitles)ごとにキャッシュして使い回す。
@@ -27,7 +30,7 @@ function getMd(alertTitles) {
   let md = mdCache.get(key);
   if (!md) {
     md = createMarkdown({
-      plugins: [headingIdPlugin, tocPlugin, [alertsPlugin, { titles: alertTitles }]],
+      plugins: [headingIdPlugin, tocPlugin, [alertsPlugin, { titles: alertTitles }], markdownItMark, markBoxPlugin],
     });
     mdCache.set(key, md);
   }
