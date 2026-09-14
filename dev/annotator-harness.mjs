@@ -21,8 +21,16 @@ import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { computeArrowEndpoints } from '../src/annotator/shapes.js';
+import {
+  serializeChunks,
+  encodeITxt,
+  replaceOrInsertChunk,
+  ANNOTATION_KEYWORD,
+  ORIGINAL_IMAGE_CHUNK_TYPE,
+} from '../src/annotator/pngmeta.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -151,11 +159,13 @@ async function withPage(browser, fn) {
 
 // ---------- 座標変換・マウス操作のヘルパー ----------
 
-// 元画像ピクセル座標 → 画面上のクライアント座標(現在の zoom を考慮する)
+// キャンバス座標(1枚目の画像は (0,0) に等倍で置かれるため元画像ピクセル座標と
+// 一致する)→ 画面上のクライアント座標。エディタは無限キャンバス(viewBox を
+// カメラとして動かす方式)になっているため、カメラ位置(camera)も差し引く。
 async function imgToClient(page, x, y) {
   const box = await page.evaluate(() => window.__annotator.getSvgBox());
   const st = await page.evaluate(() => window.__annotator.getDebugState());
-  return { x: box.left + x * st.zoom, y: box.top + y * st.zoom };
+  return { x: box.left + (x - st.camera.x) * st.zoom, y: box.top + (y - st.camera.y) * st.zoom };
 }
 
 // 画像座標系での (fromX,fromY) → (toX,toY) へのドラッグ
@@ -280,6 +290,64 @@ function assertClose(actual, expected, tolerance, msg) {
   assert.ok(Math.abs(actual - expected) <= tolerance, `${msg}: expected≈${expected}, actual=${actual}`);
 }
 
+// ---------- PNG バイト列を Node 側で直接組み立てる(v1 形式の読み込みテスト用) ----------
+
+// 指定サイズ・単色の最小限の PNG(フィルタ無し・非圧縮相当)を組み立てる。
+// dev/harness.mjs の makeSolidPng() と同じアルゴリズム(pngmeta.js の
+// serializeChunks() を使って IHDR/IDAT/IEND だけの PNG を作る)。
+function makeSolidPngBytes(width, height, [r, g, b]) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // color type: RGB
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  const rowBytes = 1 + width * 3;
+  const raw = Buffer.alloc(rowBytes * height);
+  for (let y = 0; y < height; y++) {
+    const rowStart = y * rowBytes;
+    raw[rowStart] = 0; // フィルタタイプ: none
+    for (let x = 0; x < width; x++) {
+      const off = rowStart + 1 + x * 3;
+      raw[off] = r;
+      raw[off + 1] = g;
+      raw[off + 2] = b;
+    }
+  }
+  const idat = zlib.deflateSync(raw);
+  const chunks = [
+    { type: 'IHDR', data: new Uint8Array(ihdr) },
+    { type: 'IDAT', data: new Uint8Array(idat) },
+    { type: 'IEND', data: new Uint8Array(0) },
+  ];
+  return serializeChunks(chunks);
+}
+
+function makeSolidPngBuffer(width, height, rgb) {
+  return Buffer.from(makeSolidPngBytes(width, height, rgb));
+}
+
+// v1形式(iTXt + mdOR。version:1・images配列を持たない古い保存形式)の注釈付きPNGを
+// pngmeta.js の低レベル API で直接組み立てる(model.js の v1→v2 正規化の入力を
+// 実際の PNG として再現するため)。base64 文字列を返す(sandbox の
+// setSourceFromBase64 フック経由で Blob 化する)。
+function buildV1AnnotatedPngBase64({ width, height, color, crop, shapes, scale = 1 }) {
+  const baseBytes = makeSolidPngBytes(width, height, color);
+  const json = {
+    version: 1,
+    original: { mime: 'image/png', width, height },
+    crop,
+    scale,
+    shapes,
+  };
+  const itxtData = encodeITxt({ keyword: ANNOTATION_KEYWORD, text: JSON.stringify(json) });
+  let out = replaceOrInsertChunk(baseBytes, { type: 'iTXt', data: itxtData }, () => false);
+  out = replaceOrInsertChunk(out, { type: ORIGINAL_IMAGE_CHUNK_TYPE, data: baseBytes }, () => false);
+  return Buffer.from(out).toString('base64');
+}
+
 // ---------- テスト本体 ----------
 
 async function runTests(browser) {
@@ -389,10 +457,10 @@ async function runTests(browser) {
       await page.click('.annotator-scale-btn[data-scale="0.5"]');
 
       const st = await getDebugState(page);
-      assertClose(st.crop.x, 50, 1, 'crop.x');
-      assertClose(st.crop.y, 50, 1, 'crop.y');
-      assertClose(st.crop.w, 250, 1, 'crop.w');
-      assertClose(st.crop.h, 250, 1, 'crop.h');
+      assertClose(st.images[0].crop.x, 50, 1, 'crop.x');
+      assertClose(st.images[0].crop.y, 50, 1, 'crop.y');
+      assertClose(st.images[0].crop.w, 250, 1, 'crop.w');
+      assertClose(st.images[0].crop.h, 250, 1, 'crop.h');
       assert.equal(st.scale, 0.5);
 
       await saveAndWaitClosed(page);
@@ -432,8 +500,8 @@ async function runTests(browser) {
       let st = await getDebugState(page);
       assert.equal(st.shapes.length, 1, '再読み込み後の図形数が一致しません');
       assert.equal(st.shapes[0].type, 'rect');
-      assertClose(st.crop.w, 585, 1, '再読み込み後の crop.w');
-      assertClose(st.crop.h, 385, 1, '再読み込み後の crop.h');
+      assertClose(st.images[0].crop.w, 585, 1, '再読み込み後の crop.w');
+      assertClose(st.images[0].crop.h, 385, 1, '再読み込み後の crop.h');
       assert.equal(st.scale, 0.75, '再読み込み後の scale');
 
       // 追加でもう1つ枠を描いて再保存する
@@ -459,7 +527,7 @@ async function runTests(browser) {
       await openWithTestImage(page, { format: 'jpeg', width: 400, height: 300 });
 
       const st = await getDebugState(page);
-      assert.equal(st.original.mime, 'image/jpeg');
+      assert.equal(st.images[0].mime, 'image/jpeg');
 
       await saveAndWaitClosed(page);
 
@@ -733,6 +801,279 @@ async function runTests(browser) {
       assert.equal(after.historyLength, before.historyLength, '移動していないクリックで履歴が増えてはいけません');
 
       printConsoleErrors(consoleErrors, '移動なしクリック');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n13) v1形式のPNG(切り抜き+赤枠)を開いて復元できる');
+  await test('v1形式のPNGを開くとcropと図形が復元され、変更せず保存すると出力サイズがv1の切り抜きと同じになる', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      const width = 400;
+      const height = 300;
+      const crop = { x: 20, y: 30, w: 200, h: 150 };
+      const rectShape = { id: 's1', type: 'rect', x: 40, y: 50, w: 60, h: 40, stroke: '#e53935', strokeWidth: 4 };
+      const base64 = buildV1AnnotatedPngBase64({ width, height, color: [40, 60, 200], crop, shapes: [rectShape], scale: 1 });
+      await page.evaluate((b64) => window.__annotator.setSourceFromBase64(b64, 'image/png'), base64);
+      await page.evaluate(() => window.__annotator.open('source'));
+      await waitFor(async () => page.evaluate(() => window.__annotator.isOpen()), {
+        message: 'v1形式のPNGでモーダルが開きませんでした',
+      });
+
+      const st = await getDebugState(page);
+      assert.equal(st.images.length, 1, 'v1は画像1枚に変換されるはずです');
+      assertClose(st.images[0].crop.x, crop.x, 0.5, 'crop.x');
+      assertClose(st.images[0].crop.y, crop.y, 0.5, 'crop.y');
+      assertClose(st.images[0].crop.w, crop.w, 0.5, 'crop.w');
+      assertClose(st.images[0].crop.h, crop.h, 0.5, 'crop.h');
+      assert.equal(st.shapes.length, 1, '図形が復元されていません');
+      assert.equal(st.shapes[0].type, 'rect');
+
+      await saveAndWaitClosed(page);
+      const info = await page.evaluate(() => window.__annotator.getLastResultInfo());
+      assertClose(info.width, crop.w, 1, '出力幅がv1の切り抜きと一致しません');
+      assertClose(info.height, crop.h, 1, '出力高さがv1の切り抜きと一致しません');
+
+      printConsoleErrors(consoleErrors, 'v1形式の読み込み');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n14) 吹き出しが画像の外にはみ出すと出力が広がる');
+  await test('画像の上端より外に吹き出しを置くと出力範囲が上に広がり、画像の外側(吹き出しでない場所)の画素が白', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600, fillColor: '#3050a0' });
+
+      await selectTool(page, 'callout');
+      // tail=(300,-20)、box左上=(300,-90)。画像(y:0-600)より上にはみ出るが、
+      // 「全体表示」直後の余白の範囲内に収まる控えめな量にして実マウス操作で描けるようにする。
+      await dragOnCanvas(page, { x: 300, y: -20 }, { x: 300, y: -90 });
+      await waitForTextEditorVisible(page);
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      const st = await getDebugState(page);
+      assert.equal(st.shapes.length, 1, '吹き出しが作成されていません');
+      assert.ok(st.outputBounds.y < 0, `出力範囲が上に広がっていません: ${JSON.stringify(st.outputBounds)}`);
+      assert.ok(st.outputBounds.h > 600, `出力範囲の高さが増えていません: ${JSON.stringify(st.outputBounds)}`);
+      assertClose(st.outputBounds.w, 800, 1, '横方向の出力幅は変わらないはずです');
+
+      await saveAndWaitClosed(page);
+      const bounds = st.outputBounds;
+      // 吹き出しの下端(tail, y=-20)と画像の上端(y=0)の間の隙間をサンプリングする
+      const outX = Math.round(300 - bounds.x);
+      const outY = Math.round(-10 - bounds.y);
+      const px = await page.evaluate((pt) => window.__annotator.getLastResultPixel(pt.x, pt.y), { x: outX, y: outY });
+      assert.ok(px[0] > 240 && px[1] > 240 && px[2] > 240, `隙間の画素が白ではありません: ${px}`);
+
+      printConsoleErrors(consoleErrors, '吹き出しのはみ出し');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n15) 貼り付けで2枚目の画像を追加できる');
+  await test('貼り付けで2枚目を追加すると右隣(24px空け・上端揃え)に配置され、保存/再読込で2枚とも復元される', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 400, height: 300, fillColor: '#3050a0' });
+      const before = await getDebugState(page);
+      assert.equal(before.images.length, 1);
+
+      await page.evaluate(() => window.__annotator.pasteTestImage({ format: 'png', width: 100, height: 80, fillColor: '#20a040' }));
+      await waitFor(async () => (await getDebugState(page)).images.length === 2, { message: '貼り付けで2枚目が追加されませんでした' });
+
+      const st = await getDebugState(page);
+      const img1 = st.images[0];
+      const img2 = st.images[1];
+      assertClose(img2.x, img1.x + img1.width + 24, 1, '2枚目のxが1枚目の右端+24になっていません');
+      assertClose(img2.y, img1.y, 1, '2枚目のyが1枚目の上端に揃っていません');
+      assertClose(st.outputBounds.w, img1.width + 24 + img2.width, 2, '出力範囲の幅が和集合になっていません');
+      assertClose(st.outputBounds.h, Math.max(img1.height, img2.height), 2, '出力範囲の高さが和集合になっていません');
+
+      await saveAndWaitClosed(page);
+
+      const chunkTypes = await page.evaluate(() => window.__annotator.getLastResultChunkTypes());
+      const mdimCount = chunkTypes.filter((t) => t === 'mdIM').length;
+      assert.equal(mdimCount, 2, `mdIM チャンクが2つあるはずです: ${chunkTypes}`);
+
+      // 隙間(1枚目と2枚目の間)の画素が白、2枚目の場所の画素が2枚目の色(緑)
+      const gapX = Math.round(img1.x + img1.width + 12 - st.outputBounds.x);
+      const gapY = Math.round(img1.y + 5 - st.outputBounds.y);
+      const gapPx = await page.evaluate((pt) => window.__annotator.getLastResultPixel(pt.x, pt.y), { x: gapX, y: gapY });
+      assert.ok(gapPx[0] > 240 && gapPx[1] > 240 && gapPx[2] > 240, `隙間の画素が白ではありません: ${gapPx}`);
+
+      const img2X = Math.round(img2.x + 5 - st.outputBounds.x);
+      const img2Y = Math.round(img2.y + 5 - st.outputBounds.y);
+      const img2Px = await page.evaluate((pt) => window.__annotator.getLastResultPixel(pt.x, pt.y), { x: img2X, y: img2Y });
+      assert.ok(img2Px[1] > img2Px[0] && img2Px[1] > img2Px[2], `2枚目の場所の画素が2枚目の色(緑)ではありません: ${img2Px}`);
+
+      await reopenLastResult(page);
+      const reopened = await getDebugState(page);
+      assert.equal(reopened.images.length, 2, '再読み込み後も2枚あるはずです');
+      assertClose(reopened.images[1].x, img2.x, 1, '再読み込み後のx位置がずれています');
+      assertClose(reopened.images[1].y, img2.y, 1, '再読み込み後のy位置がずれています');
+
+      printConsoleErrors(consoleErrors, '貼り付けでの画像追加');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n16) ファイル選択・ドロップでも画像を追加できる');
+  await test('ファイル選択(input)とドロップで画像を追加できる。ドロップは位置が画像の中心になる', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 300, height: 200, fillColor: '#3050a0' });
+
+      // ファイル選択(非表示 input に Buffer を渡す)
+      const buf = makeSolidPngBuffer(60, 40, [200, 30, 30]);
+      await page.setInputFiles('.annotator-file-input', { name: 'via-input.png', mimeType: 'image/png', buffer: buf });
+      await waitFor(async () => (await getDebugState(page)).images.length === 2, {
+        message: 'ファイル選択で2枚目が追加されませんでした',
+      });
+
+      let st = await getDebugState(page);
+      assert.equal(st.images[1].width, 60);
+      assert.equal(st.images[1].height, 40);
+
+      // ドロップ(合成 DragEvent)。ドロップ位置(キャンバス座標)が画像の中心になるはず。
+      const dropCanvasPoint = { x: 500, y: 300 };
+      const dropClient = await imgToClient(page, dropCanvasPoint.x, dropCanvasPoint.y);
+      await page.evaluate(
+        ({ opts, point }) => window.__annotator.dropTestImage(opts, point),
+        { opts: { format: 'png', width: 80, height: 50, fillColor: '#20a040' }, point: dropClient }
+      );
+      await waitFor(async () => (await getDebugState(page)).images.length === 3, {
+        message: 'ドロップで3枚目が追加されませんでした',
+      });
+
+      st = await getDebugState(page);
+      const dropped = st.images[2];
+      assertClose(dropped.x + dropped.width / 2, dropCanvasPoint.x, 1, 'ドロップした画像の中心xがドロップ位置と一致しません');
+      assertClose(dropped.y + dropped.height / 2, dropCanvasPoint.y, 1, 'ドロップした画像の中心yがドロップ位置と一致しません');
+
+      printConsoleErrors(consoleErrors, 'ファイル選択・ドロップでの画像追加');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n17) 2枚以上のときに切り抜きツールで対象画像を選んで切り抜ける');
+  await test('切り抜きツールで2枚目をクリックして対象にし、ドラッグで切り抜くと2枚目のcropだけが変わる', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 300, height: 200, fillColor: '#3050a0' });
+      await page.evaluate(() => window.__annotator.pasteTestImage({ format: 'png', width: 150, height: 100, fillColor: '#20a040' }));
+      await waitFor(async () => (await getDebugState(page)).images.length === 2);
+
+      let st = await getDebugState(page);
+      const img2 = st.images[1];
+
+      await selectTool(page, 'crop');
+      let afterTool = await getDebugState(page);
+      assert.equal(afterTool.cropTargetId, null, '2枚以上でツール切替直後は対象が未定のはずです');
+
+      // 2枚目の内部の点をクリックして対象にする(このクリックでは切り抜きを開始しない)
+      await clickOnCanvas(page, { x: img2.x + 20, y: img2.y + 20 });
+      const afterClick = await getDebugState(page);
+      assert.equal(afterClick.cropTargetId, img2.id, '2枚目が切り抜き対象になっていません');
+      assertClose(afterClick.images[1].crop.w, img2.width, 0.5, 'クリックだけでは切り抜きが変わらないはずです');
+
+      // 対象画像のピクセル座標でドラッグして切り抜く
+      await dragOnCanvas(page, { x: img2.x + 10, y: img2.y + 10 }, { x: img2.x + 100, y: img2.y + 80 });
+
+      st = await getDebugState(page);
+      assertClose(st.images[1].crop.x, 10, 1, '2枚目のcrop.x');
+      assertClose(st.images[1].crop.y, 10, 1, '2枚目のcrop.y');
+      assertClose(st.images[1].crop.w, 90, 1, '2枚目のcrop.w');
+      assertClose(st.images[1].crop.h, 70, 1, '2枚目のcrop.h');
+      // 1枚目は変わらない
+      assertClose(st.images[0].crop.w, st.images[0].width, 0.5, '1枚目のcropは変わらないはずです');
+
+      assertClose(st.outputBounds.x + st.outputBounds.w, img2.x + 10 + 90, 2, '出力範囲の右端が2枚目の切り抜きに追従していません');
+
+      printConsoleErrors(consoleErrors, '画像ごとの切り抜き');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n18) ホイールでのパン・ズーム、全体表示');
+  await test('Ctrl+ホイールでカーソル位置を固定してズームでき、ホイールでパンでき、全体表示で出力範囲が画面に収まる', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      const box = await page.evaluate(() => window.__annotator.getSvgBox());
+      const cursor = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      await page.mouse.move(cursor.x, cursor.y);
+
+      const canvasPointAt = async (client) =>
+        page.evaluate((c) => {
+          const svg = document.querySelector('.annotator-svg');
+          const r = svg.getBoundingClientRect();
+          const st = window.__annotator.getDebugState();
+          return { x: st.camera.x + (c.x - r.left) / st.zoom, y: st.camera.y + (c.y - r.top) / st.zoom };
+        }, client);
+
+      const canvasPointBefore = await canvasPointAt(cursor);
+
+      await page.keyboard.down('Control');
+      await page.mouse.wheel(0, -200); // 上にスクロール = 拡大方向
+      await page.keyboard.up('Control');
+
+      const st1 = await getDebugState(page);
+      assert.ok(st1.zoom > 1, `Ctrl+ホイールでズームインしていません: zoom=${st1.zoom}`);
+
+      const canvasPointAfter = await canvasPointAt(cursor);
+      assertClose(canvasPointAfter.x, canvasPointBefore.x, 1, 'ズーム後もカーソル位置のキャンバス座標がずれてはいけません(x)');
+      assertClose(canvasPointAfter.y, canvasPointBefore.y, 1, 'ズーム後もカーソル位置のキャンバス座標がずれてはいけません(y)');
+
+      // 素のホイール(下方向)= 下にパン(camera.yが増える)
+      const camBeforePan = st1.camera;
+      await page.mouse.wheel(0, 100);
+      const st2 = await getDebugState(page);
+      assert.ok(st2.camera.y > camBeforePan.y, `ホイールで下にパンしていません: ${JSON.stringify(st2.camera)}`);
+
+      // 全体表示: 出力範囲の四隅がすべて表示領域内に収まる
+      await page.click('[data-action="fit"]');
+      const st3 = await getDebugState(page);
+      const box3 = await page.evaluate(() => window.__annotator.getSvgBox());
+      const corners = [
+        { x: st3.outputBounds.x, y: st3.outputBounds.y },
+        { x: st3.outputBounds.x + st3.outputBounds.w, y: st3.outputBounds.y + st3.outputBounds.h },
+      ];
+      for (const c of corners) {
+        const screenX = (c.x - st3.camera.x) * st3.zoom;
+        const screenY = (c.y - st3.camera.y) * st3.zoom;
+        assert.ok(screenX >= -1 && screenX <= box3.width + 1, `全体表示後、出力範囲の角が画面からはみ出しています(x=${screenX})`);
+        assert.ok(screenY >= -1 && screenY <= box3.height + 1, `全体表示後、出力範囲の角が画面からはみ出しています(y=${screenY})`);
+      }
+      assert.ok(st3.zoom <= 1 + 1e-9, '全体表示のズームは最大100%のはずです');
+
+      printConsoleErrors(consoleErrors, 'パン・ズーム・全体表示');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n19) 出力サイズの上限を超えると保存を止めてメッセージを出す');
+  await test('大きめの画像+出力倍率1000%で保存しようとするとメッセージが出てモーダルは開いたまま', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 2000, height: 1500, fillColor: '#f0f0f0' });
+
+      await page.evaluate(() => {
+        const input = document.querySelector('.annotator-scale-custom');
+        input.value = '1000';
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      const st = await getDebugState(page);
+      assert.equal(st.scale, 10, '出力倍率が1000%になっていません');
+
+      await page.click('[data-action="save"]');
+      await waitFor(async () => page.evaluate(() => !!document.querySelector('.annotator-confirm-overlay')), {
+        message: '出力サイズ超過のメッセージが表示されませんでした',
+      });
+      const message = await page.evaluate(() => document.querySelector('.annotator-confirm-message').textContent);
+      assert.match(message, /大きすぎます/, `期待したメッセージが表示されていません: ${message}`);
+
+      await page.click('.annotator-confirm-actions button[data-action="ok"]');
+      // モーダルは開いたまま(注釈エディタ自体は閉じない)
+      assert.ok(await page.evaluate(() => window.__annotator.isOpen()), '出力サイズ超過時にモーダルが閉じてしまいました');
+      assert.ok(await page.evaluate(() => window.__annotator.isPending()), '保存の Promise が解決されてはいけません');
+
+      printConsoleErrors(consoleErrors, '出力サイズの上限');
       assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
     });
   });

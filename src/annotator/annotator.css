@@ -156,21 +156,39 @@
   background: #1976d2;
 }
 
-/* ---------- キャンバス ---------- */
+/* ---------- キャンバス(無限キャンバス。SVG は wrap いっぱいに固定し、
+   viewBox をカメラとして動かしてパン・ズームを表現する) ---------- */
 .annotator-canvas-wrap {
   position: relative;
   flex: 1 1 auto;
-  overflow: auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  overflow: hidden;
   background: repeating-conic-gradient(#3a3a3a 0% 25%, #333 0% 50%) 0 0 / 24px 24px;
 }
 
 .annotator-svg {
-  background: #fff;
-  box-shadow: 0 0 0 1px #000, 0 4px 24px rgba(0, 0, 0, 0.5);
+  display: block;
+  width: 100%;
+  height: 100%;
   touch-action: none;
+}
+
+/* 出力範囲(すべての画像+図形を囲む最小矩形)の背景と点線。見たまま出力される */
+.annotator-output-bg {
+  fill: #fff;
+  pointer-events: none;
+}
+
+.annotator-output-boundary {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.annotator-file-input {
+  display: none;
 }
 
 .annotator-svg[data-tool="rect"],

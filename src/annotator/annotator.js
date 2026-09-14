@@ -6,6 +6,32 @@
 //   import { openAnnotator } from './annotator/annotator.js';
 //   const blob = await openAnnotator({ imageBlob, title });
 //
+// 【キャンバスと複数画像】
+// 内部的には「無限キャンバス」に複数の画像(st.images[])を自由に配置し、注釈
+// (st.shapes[])を重ねる draw.io 風のエディタになっている。画像・図形の座標はすべて
+// 「キャンバス座標」(1枚目の画像を (0,0)・等倍に置いた座標系。v1 の「元画像
+// ピクセル座標」と同じ意味なので、shapes の座標はそのまま使い回せる)。
+// 出力範囲はすべての画像の表示矩形(切り抜き後)と図形の見た目の外枠を囲む最小の
+// 矩形(shapes.js の computeOutputBounds)で自動的に決まり、エディタ上には点線で
+// 示す。画像が1枚で注釈がその画像の内側に収まっていれば、出力はその画像の表示矩形と
+// 一致する(= v1 と同じ結果になる)。
+//
+// 表示は SVG を表示枠(.annotator-canvas-wrap)いっぱいに固定し、viewBox をカメラ
+// (st.camera・st.zoom)として動かすことでパン・ズームを実現する(draw.io / Figma と
+// 同じ方式)。画像ごとの切り抜きは、画像ごとの入れ子 <svg viewBox=crop> で表現する
+// (パン・ズーム用の外側の viewBox とは別物)。
+//
+// 【データ形式(PNG に埋め込む JSON。version 2)】
+//   {
+//     version: 2,
+//     images: [{ id, mime, width, height, x, y, scale, crop: {x,y,w,h} }],
+//     shapes: [...],
+//     scale,                 // 出力倍率(今までと同じ意味)
+//   }
+// 元画像のバイト列は画像ごとに独自チャンク mdIM(id + NUL + バイト列)へ格納する
+// (pngmeta.js)。v1(1枚の画像のみ・mdOR チャンク)を開いた場合は model.js の
+// normalizeLoadedModel() で { images: [1枚], shapes, scale } に変換してから読み込む。
+//
 // 図形の描画(見た目)は shapes.js の buildShapeSvg() にまとめてあり、エディタの
 // ライブ表示と出力(PNG 焼き込み)の両方でこの関数だけを使う(描画ロジックの二重化を避ける)。
 // PNG チャンクの読み書きは pngmeta.js に任せる(DOM 非依存)。
@@ -16,13 +42,16 @@
 
 import annotatorCss from './annotator.css';
 import { isPngBytes, getAnnotationData, setAnnotationData } from './pngmeta.js';
+import { normalizeLoadedModel } from './model.js';
 import {
   buildShapeSvg,
   getShapeOutlineBox,
-  intersectRectFromCenter,
   computeArrowEndpoints,
   findAttachTarget,
   computeOutputSize,
+  computeOutputBounds,
+  imageVisibleRect,
+  imageFullRect,
   computeCalloutBox,
   measureTextWidth,
   normalizeRect,
@@ -41,6 +70,12 @@ const HANDLE_SCREEN_PX = 8;
 const MIN_DRAW_SIZE_IMAGE_PX = 3;
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 8;
+const FIT_MARGIN_SCREEN_PX = 24;
+const WHEEL_ZOOM_SENSITIVITY = 0.0015; // Ctrl+ホイール1notch(deltaY≈100)あたり約15%ズーム
+const NEW_IMAGE_GAP_CANVAS_PX = 24;
+// 出力サイズの上限(超えたら保存を止めて出力倍率を下げるよう案内する)
+const MAX_OUTPUT_DIMENSION_PX = 16384;
+const MAX_OUTPUT_AREA_PX = 100_000_000; // 1億ピクセル
 
 // ---------- スタイルの挿入(1度だけ) ----------
 let styleInjected = false;
@@ -58,7 +93,7 @@ function ensureStyleInjected() {
 /**
  * 画像注釈エディタを全画面モーダルで開く。
  * imageBlob: PNG/JPEG 等の画像。既にこのエディタで保存した PNG(チャンク入り)なら
- *            元画像と図形を復元して再編集できる状態で開く。
+ *            画像の配置・図形を復元して再編集できる状態で開く。
  * title: モーダル上部に表示する任意のタイトル文字列。
  * 戻り値: 保存したら注釈を焼き込んだ PNG の Blob、キャンセルなら null。
  */
@@ -86,65 +121,24 @@ let currentInstance = null;
 export function getAnnotatorDebugState() {
   if (!currentInstance) return null;
   const st = currentInstance.state;
+  const bounds = computeOutputBounds(st.images, st.shapes, measureTextWidth);
+  const cropTarget = getCropTarget(st);
   return {
-    crop: { ...st.crop },
+    images: st.images.map((img) => ({ ...img, crop: { ...img.crop } })),
+    outputBounds: { ...bounds },
+    camera: { ...st.camera },
+    zoom: st.zoom,
     scale: st.scale,
     shapes: st.shapes.map((s) => ({ ...s })),
     activeTool: st.activeTool,
     selectedShapeId: st.selectedShapeId,
+    cropTargetId: cropTarget ? cropTarget.id : null,
     historyIndex: st.historyIndex,
     historyLength: st.history.length,
-    zoom: st.zoom,
-    original: { ...st.original },
   };
 }
 
-// ---------- 初期状態の読み込み(元画像・チャンクの復元) ----------
-
-async function loadInitialState(imageBlob) {
-  const bytes = new Uint8Array(await imageBlob.arrayBuffer());
-  let json = null;
-  let originalBytes = null;
-  if (isPngBytes(bytes)) {
-    const parsed = getAnnotationData(bytes);
-    json = parsed.json;
-    originalBytes = parsed.originalBytes;
-  }
-  const srcBytes = originalBytes || bytes;
-  const srcMime = (json && json.original && json.original.mime) || imageBlob.type || guessMimeFromBytes(srcBytes);
-
-  // 4K スクリーンショット等の大きな画像でも base64 化(data URL)を経由せずに済むよう、
-  // blob URL(URL.createObjectURL)で読み込む。エディタの <image href> にもそのまま使い、
-  // 閉じるときに revoke する(closeInstance 参照)。
-  const objectUrl = URL.createObjectURL(new Blob([srcBytes], { type: srcMime }));
-  let dims;
-  try {
-    dims = await loadImageDimensions(objectUrl);
-  } catch (e) {
-    URL.revokeObjectURL(objectUrl);
-    throw e;
-  }
-
-  const restorable = json && json.original && json.original.width === dims.width && json.original.height === dims.height;
-  if (restorable) {
-    return {
-      original: { mime: srcMime, width: dims.width, height: dims.height },
-      originalBytes: srcBytes,
-      originalObjectUrl: objectUrl,
-      crop: { ...json.crop },
-      scale: json.scale,
-      shapes: json.shapes.map(cloneShape),
-    };
-  }
-  return {
-    original: { mime: srcMime, width: dims.width, height: dims.height },
-    originalBytes: srcBytes,
-    originalObjectUrl: objectUrl,
-    crop: { x: 0, y: 0, w: dims.width, h: dims.height },
-    scale: 1,
-    shapes: [],
-  };
-}
+// ---------- 初期状態の読み込み(画像・チャンクの復元) ----------
 
 function guessMimeFromBytes(bytes) {
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
@@ -167,6 +161,74 @@ async function loadImageDimensions(src) {
   return { width: img.naturalWidth, height: img.naturalHeight };
 }
 
+// 普通の画像(注釈データを持たない、または壊れている/欠けている)として開く。
+async function loadAsPlainImage(bytes, blobType) {
+  const mime = blobType || guessMimeFromBytes(bytes);
+  const objectUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  let dims;
+  try {
+    dims = await loadImageDimensions(objectUrl);
+  } catch (e) {
+    URL.revokeObjectURL(objectUrl);
+    throw e;
+  }
+  const id = 'i1';
+  return {
+    images: [
+      { id, mime, width: dims.width, height: dims.height, x: 0, y: 0, scale: 1, crop: { x: 0, y: 0, w: dims.width, h: dims.height } },
+    ],
+    imageSources: new Map([[id, { bytes, mime, objectUrl }]]),
+    shapes: [],
+    scale: 1,
+  };
+}
+
+// normalizeLoadedModel() が返した内部モデルを実際に読み込む。画像ごとのバイト列を
+// blob URL にして実寸を確認し、1枚でも欠けている・実寸が JSON と食い違うものが
+// あれば null を返す(呼び出し側は「注釈なしの普通の画像」として開き直す)。
+async function tryLoadNormalizedModel(normalized, parsed) {
+  const imageSources = new Map();
+  const objectUrls = [];
+  const fail = () => {
+    for (const url of objectUrls) URL.revokeObjectURL(url);
+    return null;
+  };
+  for (const img of normalized.images) {
+    const srcBytes = normalized.source === 'v1' ? parsed.originalBytes : parsed.imageBytes.get(img.id);
+    if (!srcBytes) return fail();
+    const mime = img.mime || guessMimeFromBytes(srcBytes);
+    const objectUrl = URL.createObjectURL(new Blob([srcBytes], { type: mime }));
+    objectUrls.push(objectUrl);
+    let dims;
+    try {
+      dims = await loadImageDimensions(objectUrl);
+    } catch {
+      return fail();
+    }
+    if (dims.width !== img.width || dims.height !== img.height) return fail();
+    imageSources.set(img.id, { bytes: srcBytes, mime, objectUrl });
+  }
+  return {
+    images: normalized.images.map((img) => ({ ...img, mime: img.mime || imageSources.get(img.id).mime, crop: { ...img.crop } })),
+    imageSources,
+    shapes: normalized.shapes,
+    scale: normalized.scale,
+  };
+}
+
+async function loadInitialState(imageBlob) {
+  const bytes = new Uint8Array(await imageBlob.arrayBuffer());
+  if (isPngBytes(bytes)) {
+    const parsed = getAnnotationData(bytes);
+    const normalized = parsed.json ? normalizeLoadedModel(parsed.json) : null;
+    if (normalized) {
+      const loaded = await tryLoadNormalizedModel(normalized, parsed);
+      if (loaded) return loaded;
+    }
+  }
+  return loadAsPlainImage(bytes, imageBlob.type);
+}
+
 // data URL(base64)化。通常は blob URL を使うため呼ばないが、blob URL 経由の
 // <img> が万一 canvas を汚染してしまった場合の出力用フォールバックとして使う
 // (renderOutputPng 参照)。
@@ -187,8 +249,12 @@ function cloneShape(shape) {
   return JSON.parse(JSON.stringify(shape));
 }
 
+function cloneImageMeta(img) {
+  return { ...img, crop: { ...img.crop } };
+}
+
 function cloneModel(st) {
-  return { crop: { ...st.crop }, scale: st.scale, shapes: st.shapes.map(cloneShape) };
+  return { images: st.images.map(cloneImageMeta), shapes: st.shapes.map(cloneShape), scale: st.scale };
 }
 
 function modelJson(st) {
@@ -199,12 +265,12 @@ function modelJson(st) {
 
 function createInstance(initial, title, resolve) {
   const st = {
-    original: initial.original,
-    originalBytes: initial.originalBytes,
-    originalObjectUrl: initial.originalObjectUrl,
-    crop: initial.crop,
-    scale: initial.scale,
+    images: initial.images,
+    imageSources: initial.imageSources, // Map<id, {bytes, mime, objectUrl}>。履歴に入れない
     shapes: initial.shapes,
+    scale: initial.scale,
+    camera: { x: 0, y: 0 }, // init() の fitToOutputBounds で実際の値になる
+    zoom: 1,
     history: [],
     historyIndex: -1,
     activeTool: 'select',
@@ -213,17 +279,20 @@ function createInstance(initial, title, resolve) {
     selectedShapeId: null,
     editingShapeId: null,
     editingOriginalText: null, // openTextEditor で開いた時点の文字列(commitPendingTextEdit の変更判定用)
-    zoom: 1,
+    cropTargetId: null, // 2枚以上のときに切り抜きツールで明示的に選んだ画像(ツール切替で解除)
     nextIdCounter: initial.shapes.reduce((max, s) => {
       const n = Number(String(s.id).replace(/^s/, ''));
       return Number.isFinite(n) ? Math.max(max, n + 1) : max;
     }, 1),
-    drag: null,
+    nextImageIdCounter: initial.images.reduce((max, img) => {
+      const n = Number(String(img.id).replace(/^i/, ''));
+      return Number.isFinite(n) ? Math.max(max, n + 1) : max;
+    }, 1),
     resolvePromise: resolve,
   };
 
   const dom = buildDom(title);
-  const inst = { root: dom.root, state: st, dom };
+  const inst = { root: dom.root, state: st, dom, imageElements: new Map(), cropDraft: null };
   wireEvents(inst);
 
   st.initialSnapshotJson = null; // init() 内で最初の render 後に確定させる
@@ -231,8 +300,13 @@ function createInstance(initial, title, resolve) {
   inst.init = () => {
     pushHistory(inst, { replaceInitial: true });
     st.initialSnapshotJson = modelJson(st);
-    fitZoomToWindow(inst);
+    fitToOutputBounds(inst);
     render(inst);
+    // アプリではプレビューの iframe 内のボタンから開くため、フォーカスが iframe に
+    // 残ったままだとキー操作(Delete/Undo等)や貼り付けが overlay に届かない
+    inst.root.focus();
+    inst.resizeObserver = new ResizeObserver(() => render(inst));
+    inst.resizeObserver.observe(inst.dom.wrap);
   };
   return inst;
 }
@@ -242,10 +316,12 @@ function createInstance(initial, title, resolve) {
 function buildDom(title) {
   const root = document.createElement('div');
   root.className = 'annotator-overlay';
+  root.tabIndex = -1;
 
   const toolbar = document.createElement('div');
   toolbar.className = 'annotator-toolbar';
   toolbar.appendChild(buildToolGroup());
+  toolbar.appendChild(buildImageGroup());
   toolbar.appendChild(buildColorGroup());
   toolbar.appendChild(buildWidthGroup());
   toolbar.appendChild(buildScaleGroup());
@@ -260,10 +336,19 @@ function buildDom(title) {
   svg.setAttribute('class', 'annotator-svg');
   svg.setAttribute('xmlns', SVG_NS);
 
-  const imageEl = document.createElementNS(SVG_NS, 'image');
-  imageEl.setAttribute('x', '0');
-  imageEl.setAttribute('y', '0');
-  svg.appendChild(imageEl);
+  // レイヤー順(背面→前面): 出力範囲の背景 → 画像 → 出力範囲の点線 → 図形 →
+  // 当たり判定 → 切り抜きUI → 選択UI。注釈(図形)は常に画像より上に描かれる。
+  const outputBgEl = document.createElementNS(SVG_NS, 'rect');
+  outputBgEl.setAttribute('class', 'annotator-output-bg');
+  svg.appendChild(outputBgEl);
+
+  const imageLayer = document.createElementNS(SVG_NS, 'g');
+  imageLayer.setAttribute('class', 'annotator-image-layer');
+  svg.appendChild(imageLayer);
+
+  const outputBoundaryEl = document.createElementNS(SVG_NS, 'rect');
+  outputBoundaryEl.setAttribute('class', 'annotator-output-boundary');
+  svg.appendChild(outputBoundaryEl);
 
   const shapesLayer = document.createElementNS(SVG_NS, 'g');
   shapesLayer.setAttribute('class', 'annotator-shapes-layer');
@@ -295,7 +380,9 @@ function buildDom(title) {
     toolbar,
     wrap,
     svg,
-    imageEl,
+    outputBgEl,
+    imageLayer,
+    outputBoundaryEl,
     shapesLayer,
     hitLayer,
     cropLayer,
@@ -307,11 +394,14 @@ function buildDom(title) {
     scaleButtons: Array.from(toolbar.querySelectorAll('[data-scale]')),
     scaleCustomInput: toolbar.querySelector('.annotator-scale-custom'),
     outputSizeLabel: toolbar.querySelector('.annotator-output-size'),
+    addImageBtn: toolbar.querySelector('[data-action="addImage"]'),
+    fileInput: toolbar.querySelector('.annotator-file-input'),
     undoBtn: toolbar.querySelector('[data-action="undo"]'),
     redoBtn: toolbar.querySelector('[data-action="redo"]'),
     resetCropBtn: toolbar.querySelector('[data-action="resetCrop"]'),
     zoomInBtn: toolbar.querySelector('[data-action="zoomIn"]'),
     zoomOutBtn: toolbar.querySelector('[data-action="zoomOut"]'),
+    fitBtn: toolbar.querySelector('[data-action="fit"]'),
     zoomLabel: toolbar.querySelector('.annotator-zoom-label'),
     saveBtn: toolbar.querySelector('[data-action="save"]'),
     cancelBtn: toolbar.querySelector('[data-action="cancel"]'),
@@ -340,6 +430,26 @@ function buildToolGroup() {
     btn.textContent = label;
     group.appendChild(btn);
   }
+  return group;
+}
+
+function buildImageGroup() {
+  const group = document.createElement('div');
+  group.className = 'annotator-tool-group';
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'annotator-icon-btn';
+  addBtn.dataset.action = 'addImage';
+  addBtn.title = '画像を追加';
+  addBtn.textContent = '画像を追加';
+  group.appendChild(addBtn);
+
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.multiple = true;
+  input.className = 'annotator-file-input';
+  group.appendChild(input);
   return group;
 }
 
@@ -427,7 +537,7 @@ function buildHistoryGroup() {
   resetCropBtn.type = 'button';
   resetCropBtn.className = 'annotator-icon-btn';
   resetCropBtn.dataset.action = 'resetCrop';
-  resetCropBtn.title = '切り抜きを元画像全体に戻す';
+  resetCropBtn.title = '切り抜きを対象画像の全体に戻す';
   resetCropBtn.textContent = '切り抜き解除';
   group.appendChild(resetCropBtn);
   return group;
@@ -454,6 +564,14 @@ function buildZoomGroup() {
   inBtn.dataset.action = 'zoomIn';
   inBtn.textContent = '拡大';
   group.appendChild(inBtn);
+
+  const fitBtn = document.createElement('button');
+  fitBtn.type = 'button';
+  fitBtn.className = 'annotator-icon-btn';
+  fitBtn.dataset.action = 'fit';
+  fitBtn.title = '全体表示';
+  fitBtn.textContent = '全体表示';
+  group.appendChild(fitBtn);
   return group;
 }
 
@@ -482,35 +600,129 @@ function buildEndGroup(title) {
   return group;
 }
 
-// ---------- ズーム ----------
-
-function fitZoomToWindow(inst) {
-  const { wrap } = inst.dom;
-  const { original } = inst.state;
-  const availW = Math.max(100, wrap.clientWidth - 24);
-  const availH = Math.max(100, wrap.clientHeight - 24);
-  const zoom = Math.min(1, availW / original.width, availH / original.height);
-  inst.state.zoom = clampNum(zoom, MIN_ZOOM, MAX_ZOOM);
-}
+// ---------- ズーム・パン(無限キャンバス) ----------
 
 function clampNum(v, lo, hi) {
   return Math.min(Math.max(v, lo), hi);
 }
 
-function setZoom(inst, zoom) {
-  inst.state.zoom = clampNum(zoom, MIN_ZOOM, MAX_ZOOM);
+// 出力範囲(画像+図形すべて)が収まる倍率(最大100%)で中央に表示する「全体表示」。
+// 開いた直後・画像を追加した直後にこの状態にする。
+function fitToOutputBounds(inst) {
+  const st = inst.state;
+  const { wrap } = inst.dom;
+  const bounds = computeOutputBounds(st.images, st.shapes, measureTextWidth);
+  const wrapW = Math.max(1, wrap.clientWidth);
+  const wrapH = Math.max(1, wrap.clientHeight);
+  const availW = Math.max(1, wrapW - FIT_MARGIN_SCREEN_PX * 2);
+  const availH = Math.max(1, wrapH - FIT_MARGIN_SCREEN_PX * 2);
+  const zoom = Math.min(1, availW / Math.max(bounds.w, 1), availH / Math.max(bounds.h, 1));
+  st.zoom = clampNum(zoom, MIN_ZOOM, MAX_ZOOM);
+  const viewW = wrapW / st.zoom;
+  const viewH = wrapH / st.zoom;
+  st.camera = {
+    x: bounds.x + bounds.w / 2 - viewW / 2,
+    y: bounds.y + bounds.h / 2 - viewH / 2,
+  };
+}
+
+// 表示中央のキャンバス座標を固定したままズームする(拡大/縮小ボタン用)
+function setZoomKeepCenter(inst, newZoom) {
+  const st = inst.state;
+  const { wrap } = inst.dom;
+  const wrapW = Math.max(1, wrap.clientWidth);
+  const wrapH = Math.max(1, wrap.clientHeight);
+  const centerX = st.camera.x + wrapW / st.zoom / 2;
+  const centerY = st.camera.y + wrapH / st.zoom / 2;
+  const zoom = clampNum(newZoom, MIN_ZOOM, MAX_ZOOM);
+  st.zoom = zoom;
+  st.camera = { x: centerX - wrapW / zoom / 2, y: centerY - wrapH / zoom / 2 };
   render(inst);
+}
+
+// ホイール: 上下パン(Shift併用で左右)、Ctrl(⌘)併用でカーソル位置を固定してズーム
+function onWheel(inst, e) {
+  e.preventDefault();
+  const st = inst.state;
+  if (e.ctrlKey || e.metaKey) {
+    const rect = inst.dom.svg.getBoundingClientRect();
+    const canvasPt = clientToCanvasPoint(inst, e.clientX, e.clientY);
+    const factor = Math.exp(-e.deltaY * WHEEL_ZOOM_SENSITIVITY);
+    const newZoom = clampNum(st.zoom * factor, MIN_ZOOM, MAX_ZOOM);
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    st.zoom = newZoom;
+    st.camera = { x: canvasPt.x - sx / newZoom, y: canvasPt.y - sy / newZoom };
+  } else {
+    // Shift+ホイールで左右にパンする(トラックパッド等、shift保持時に deltaY へ
+    // 値が入ったままのブラウザ向けに deltaX が0ならフォールバックする)
+    let dx = e.deltaX;
+    let dy = e.deltaY;
+    if (e.shiftKey && dx === 0) {
+      dx = dy;
+      dy = 0;
+    }
+    st.camera = { x: st.camera.x + dx / st.zoom, y: st.camera.y + dy / st.zoom };
+  }
+  render(inst);
+}
+
+// 中ボタンドラッグでのパン(画面上の移動量をそのままカメラに反映する)
+function startPanDrag(inst, startClientX, startClientY) {
+  const st = inst.state;
+  const startCam = { ...st.camera };
+  const move = (e) => {
+    const dx = (e.clientX - startClientX) / st.zoom;
+    const dy = (e.clientY - startClientY) / st.zoom;
+    st.camera = { x: startCam.x - dx, y: startCam.y - dy };
+    render(inst);
+  };
+  const up = () => {
+    window.removeEventListener('mousemove', move);
+    window.removeEventListener('mouseup', up);
+  };
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
 }
 
 // ---------- 座標変換 ----------
 
-function clientToImagePoint(inst, clientX, clientY) {
+// クライアント座標 → キャンバス座標(カメラ・ズームを考慮)
+function clientToCanvasPoint(inst, clientX, clientY) {
   const rect = inst.dom.svg.getBoundingClientRect();
-  const { zoom } = inst.state;
+  const { zoom, camera } = inst.state;
   return {
-    x: (clientX - rect.left) / zoom,
-    y: (clientY - rect.top) / zoom,
+    x: camera.x + (clientX - rect.left) / zoom,
+    y: camera.y + (clientY - rect.top) / zoom,
   };
+}
+
+// キャンバス座標 → 画像固有のピクセル座標(切り抜き操作は対象画像のピクセル座標で行う)
+function canvasPointToImagePx(img, pt) {
+  return { x: (pt.x - img.x) / img.scale, y: (pt.y - img.y) / img.scale };
+}
+
+// 画像固有のピクセル座標の矩形 → キャンバス座標の矩形
+function imagePxRectToCanvasRect(img, r) {
+  return { x: img.x + r.x * img.scale, y: img.y + r.y * img.scale, w: r.w * img.scale, h: r.h * img.scale };
+}
+
+// キャンバス座標の点にある画像を探す(重なり順の手前=配列の後ろから探す)。
+// 切り抜きツールで2枚目以降をクリックして対象にするときに使う。
+function findImageAtPoint(st, pt) {
+  for (let i = st.images.length - 1; i >= 0; i--) {
+    const img = st.images[i];
+    const rect = imageVisibleRect(img);
+    if (pt.x >= rect.x && pt.x <= rect.x + rect.w && pt.y >= rect.y && pt.y <= rect.y + rect.h) return img;
+  }
+  return null;
+}
+
+// 現在の切り抜き対象画像。画像が1枚ならそれ、2枚以上なら明示的に選んだもの(無ければ null)
+function getCropTarget(st) {
+  if (st.images.length === 1) return st.images[0];
+  if (st.cropTargetId) return st.images.find((i) => i.id === st.cropTargetId) || null;
+  return null;
 }
 
 // ---------- 履歴(元に戻す/やり直し) ----------
@@ -530,11 +742,14 @@ function pushHistory(inst, { replaceInitial = false } = {}) {
 
 function applyHistorySnapshot(inst, snapshot) {
   const st = inst.state;
-  st.crop = { ...snapshot.crop };
+  st.images = snapshot.images.map(cloneImageMeta);
   st.scale = snapshot.scale;
   st.shapes = snapshot.shapes.map(cloneShape);
   if (st.selectedShapeId && !st.shapes.some((s) => s.id === st.selectedShapeId)) {
     st.selectedShapeId = null;
+  }
+  if (st.cropTargetId && !st.images.some((i) => i.id === st.cropTargetId)) {
+    st.cropTargetId = null;
   }
 }
 
@@ -595,20 +810,81 @@ function deleteSelectedShape(inst) {
   render(inst);
 }
 
+// ---------- 画像の追加 ----------
+
+// blob を画像として読み込み、st.images の末尾に追加する(重なり順は常に最前面)。
+// canvasPoint があればその点が画像の中心、無ければ現在の出力範囲の右隣(24px空け、
+// 上端を揃える)に置く。画像として読めなければ okOnly の確認ダイアログを出す。
+async function addImageFromBlob(inst, blob, canvasPoint = null) {
+  const st = inst.state;
+  let bytes;
+  try {
+    bytes = new Uint8Array(await blob.arrayBuffer());
+  } catch {
+    await showConfirm(inst, '画像として読み込めませんでした', { okOnly: true });
+    return;
+  }
+  const mime = blob.type || guessMimeFromBytes(bytes);
+  const objectUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  let dims;
+  try {
+    dims = await loadImageDimensions(objectUrl);
+  } catch {
+    URL.revokeObjectURL(objectUrl);
+    await showConfirm(inst, '画像として読み込めませんでした', { okOnly: true });
+    return;
+  }
+
+  const id = 'i' + st.nextImageIdCounter++;
+  let x;
+  let y;
+  if (canvasPoint) {
+    x = canvasPoint.x - dims.width / 2;
+    y = canvasPoint.y - dims.height / 2;
+  } else if (st.images.length === 0) {
+    x = 0;
+    y = 0;
+  } else {
+    const bounds = computeOutputBounds(st.images, st.shapes, measureTextWidth);
+    x = bounds.x + bounds.w + NEW_IMAGE_GAP_CANVAS_PX;
+    y = bounds.y;
+  }
+
+  st.images.push({ id, mime, width: dims.width, height: dims.height, x, y, scale: 1, crop: { x: 0, y: 0, w: dims.width, h: dims.height } });
+  st.imageSources.set(id, { bytes, mime, objectUrl });
+  pushHistory(inst);
+  fitToOutputBounds(inst);
+  render(inst);
+}
+
 // ---------- レンダリング ----------
+
+function setSvgAttrs(el, attrs) {
+  for (const key in attrs) el.setAttribute(key, String(attrs[key]));
+}
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVG_NS, tag);
+  setSvgAttrs(el, attrs);
+  return el;
+}
 
 function render(inst) {
   const st = inst.state;
-  const { svg, imageEl, shapesLayer, hitLayer, cropLayer, selectionLayer } = inst.dom;
+  const { wrap, svg, outputBgEl, outputBoundaryEl, shapesLayer, hitLayer, cropLayer, selectionLayer } = inst.dom;
 
-  svg.setAttribute('viewBox', `0 0 ${st.original.width} ${st.original.height}`);
-  svg.setAttribute('width', String(Math.round(st.original.width * st.zoom)));
-  svg.setAttribute('height', String(Math.round(st.original.height * st.zoom)));
+  const wrapW = Math.max(1, Math.round(wrap.clientWidth));
+  const wrapH = Math.max(1, Math.round(wrap.clientHeight));
+  svg.setAttribute('width', String(wrapW));
+  svg.setAttribute('height', String(wrapH));
+  svg.setAttribute('viewBox', `${st.camera.x} ${st.camera.y} ${wrapW / st.zoom} ${wrapH / st.zoom}`);
   svg.setAttribute('data-tool', st.activeTool);
 
-  imageEl.setAttribute('href', st.originalObjectUrl);
-  imageEl.setAttribute('width', String(st.original.width));
-  imageEl.setAttribute('height', String(st.original.height));
+  const bounds = computeOutputBounds(st.images, st.shapes, measureTextWidth);
+  setSvgAttrs(outputBgEl, { x: bounds.x, y: bounds.y, width: Math.max(bounds.w, 0), height: Math.max(bounds.h, 0) });
+  setSvgAttrs(outputBoundaryEl, { x: bounds.x, y: bounds.y, width: Math.max(bounds.w, 0), height: Math.max(bounds.h, 0) });
+
+  renderImageLayer(inst);
 
   const map = shapesById(st);
   const drawList = st.draftShape ? [...st.shapes, st.draftShape] : st.shapes;
@@ -626,17 +902,56 @@ function render(inst) {
   clearChildren(selectionLayer);
   renderSelectionLayer(inst);
 
-  updateToolbar(inst);
+  updateToolbar(inst, bounds);
+}
+
+// 画像ごとの入れ子 <svg data-image-id>[<image>] を id をキーに使い回して更新する。
+// render() はマウス移動のたびに呼ばれるため、4K画像等の要素をここで毎回作り直すと
+// ちらつき・負荷の原因になる(href の再設定だけなら再デコードは発生しない)。
+function renderImageLayer(inst) {
+  const st = inst.state;
+  const { imageLayer } = inst.dom;
+  const cropTarget = getCropTarget(st);
+  const seen = new Set();
+  for (const img of st.images) {
+    seen.add(img.id);
+    let entry = inst.imageElements.get(img.id);
+    if (!entry) {
+      const nestedSvg = document.createElementNS(SVG_NS, 'svg');
+      nestedSvg.setAttribute('data-image-id', img.id);
+      nestedSvg.setAttribute('preserveAspectRatio', 'none');
+      const imageEl = document.createElementNS(SVG_NS, 'image');
+      nestedSvg.appendChild(imageEl);
+      entry = { svg: nestedSvg, image: imageEl };
+      inst.imageElements.set(img.id, entry);
+    }
+    // 切り抜きツールで対象になっている画像だけ、切り抜き前の全体を表示する
+    // (外側を暗くする演出は cropLayer 側で行う)。それ以外は切り抜き後の見た目のまま。
+    const showFull = st.activeTool === 'crop' && cropTarget && cropTarget.id === img.id;
+    const rect = showFull ? imageFullRect(img) : imageVisibleRect(img);
+    const vb = showFull ? { x: 0, y: 0, w: img.width, h: img.height } : img.crop;
+    setSvgAttrs(entry.svg, {
+      x: rect.x,
+      y: rect.y,
+      width: Math.max(rect.w, 0),
+      height: Math.max(rect.h, 0),
+      viewBox: `${vb.x} ${vb.y} ${vb.w} ${vb.h}`,
+    });
+    entry.image.setAttribute('width', String(img.width));
+    entry.image.setAttribute('height', String(img.height));
+    const source = st.imageSources.get(img.id);
+    if (source) entry.image.setAttribute('href', source.objectUrl);
+    imageLayer.appendChild(entry.svg); // 常に末尾へ付け替えることで配列順=重なり順を保つ
+  }
+  for (const [id, entry] of inst.imageElements) {
+    if (seen.has(id)) continue;
+    if (entry.svg.parentNode) entry.svg.parentNode.removeChild(entry.svg);
+    inst.imageElements.delete(id);
+  }
 }
 
 function clearChildren(el) {
   while (el.firstChild) el.removeChild(el.firstChild);
-}
-
-function svgEl(tag, attrs) {
-  const el = document.createElementNS(SVG_NS, tag);
-  for (const k in attrs) el.setAttribute(k, String(attrs[k]));
-  return el;
 }
 
 function buildHitArea(shape, map) {
@@ -661,38 +976,42 @@ function buildHitArea(shape, map) {
 function renderCropLayer(inst) {
   const st = inst.state;
   const { cropLayer } = inst.dom;
-  const full = { x: 0, y: 0, w: st.original.width, h: st.original.height };
-  const crop = st.activeTool === 'crop' && inst.cropDraft ? inst.cropDraft : st.crop;
-  const isCropped = crop.x > 0.001 || crop.y > 0.001 || Math.abs(crop.w - full.w) > 0.001 || Math.abs(crop.h - full.h) > 0.001;
+  if (st.activeTool !== 'crop') return;
+  const target = getCropTarget(st);
+  if (!target) return; // 2枚以上でまだ対象を選んでいない
 
-  if (isCropped || st.activeTool === 'crop') {
-    // crop の外側を暗くする(4枚の矩形で crop の周囲を覆う)
-    const rects = [
-      { x: 0, y: 0, w: full.w, h: crop.y },
-      { x: 0, y: crop.y + crop.h, w: full.w, h: full.h - (crop.y + crop.h) },
-      { x: 0, y: crop.y, w: crop.x, h: crop.h },
-      { x: crop.x + crop.w, y: crop.y, w: full.w - (crop.x + crop.w), h: crop.h },
-    ];
-    for (const r of rects) {
-      if (r.w <= 0 || r.h <= 0) continue;
-      const el = svgEl('rect', { x: r.x, y: r.y, width: r.w, height: r.h });
-      el.setAttribute('class', 'annotator-crop-dim');
-      cropLayer.appendChild(el);
-    }
-    const boundary = svgEl('rect', { x: crop.x, y: crop.y, width: crop.w, height: crop.h });
-    boundary.setAttribute('class', 'annotator-crop-boundary');
-    cropLayer.appendChild(boundary);
+  const full = { x: 0, y: 0, w: target.width, h: target.height };
+  const crop = inst.cropDraft || target.crop;
+  const toCanvas = (r) => imagePxRectToCanvasRect(target, r);
+
+  // crop の外側を暗くする(4枚の矩形で crop の周囲を覆う。対象画像のピクセル座標で
+  // 計算してからキャンバス座標に変換する)
+  const rects = [
+    { x: 0, y: 0, w: full.w, h: crop.y },
+    { x: 0, y: crop.y + crop.h, w: full.w, h: full.h - (crop.y + crop.h) },
+    { x: 0, y: crop.y, w: crop.x, h: crop.h },
+    { x: crop.x + crop.w, y: crop.y, w: full.w - (crop.x + crop.w), h: crop.h },
+  ];
+  for (const r of rects) {
+    if (r.w <= 0 || r.h <= 0) continue;
+    const cr = toCanvas(r);
+    const el = svgEl('rect', { x: cr.x, y: cr.y, width: cr.w, height: cr.h });
+    el.setAttribute('class', 'annotator-crop-dim');
+    cropLayer.appendChild(el);
   }
+  const boundaryCanvas = toCanvas(crop);
+  const boundary = svgEl('rect', { x: boundaryCanvas.x, y: boundaryCanvas.y, width: boundaryCanvas.w, height: boundaryCanvas.h });
+  boundary.setAttribute('class', 'annotator-crop-boundary');
+  cropLayer.appendChild(boundary);
 
-  if (st.activeTool === 'crop') {
-    const hp = HANDLE_SCREEN_PX / st.zoom;
-    const points = cropHandlePoints(crop);
-    for (const p of points) {
-      const handle = svgEl('rect', { x: p.x - hp / 2, y: p.y - hp / 2, width: hp, height: hp });
-      handle.setAttribute('class', 'annotator-handle');
-      handle.setAttribute('data-handle', p.name);
-      cropLayer.appendChild(handle);
-    }
+  const hp = HANDLE_SCREEN_PX / st.zoom;
+  const points = cropHandlePoints(crop);
+  for (const p of points) {
+    const cp = toCanvas({ x: p.x, y: p.y, w: 0, h: 0 });
+    const handle = svgEl('rect', { x: cp.x - hp / 2, y: cp.y - hp / 2, width: hp, height: hp });
+    handle.setAttribute('class', 'annotator-handle');
+    handle.setAttribute('data-handle', p.name);
+    cropLayer.appendChild(handle);
   }
 }
 
@@ -761,7 +1080,7 @@ function renderSelectionLayer(inst) {
 
 // ---------- ツールバー表示の更新 ----------
 
-function updateToolbar(inst) {
+function updateToolbar(inst, boundsArg) {
   const st = inst.state;
   const { dom } = inst;
   for (const btn of dom.toolButtons) {
@@ -784,11 +1103,13 @@ function updateToolbar(inst) {
   if (document.activeElement !== dom.scaleCustomInput) {
     dom.scaleCustomInput.value = String(Math.round(st.scale * 100));
   }
-  const outSize = computeOutputSize(st.crop, st.scale);
+  const bounds = boundsArg || computeOutputBounds(st.images, st.shapes, measureTextWidth);
+  const outSize = computeOutputSize(bounds, st.scale);
   dom.outputSizeLabel.textContent = `出力: ${outSize.width} × ${outSize.height} px`;
 
   dom.undoBtn.disabled = st.historyIndex <= 0;
   dom.redoBtn.disabled = st.historyIndex >= st.history.length - 1;
+  dom.resetCropBtn.disabled = !getCropTarget(st);
 
   dom.zoomLabel.textContent = `${Math.round(st.zoom * 100)}%`;
 }
@@ -798,13 +1119,16 @@ function updateToolbar(inst) {
 // 吹き出しの枠(computeCalloutBox)に合わせて textarea の位置・大きさを計算し直す。
 // 開くとき(openTextEditor)と、入力中に枠を追従させるとき(textEditor の input
 // イベント)の両方から呼ぶことで、位置・大きさの計算ロジックを二重に持たないようにする。
+// キャンバスは無限スクロール(カメラ)方式のため、位置は wrap のスクロール量ではなく
+// カメラ(st.camera)を基準に計算する。
 function layoutTextEditor(inst, shape) {
   const st = inst.state;
-  const { textEditor, svg } = inst.dom;
+  const { textEditor, svg, wrap } = inst.dom;
   const box = computeCalloutBox(shape, measureTextWidth);
   const svgRect = svg.getBoundingClientRect();
-  const wrapRect = inst.dom.wrap.getBoundingClientRect();
+  const wrapRect = wrap.getBoundingClientRect();
   const zoom = st.zoom;
+  const cam = st.camera;
 
   // キャレットが右端で見切れないようフォント1文字分だけ余裕を持たせ、
   // 文字が空でも掴んで編集できるよう最小幅(フォントサイズの4倍)を確保する
@@ -812,8 +1136,8 @@ function layoutTextEditor(inst, shape) {
   const minWidth = box.fontSize * 4;
   const editorWidth = Math.max(box.w + extraWidth, minWidth);
 
-  textEditor.style.left = `${svgRect.left - wrapRect.left + inst.dom.wrap.scrollLeft + box.x * zoom}px`;
-  textEditor.style.top = `${svgRect.top - wrapRect.top + inst.dom.wrap.scrollTop + box.y * zoom}px`;
+  textEditor.style.left = `${svgRect.left - wrapRect.left + (box.x - cam.x) * zoom}px`;
+  textEditor.style.top = `${svgRect.top - wrapRect.top + (box.y - cam.y) * zoom}px`;
   textEditor.style.width = `${editorWidth * zoom}px`;
   textEditor.style.height = `${box.h * zoom}px`;
   textEditor.style.fontSize = `${box.fontSize * zoom}px`;
@@ -900,14 +1224,17 @@ function newCallout(st, tailX, tailY, boxX, boxY) {
 function wireEvents(inst) {
   const { dom } = inst;
 
+  function setActiveTool(tool) {
+    commitPendingTextEdit(inst);
+    inst.state.activeTool = tool;
+    inst.state.selectedShapeId = null;
+    inst.state.cropTargetId = null; // ツールを切り替えたら切り抜き対象は解除する
+    inst.cropDraft = null;
+    render(inst);
+  }
+
   for (const btn of dom.toolButtons) {
-    btn.addEventListener('click', () => {
-      commitPendingTextEdit(inst);
-      inst.state.activeTool = btn.dataset.tool;
-      inst.state.selectedShapeId = null;
-      inst.cropDraft = null;
-      render(inst);
-    });
+    btn.addEventListener('click', () => setActiveTool(btn.dataset.tool));
   }
   for (const btn of dom.colorButtons) {
     btn.addEventListener('click', () => {
@@ -935,15 +1262,30 @@ function wireEvents(inst) {
     }
   });
 
+  dom.addImageBtn.addEventListener('click', () => dom.fileInput.click());
+  dom.fileInput.addEventListener('change', async () => {
+    const files = Array.from(dom.fileInput.files || []);
+    dom.fileInput.value = ''; // 同じファイルを続けて選び直せるようにする
+    for (const f of files) {
+      await addImageFromBlob(inst, f, null);
+    }
+  });
+
   dom.undoBtn.addEventListener('click', () => undo(inst));
   dom.redoBtn.addEventListener('click', () => redo(inst));
   dom.resetCropBtn.addEventListener('click', () => {
-    inst.state.crop = { x: 0, y: 0, w: inst.state.original.width, h: inst.state.original.height };
+    const target = getCropTarget(inst.state);
+    if (!target) return; // 対象が無ければ無効
+    target.crop = { x: 0, y: 0, w: target.width, h: target.height };
     pushHistory(inst);
     render(inst);
   });
-  dom.zoomInBtn.addEventListener('click', () => setZoom(inst, inst.state.zoom * 1.25));
-  dom.zoomOutBtn.addEventListener('click', () => setZoom(inst, inst.state.zoom * 0.8));
+  dom.zoomInBtn.addEventListener('click', () => setZoomKeepCenter(inst, inst.state.zoom * 1.25));
+  dom.zoomOutBtn.addEventListener('click', () => setZoomKeepCenter(inst, inst.state.zoom * 0.8));
+  dom.fitBtn.addEventListener('click', () => {
+    fitToOutputBounds(inst);
+    render(inst);
+  });
 
   dom.saveBtn.addEventListener('click', () => handleSave(inst));
   dom.cancelBtn.addEventListener('click', () => handleCancel(inst));
@@ -967,6 +1309,35 @@ function wireEvents(inst) {
   // onCanvasMouseDown 内で mousedown の e.detail を見て判定する(理由は
   // onCanvasMouseDown のコメント参照)。
   dom.svg.addEventListener('mousedown', (e) => onCanvasMouseDown(inst, e));
+  dom.svg.addEventListener('wheel', (e) => onWheel(inst, e), { passive: false });
+
+  // ドロップ: overlay 全体で dragover/drop を preventDefault し、ブラウザが
+  // ファイルを開いてしまうのを防ぐ。画像ファイルならドロップ位置(キャンバス座標)に追加する。
+  inst.root.addEventListener('dragover', (e) => {
+    e.preventDefault();
+  });
+  inst.root.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+    const imageFiles = files.filter((f) => f.type && f.type.startsWith('image/'));
+    if (imageFiles.length === 0) return;
+    const pt = clientToCanvasPoint(inst, e.clientX, e.clientY);
+    for (const f of imageFiles) addImageFromBlob(inst, f, pt);
+  });
+
+  // 貼り付け: エディタが開いている間、document への paste で画像があれば追加する。
+  // 吹き出しの文字編集中は textarea の通常の貼り付け(テキスト)を邪魔しない。
+  inst._pasteHandler = (e) => {
+    if (inst.state.editingShapeId) return;
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    const imageItem = Array.from(items).find((it) => it.type && it.type.startsWith('image/'));
+    if (!imageItem) return;
+    e.preventDefault();
+    const file = imageItem.getAsFile();
+    if (file) addImageFromBlob(inst, file, null);
+  };
+  document.addEventListener('paste', inst._pasteHandler);
 
   inst._keydownHandler = (e) => onKeyDown(inst, e);
   document.addEventListener('keydown', inst._keydownHandler);
@@ -1043,15 +1414,23 @@ function onKeyDown(inst, e) {
     commitPendingTextEdit(inst);
     inst.state.activeTool = tool;
     inst.state.selectedShapeId = null;
+    inst.state.cropTargetId = null;
+    inst.cropDraft = null;
     render(inst);
   }
 }
 
 function onCanvasMouseDown(inst, e) {
+  if (e.button === 1) {
+    // 中ボタンドラッグ = パン(どのツールでも使える)
+    e.preventDefault();
+    startPanDrag(inst, e.clientX, e.clientY);
+    return;
+  }
   if (e.button !== 0) return;
   commitPendingTextEdit(inst);
   const st = inst.state;
-  const pt = clientToImagePoint(inst, e.clientX, e.clientY);
+  const pt = clientToCanvasPoint(inst, e.clientX, e.clientY);
   const handleName = e.target.dataset && e.target.dataset.handle;
   const shapeTarget = e.target.closest && e.target.closest('[data-shape-id]');
 
@@ -1081,6 +1460,7 @@ function onCanvasMouseDown(inst, e) {
       render(inst);
       return;
     }
+    // 画像や余白のクリックは選択解除として扱う(画像自体の選択・移動は後半フェーズ)
     st.selectedShapeId = null;
     render(inst);
     return;
@@ -1099,35 +1479,57 @@ function onCanvasMouseDown(inst, e) {
     return;
   }
   if (st.activeTool === 'crop') {
-    if (handleName) {
-      startCropHandleDrag(inst, handleName, pt);
+    const target = getCropTarget(st);
+    if (!target) {
+      // 2枚以上でまだ対象が決まっていない: クリックした画像を対象にする
+      // (このクリックでは切り抜き枠を描き始めない)
+      const clicked = findImageAtPoint(st, pt);
+      if (clicked) {
+        st.cropTargetId = clicked.id;
+        render(inst);
+      }
       return;
     }
-    const crop = st.crop;
+    const imgPt = canvasPointToImagePx(target, pt);
+    if (handleName) {
+      startCropHandleDrag(inst, target, handleName, imgPt);
+      return;
+    }
+    const crop = target.crop;
     const isFullImage =
-      crop.x <= 0.001 &&
-      crop.y <= 0.001 &&
-      Math.abs(crop.w - st.original.width) <= 0.001 &&
-      Math.abs(crop.h - st.original.height) <= 0.001;
-    const inside = pt.x >= crop.x && pt.x <= crop.x + crop.w && pt.y >= crop.y && pt.y <= crop.y + crop.h;
-    // crop がまだ元画像全体のまま(何も切り抜いていない)なら、クリックした場所に
+      crop.x <= 0.001 && crop.y <= 0.001 && Math.abs(crop.w - target.width) <= 0.001 && Math.abs(crop.h - target.height) <= 0.001;
+    const inside = imgPt.x >= crop.x && imgPt.x <= crop.x + crop.w && imgPt.y >= crop.y && imgPt.y <= crop.y + crop.h;
+    // crop がまだ画像全体のまま(何も切り抜いていない)なら、クリックした場所に
     // 関わらず常に新規の切り抜き矩形を描き始める(そうしないと「全体を動かす」
     // 操作しかできなくなってしまうため)。既に部分的な crop があるときだけ、
     // その内側のクリックを「移動」として扱う。
     if (!isFullImage && inside) {
-      startCropMoveDrag(inst, pt);
+      startCropMoveDrag(inst, target, imgPt);
     } else {
-      startCropDraw(inst, pt);
+      startCropDraw(inst, target, imgPt);
     }
   }
 }
 
 function withWindowDragListeners(inst, onMove, onUp) {
-  const move = (e) => onMove(clientToImagePoint(inst, e.clientX, e.clientY), e);
+  const move = (e) => onMove(clientToCanvasPoint(inst, e.clientX, e.clientY), e);
   const up = (e) => {
     window.removeEventListener('mousemove', move);
     window.removeEventListener('mouseup', up);
-    onUp(clientToImagePoint(inst, e.clientX, e.clientY), e);
+    onUp(clientToCanvasPoint(inst, e.clientX, e.clientY), e);
+  };
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+}
+
+// crop 操作専用: クライアント座標を対象画像固有のピクセル座標に変換してから渡す
+function withImageDragListeners(inst, target, onMove, onUp) {
+  const toImagePx = (clientX, clientY) => canvasPointToImagePx(target, clientToCanvasPoint(inst, clientX, clientY));
+  const move = (e) => onMove(toImagePx(e.clientX, e.clientY), e);
+  const up = (e) => {
+    window.removeEventListener('mousemove', move);
+    window.removeEventListener('mouseup', up);
+    onUp(toImagePx(e.clientX, e.clientY), e);
   };
   window.addEventListener('mousemove', move);
   window.addEventListener('mouseup', up);
@@ -1136,7 +1538,6 @@ function withWindowDragListeners(inst, onMove, onUp) {
 // ---- 選択ツール: 移動 ----
 function startMoveDrag(inst, shape, startPt) {
   if (!shape) return;
-  const st = inst.state;
   const startShape = cloneShape(shape);
   withWindowDragListeners(
     inst,
@@ -1366,12 +1767,12 @@ function startDrawCallout(inst, startPt) {
   );
 }
 
-// ---- 切り抜き ----
-function startCropDraw(inst, startPt) {
-  const st = inst.state;
+// ---- 切り抜き(対象画像固有のピクセル座標で行う) ----
+function startCropDraw(inst, target, startPt) {
   inst.cropDraft = { x: startPt.x, y: startPt.y, w: 0, h: 0 };
-  withWindowDragListeners(
+  withImageDragListeners(
     inst,
+    target,
     (pt) => {
       inst.cropDraft = normalizeRect({ x: startPt.x, y: startPt.y, w: pt.x - startPt.x, h: pt.y - startPt.y });
       render(inst);
@@ -1380,7 +1781,7 @@ function startCropDraw(inst, startPt) {
       const n = normalizeRect({ x: startPt.x, y: startPt.y, w: pt.x - startPt.x, h: pt.y - startPt.y });
       inst.cropDraft = null;
       if (n.w >= MIN_DRAW_SIZE_IMAGE_PX && n.h >= MIN_DRAW_SIZE_IMAGE_PX) {
-        st.crop = clampCropToImage(n, st.original);
+        target.crop = clampCropToImage(n, target);
         pushHistory(inst);
       }
       render(inst);
@@ -1388,22 +1789,22 @@ function startCropDraw(inst, startPt) {
   );
 }
 
-function startCropMoveDrag(inst, startPt) {
-  const st = inst.state;
-  const startCrop = { ...st.crop };
+function startCropMoveDrag(inst, target, startPt) {
+  const startCrop = { ...target.crop };
   inst.cropDraft = startCrop;
-  withWindowDragListeners(
+  withImageDragListeners(
     inst,
+    target,
     (pt) => {
       const dx = pt.x - startPt.x;
       const dy = pt.y - startPt.y;
-      inst.cropDraft = clampCropToImage({ x: startCrop.x + dx, y: startCrop.y + dy, w: startCrop.w, h: startCrop.h }, st.original);
+      inst.cropDraft = clampCropToImage({ x: startCrop.x + dx, y: startCrop.y + dy, w: startCrop.w, h: startCrop.h }, target);
       render(inst);
     },
     (pt) => {
       const dx = pt.x - startPt.x;
       const dy = pt.y - startPt.y;
-      st.crop = clampCropToImage({ x: startCrop.x + dx, y: startCrop.y + dy, w: startCrop.w, h: startCrop.h }, st.original);
+      target.crop = clampCropToImage({ x: startCrop.x + dx, y: startCrop.y + dy, w: startCrop.w, h: startCrop.h }, target);
       inst.cropDraft = null;
       pushHistory(inst);
       render(inst);
@@ -1411,11 +1812,11 @@ function startCropMoveDrag(inst, startPt) {
   );
 }
 
-function startCropHandleDrag(inst, handleName, startPt) {
-  const st = inst.state;
-  const startCrop = { ...st.crop };
-  withWindowDragListeners(
+function startCropHandleDrag(inst, target, handleName, startPt) {
+  const startCrop = { ...target.crop };
+  withImageDragListeners(
     inst,
+    target,
     (pt) => {
       inst.cropDraft = normalizeRect(resizeCropRect(startCrop, handleName, pt));
       render(inst);
@@ -1424,7 +1825,7 @@ function startCropHandleDrag(inst, handleName, startPt) {
       const n = normalizeRect(resizeCropRect(startCrop, handleName, pt));
       inst.cropDraft = null;
       if (n.w >= MIN_DRAW_SIZE_IMAGE_PX && n.h >= MIN_DRAW_SIZE_IMAGE_PX) {
-        st.crop = clampCropToImage(n, st.original);
+        target.crop = clampCropToImage(n, target);
         pushHistory(inst);
       }
       render(inst);
@@ -1453,12 +1854,12 @@ function resizeCropRect(startCrop, handleName, pt) {
   return { x, y, w, h };
 }
 
-function clampCropToImage(rect, original) {
+function clampCropToImage(rect, target) {
   let { x, y, w, h } = rect;
-  x = clampNum(x, 0, original.width);
-  y = clampNum(y, 0, original.height);
-  w = clampNum(w, 1, original.width - x);
-  h = clampNum(h, 1, original.height - y);
+  x = clampNum(x, 0, target.width);
+  y = clampNum(y, 0, target.height);
+  w = clampNum(w, 1, target.width - x);
+  h = clampNum(h, 1, target.height - y);
   return { x, y, w, h };
 }
 
@@ -1477,10 +1878,25 @@ async function handleCancel(inst) {
   closeInstance(inst, null);
 }
 
+function isOutputTooLarge(size) {
+  return size.width > MAX_OUTPUT_DIMENSION_PX || size.height > MAX_OUTPUT_DIMENSION_PX || size.width * size.height > MAX_OUTPUT_AREA_PX;
+}
+
 async function handleSave(inst) {
   commitPendingTextEdit(inst);
+  const st = inst.state;
+  const bounds = computeOutputBounds(st.images, st.shapes, measureTextWidth);
+  const outSize = computeOutputSize(bounds, st.scale);
+  if (isOutputTooLarge(outSize)) {
+    await showConfirm(
+      inst,
+      `出力サイズ(${outSize.width} × ${outSize.height} px)が大きすぎます。出力倍率を下げてください`,
+      { okOnly: true }
+    );
+    return; // モーダルは開いたまま
+  }
   try {
-    const blob = await renderOutputPng(inst.state);
+    const blob = await renderOutputPng(st);
     closeInstance(inst, blob);
   } catch (err) {
     console.error('注釈の保存に失敗しました', err);
@@ -1490,12 +1906,14 @@ async function handleSave(inst) {
 
 function closeInstance(inst, result) {
   document.removeEventListener('keydown', inst._keydownHandler);
+  document.removeEventListener('paste', inst._pasteHandler);
+  if (inst.resizeObserver) inst.resizeObserver.disconnect();
   if (inst.root.parentNode) inst.root.parentNode.removeChild(inst.root);
   if (currentInstance === inst) currentInstance = null;
-  if (inst.state.originalObjectUrl) {
-    URL.revokeObjectURL(inst.state.originalObjectUrl);
-    inst.state.originalObjectUrl = null;
+  for (const source of inst.state.imageSources.values()) {
+    URL.revokeObjectURL(source.objectUrl);
   }
+  inst.state.imageSources.clear();
   inst.state.resolvePromise(result);
 }
 
@@ -1543,28 +1961,21 @@ function showConfirm(inst, message, { okOnly = false } = {}) {
 
 // ---------- 出力(PNG への焼き込み) ----------
 //
-// 以前は「元画像(data URL)+ 図形」をまとめた1枚の SVG を組み立て、それを
-// encodeURIComponent して Image に読み込んでいた。この方式は4Kスクリーンショット等の
-// 大きな画像(数MB〜十数MB)では、base64 化した巨大な文字列をさらに丸ごと
-// percent-encode することになり非常に重く、読み込みに失敗する恐れもあった。
+// 元画像は Image 要素から直接 canvas に drawImage する(crop・配置・出力サイズへの
+// 変換も9引数の drawImage で1回に行う)。画像データを SVG や data URL に包み直さない
+// ので二重エンコードが発生しない(4Kスクリーンショット等の大きな画像でも高速)。
+// 図形だけ(image 要素を含まない、通常は小さい)を SVG の data URL にしてその上から
+// 重ねて描く。図形の見た目は shapes.js の buildShapeSvg() をエディタ表示と共用する。
 //
-// 現在は次の2段階に分けている:
-//   1. 元画像は Image 要素から直接 canvas に drawImage する(crop・出力サイズへの
-//      切り抜き・縮小も9引数の drawImage で1回に行う)。画像データを SVG や
-//      data URL に包み直さないので二重エンコードが発生しない。
-//   2. 図形だけ(image 要素を含まない、通常は小さい)を SVG の data URL にして
-//      その上から重ねて描く。図形の見た目は shapes.js の buildShapeSvg() を
-//      エディタ表示と共用する。
-//
-// 元画像は openAnnotator 内で作った blob URL(originalObjectUrl)を使う。
-// blob URL は同一ドキュメント内で生成した Blob を指すため canvas を汚染しない
-// はずだが、万一 toBlob が失敗した(canvas が汚染された)場合は、出力時だけ
-// data URL 経由の Image に切り替えて再試行する。
+// 元画像は openAnnotator 内で作った blob URL(imageSources の objectUrl)を使う。
+// blob URL は同一ドキュメント内で生成した Blob を指すため canvas を汚染しないはずだが、
+// 万一 toBlob が失敗した(canvas が汚染された)場合は、出力時だけ data URL 経由の
+// Image に切り替えて再試行する。
 
-function buildShapesOnlySvgDataUrl(st, outSize) {
+function buildShapesOnlySvgDataUrl(st, bounds, outSize) {
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('xmlns', SVG_NS);
-  svg.setAttribute('viewBox', `${st.crop.x} ${st.crop.y} ${st.crop.w} ${st.crop.h}`);
+  svg.setAttribute('viewBox', `${bounds.x} ${bounds.y} ${bounds.w} ${bounds.h}`);
   svg.setAttribute('width', String(outSize.width));
   svg.setAttribute('height', String(outSize.height));
   const map = shapesById(st);
@@ -1573,18 +1984,6 @@ function buildShapesOnlySvgDataUrl(st, outSize) {
   }
   const svgText = new XMLSerializer().serializeToString(svg);
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgText)}`;
-}
-
-// 元画像(crop・出力サイズを反映)を描いた canvas を作る
-function rasterizeBase(st, outSize, baseImg) {
-  const canvas = document.createElement('canvas');
-  canvas.width = outSize.width;
-  canvas.height = outSize.height;
-  const ctx = canvas.getContext('2d');
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(baseImg, st.crop.x, st.crop.y, st.crop.w, st.crop.h, 0, 0, outSize.width, outSize.height);
-  return canvas;
 }
 
 function canvasToPngBlob(canvas) {
@@ -1605,41 +2004,77 @@ function isLikelyTaintedCanvasError(err) {
 }
 
 async function renderOutputPng(st) {
-  const outSize = computeOutputSize(st.crop, st.scale);
+  const bounds = computeOutputBounds(st.images, st.shapes, measureTextWidth);
+  const outSize = computeOutputSize(bounds, st.scale);
+  const kx = outSize.width / Math.max(bounds.w, 1e-6);
+  const ky = outSize.height / Math.max(bounds.h, 1e-6);
 
-  // 図形だけの SVG は通常サイズが小さいので、これまでどおり data URL で問題ない
-  const shapesDataUrl = st.shapes.length > 0 ? buildShapesOnlySvgDataUrl(st, outSize) : null;
+  const shapesDataUrl = st.shapes.length > 0 ? buildShapesOnlySvgDataUrl(st, bounds, outSize) : null;
   const shapesImg = shapesDataUrl ? await loadImageElement(shapesDataUrl) : null;
 
-  const draw = async (baseSrc) => {
-    const baseImg = await loadImageElement(baseSrc);
-    const canvas = rasterizeBase(st, outSize, baseImg);
+  // srcFor(img): 画像ごとに描画元(blob URL / data URL)を決める関数
+  const draw = async (srcFor) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = outSize.width;
+    canvas.height = outSize.height;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, outSize.width, outSize.height);
+    for (const img of st.images) {
+      const baseImg = await loadImageElement(srcFor(img));
+      const rect = imageVisibleRect(img);
+      ctx.drawImage(
+        baseImg,
+        img.crop.x,
+        img.crop.y,
+        img.crop.w,
+        img.crop.h,
+        (rect.x - bounds.x) * kx,
+        (rect.y - bounds.y) * ky,
+        rect.w * kx,
+        rect.h * ky
+      );
+    }
     if (shapesImg) {
-      canvas.getContext('2d').drawImage(shapesImg, 0, 0, outSize.width, outSize.height);
+      ctx.drawImage(shapesImg, 0, 0, outSize.width, outSize.height);
     }
     return canvas;
   };
 
   let pngBlob;
   try {
-    const canvas = await draw(st.originalObjectUrl);
+    const canvas = await draw((img) => st.imageSources.get(img.id).objectUrl);
     pngBlob = await canvasToPngBlob(canvas);
   } catch (err) {
     if (!isLikelyTaintedCanvasError(err)) throw err;
     // blob URL 経由の描画で canvas が汚染された場合の救済策(出力時のみ data URL に切り替える)
     console.warn('blob URL からの描画で canvas が汚染されたため、data URL 経由に切り替えて出力します', err);
-    const canvas = await draw(bytesToDataUrl(st.originalBytes, st.original.mime));
+    const canvas = await draw((img) => {
+      const source = st.imageSources.get(img.id);
+      return bytesToDataUrl(source.bytes, source.mime);
+    });
     pngBlob = await canvasToPngBlob(canvas);
   }
 
   const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
   const json = {
-    version: 1,
-    original: st.original,
-    crop: st.crop,
-    scale: st.scale,
+    version: 2,
+    images: st.images.map((img) => ({
+      id: img.id,
+      mime: img.mime,
+      width: img.width,
+      height: img.height,
+      x: img.x,
+      y: img.y,
+      scale: img.scale,
+      crop: { ...img.crop },
+    })),
     shapes: st.shapes.map(cloneShape),
+    scale: st.scale,
   };
-  const finalBytes = setAnnotationData(pngBytes, { json, originalBytes: st.originalBytes });
+  const images = st.images.map((img) => ({ id: img.id, bytes: st.imageSources.get(img.id).bytes }));
+  const finalBytes = setAnnotationData(pngBytes, { json, images });
   return new Blob([finalBytes], { type: 'image/png' });
 }
