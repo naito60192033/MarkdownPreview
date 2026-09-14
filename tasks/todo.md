@@ -61,6 +61,8 @@
 ## 追加要望(2026-09-14): 貼り付け画像の保存先を MPE と同じにする
 - [x] 貼り付け・ドロップした画像を `images/<md名>/image-<連番>.<拡張子>` に保存(連番は既存の最大値 + 1)— src/paste.js
 - [x] base64 で埋め込むのは HTML の1ファイル出力のときだけ(従来どおり src/export.js)。README・テストを更新
+- [x] draw.io の通常のコピー(text/plain に URL エンコードした mxGraphModel)は貼り付けず「Copy as Image」を案内
+- [x] ドロップした `xxx.drawio.png` は `image-<連番>.drawio.png` として保存(draw.io で開き直せるように)
 
 ## 将来やりたいこと(バックログ)
 - [ ] プロジェクト(ワークスペース)ごとの favicon 設定と、favicon を作る機能

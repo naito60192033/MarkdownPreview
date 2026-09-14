@@ -1524,6 +1524,7 @@ async function runTests(browser) {
             const dt = new DataTransfer();
             dt.items.add(toFile(pngB64, 'shot1.png', 'image/png'));
             dt.items.add(toFile(jpgB64, 'shot2.jpg', 'image/jpeg'));
+            dt.items.add(toFile(pngB64, 'flow.drawio.png', 'image/png'));
             const target = document.querySelector('.cm-content');
             const rect = target.getBoundingClientRect();
             const evt = new DragEvent('drop', {
@@ -1541,20 +1542,64 @@ async function runTests(browser) {
         await waitFor(
           async () => {
             const text = await page.evaluate(() => window.__mdpreview.getEditorText());
-            return (text.match(/!\[\]\(images\//g) || []).length === 2;
+            return (text.match(/!\[\]\(images\//g) || []).length === 3;
           },
-          { message: '2件の画像参照が挿入されませんでした' }
+          { message: '3件の画像参照が挿入されませんでした' }
         );
 
         const text = await page.evaluate(() => window.__mdpreview.getEditorText());
         // 既存の image-1.png があるので連番は 2 から(拡張子が違っても番号は重ねない)
         assert.match(text, /!\[\]\(images\/doc\/image-2\.png\)/, 'png の参照が見つかりません: ' + text);
         assert.match(text, /!\[\]\(images\/doc\/image-3\.jpg\)/, 'jpg の参照が見つかりません(元の拡張子が保たれていません): ' + text);
+        assert.match(text, /!\[\]\(images\/doc\/image-4\.drawio\.png\)/, '.drawio.png の参照が見つかりません: ' + text);
 
         const files = (await fs.readdir(path.join(dir, 'images', 'doc'))).sort();
-        assert.deepEqual(files, ['image-1.png', 'image-2.png', 'image-3.jpg'], 'images/doc/ の内容が想定と異なります: ' + JSON.stringify(files));
+        assert.deepEqual(
+          files,
+          ['image-1.png', 'image-2.png', 'image-3.jpg', 'image-4.drawio.png'],
+          'images/doc/ の内容が想定と異なります: ' + JSON.stringify(files)
+        );
 
         printConsoleErrors(consoleErrors, '画像のドロップ');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('draw.io の通常のコピー(図形データ)を貼り付けても挿入せず、「画像としてコピー」を案内する。普通のテキストは貼り付けられる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# draw.io\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('.cm-content');
+        await page.keyboard.press('Control+End');
+
+        const pasteText = (text) =>
+          page.evaluate((t) => {
+            const dt = new DataTransfer();
+            dt.setData('text/plain', t);
+            const evt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+            document.querySelector('.cm-content').dispatchEvent(evt);
+          }, text);
+
+        // draw.io の EditorUi.copyCells と同じ形(encodeURIComponent した mxGraphModel)
+        await pasteText(encodeURIComponent('<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>'));
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getStatusMessage())).includes('画像としてコピー'), {
+          message: '「画像としてコピー」の案内が表示されませんでした',
+        });
+        assert.equal(await page.evaluate(() => window.__mdpreview.getEditorText()), '# draw.io\n', '図形データが挿入されています');
+        assert.ok(!(await fs.readdir(dir)).includes('images'), 'images/ が作られています');
+
+        // 普通のテキストは従来どおり CodeMirror が貼り付ける
+        await pasteText('ふつうの文字');
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getEditorText())).includes('ふつうの文字'), {
+          message: '普通のテキストが貼り付けられませんでした',
+        });
+
+        printConsoleErrors(consoleErrors, 'draw.io の貼り付け');
         assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
       });
     } finally {
