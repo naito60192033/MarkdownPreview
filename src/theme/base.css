@@ -30,6 +30,9 @@
  *   --mdp-link         リンクの色
  *   --mdp-code-bg      インラインコード・コードブロックの背景
  *   --mdp-zebra        表の縞模様(偶数行)の背景
+ *   --mdp-content-width 表示エリア(白い部分)の最大幅(既定 1200px)
+ *   --mdp-paper-bg     表示エリアの背景 / --mdp-paper-border 表示エリアの枠線
+ *   --mdp-page-bg      表示エリアの外側の背景(これだけ `:root` に定義)
  *
  * ---- 開発者向け ----
  * このファイルは JS から文字列として取り込まれ(build.mjs の esbuild text
@@ -47,7 +50,19 @@ body {
   padding: 0;
 }
 
+/* ページの背景(表示エリアの外側)は薄いグレーにし、本文は白い表示エリアに載せる */
+:root {
+  --mdp-page-bg: #eef0f3;
+}
+
+html {
+  background-color: var(--mdp-page-bg);
+}
+
 .crossnote.markdown-preview {
+  --mdp-content-width: 1200px;
+  --mdp-paper-bg: #ffffff;
+  --mdp-paper-border: #dde1e6;
   --mdp-font: "Meiryo", "メイリオ", "BIZ UDPGothic", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
     "Yu Gothic Medium", sans-serif;
   --mdp-font-mono: Consolas, "BIZ UDGothic", "MS Gothic", "SFMono-Regular", Menlo, monospace;
@@ -63,9 +78,18 @@ body {
   --mdp-zebra: #f8fafc;
 
   box-sizing: border-box;
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 32px 40px 80px;
+  /* 画面が狭くても左右に 12px ずつ背景が見えるよう width を指定し、広い画面では
+   * --mdp-content-width で頭打ちにして中央に置く。上は余白を空けず画面の上端から
+   * 始める(上端に空白ができて表示できる量が減らないように) */
+  width: calc(100% - 24px);
+  max-width: var(--mdp-content-width);
+  margin: 0 auto 24px;
+  padding: 40px 56px 80px;
+  background-color: var(--mdp-paper-bg);
+  border: 1px solid var(--mdp-paper-border);
+  border-top: 0;
+  border-radius: 0 0 4px 4px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
   color: var(--mdp-text);
   font-family: var(--mdp-font);
   font-size: 16px;
@@ -75,6 +99,13 @@ body {
 
 .crossnote.markdown-preview * {
   box-sizing: border-box;
+}
+
+/* 狭い表示(エディタと並べたときのプレビューなど)では余白を詰める */
+@media (max-width: 720px) {
+  .crossnote.markdown-preview {
+    padding: 24px 20px 64px;
+  }
 }
 
 /* ---------- 見出し ---------- */
@@ -437,9 +468,18 @@ body {
 }
 
 @media print {
+  /* 印刷(PDF 化)では背景のグレーと表示エリアの枠は出さず、紙いっぱいに使う */
+  html {
+    background: none;
+  }
   .crossnote.markdown-preview {
+    width: auto;
     max-width: none;
+    margin: 0;
     padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
     font-size: 10.5pt;
   }
   .crossnote.markdown-preview a {

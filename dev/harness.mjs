@@ -2017,13 +2017,20 @@ async function runTests(browser) {
 
         const styles = await page.evaluate(() => {
           const doc = window.__mdpreview.getPreviewDocument();
+          const root = doc.getElementById('mdpreview-root');
           return {
             h2BorderLeftWidth: getComputedStyle(doc.querySelector('h2')).borderLeftWidth,
             tableDisplay: getComputedStyle(doc.querySelector('table')).display,
+            htmlBackgroundColor: getComputedStyle(doc.documentElement).backgroundColor,
+            rootBackgroundColor: getComputedStyle(root).backgroundColor,
+            rootMaxWidth: getComputedStyle(root).maxWidth,
           };
         });
         assert.equal(styles.h2BorderLeftWidth, '6px', '標準 CSS の h2 の枠線が反映されていません');
         assert.equal(styles.tableDisplay, 'table', '標準 CSS の表の display が table になっていません');
+        assert.equal(styles.htmlBackgroundColor, 'rgb(238, 240, 243)', 'ページの背景(薄いグレー)が反映されていません');
+        assert.equal(styles.rootBackgroundColor, 'rgb(255, 255, 255)', '表示エリアの背景(白)が反映されていません');
+        assert.equal(styles.rootMaxWidth, '1200px', '表示エリアの max-width が反映されていません');
 
         printConsoleErrors(consoleErrors, '標準 CSS');
         assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
@@ -2081,11 +2088,13 @@ async function runTests(browser) {
             h2BorderLeftWidth: getComputedStyle(doc.querySelector('h2')).borderLeftWidth,
             alertBorderWidth: getComputedStyle(doc.querySelector('div.markdown-alert')).borderTopWidth,
             bodyColor: getComputedStyle(doc.querySelector('.crossnote.markdown-preview')).color,
+            htmlBackgroundColor: getComputedStyle(doc.documentElement).backgroundColor,
           };
         });
         assert.equal(after.h2BorderLeftWidth, '0px', '標準 CSS をオフにしても h2 の枠線が残っています');
         assert.equal(after.alertBorderWidth, '1px', 'アラートの枠線が消えてしまいました(常に適用されるはずです)');
         assert.equal(after.bodyColor, 'rgb(50, 60, 70)', 'style.css が効かなくなりました');
+        assert.equal(after.htmlBackgroundColor, 'rgba(0, 0, 0, 0)', '標準 CSS をオフにしてもページの背景(薄いグレー)が残っています');
 
         // 再読み込み後もオフのまま。
         await page.reload();
