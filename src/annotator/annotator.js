@@ -212,6 +212,7 @@ function createInstance(initial, title, resolve) {
     currentStrokeWidth: DEFAULT_WIDTH,
     selectedShapeId: null,
     editingShapeId: null,
+    editingOriginalText: null, // openTextEditor で開いた時点の文字列(commitPendingTextEdit の変更判定用)
     zoom: 1,
     nextIdCounter: initial.shapes.reduce((max, s) => {
       const n = Number(String(s.id).replace(/^s/, ''));
@@ -794,26 +795,42 @@ function updateToolbar(inst) {
 
 // ---------- テキスト編集(吹き出し) ----------
 
-function openTextEditor(inst, shape) {
-  commitPendingTextEdit(inst);
+// 吹き出しの枠(computeCalloutBox)に合わせて textarea の位置・大きさを計算し直す。
+// 開くとき(openTextEditor)と、入力中に枠を追従させるとき(textEditor の input
+// イベント)の両方から呼ぶことで、位置・大きさの計算ロジックを二重に持たないようにする。
+function layoutTextEditor(inst, shape) {
   const st = inst.state;
-  st.editingShapeId = shape.id;
   const { textEditor, svg } = inst.dom;
   const box = computeCalloutBox(shape, measureTextWidth);
   const svgRect = svg.getBoundingClientRect();
   const wrapRect = inst.dom.wrap.getBoundingClientRect();
   const zoom = st.zoom;
 
-  textEditor.style.display = 'block';
+  // キャレットが右端で見切れないようフォント1文字分だけ余裕を持たせ、
+  // 文字が空でも掴んで編集できるよう最小幅(フォントサイズの4倍)を確保する
+  const extraWidth = box.fontSize;
+  const minWidth = box.fontSize * 4;
+  const editorWidth = Math.max(box.w + extraWidth, minWidth);
+
   textEditor.style.left = `${svgRect.left - wrapRect.left + inst.dom.wrap.scrollLeft + box.x * zoom}px`;
   textEditor.style.top = `${svgRect.top - wrapRect.top + inst.dom.wrap.scrollTop + box.y * zoom}px`;
-  textEditor.style.width = `${box.w * zoom}px`;
+  textEditor.style.width = `${editorWidth * zoom}px`;
   textEditor.style.height = `${box.h * zoom}px`;
   textEditor.style.fontSize = `${box.fontSize * zoom}px`;
   textEditor.style.lineHeight = `${box.lineHeight * zoom}px`;
   textEditor.style.padding = `${box.padding * zoom}px`;
   textEditor.style.color = shape.textColor || '#222222';
+}
+
+function openTextEditor(inst, shape) {
+  commitPendingTextEdit(inst);
+  const st = inst.state;
+  st.editingShapeId = shape.id;
+  st.editingOriginalText = shape.text || ''; // commitPendingTextEdit で「実際に変更したか」を判定するために保持する
+  const { textEditor } = inst.dom;
+  textEditor.style.display = 'block';
   textEditor.value = shape.text || '';
+  layoutTextEditor(inst, shape);
   textEditor.focus();
   textEditor.select();
 }
@@ -824,11 +841,24 @@ function commitPendingTextEdit(inst) {
   const shape = st.shapes.find((s) => s.id === st.editingShapeId);
   const { textEditor } = inst.dom;
   const newText = textEditor.value;
-  textEditor.style.display = 'none';
+  const originalText = st.editingOriginalText;
+  // state のクリアを textEditor.blur() より先に行う。blur() は同期的に 'blur' イベントを
+  // 発火し(wireEvents 参照)、このハンドラ自身が再入するが、その時点で editingShapeId が
+  // 既に null なら先頭の early return で何もしない(display:none による非同期的な blur を
+  // 待つと、直後の Enter/F2 判定(onKeyDown の isTyping)がまだ textarea にフォーカスが
+  // 残っていると誤判定することがあるため、明示的に blur() して同期的に確定させる)
   st.editingShapeId = null;
-  if (shape && shape.text !== newText) {
+  st.editingOriginalText = null;
+  textEditor.blur();
+  textEditor.style.display = 'none';
+  if (shape) {
     shape.text = newText;
-    pushHistory(inst);
+    // input イベントで shape.text は既にライブ反映済みなので、ここで shape.text と
+    // 比べると常に一致してしまい履歴が積まれなくなる。編集開始時の文字列
+    // (originalText)と比べることで「実際に変更したか」を判定する
+    if (originalText !== newText) {
+      pushHistory(inst);
+    }
   }
 }
 
@@ -920,16 +950,22 @@ function wireEvents(inst) {
 
   dom.textEditor.addEventListener('blur', () => commitPendingTextEdit(inst));
 
-  dom.svg.addEventListener('dblclick', (e) => {
-    const target = e.target.closest('[data-shape-id]');
-    if (!target) return;
-    const shape = inst.state.shapes.find((s) => s.id === target.dataset.shapeId);
-    if (shape && shape.type === 'callout') {
-      inst.state.selectedShapeId = shape.id;
-      openTextEditor(inst, shape);
-    }
+  // 入力中に吹き出しの枠(テキストに合わせて自動計算されるサイズ)を追従させる。
+  // render() は shapesLayer/hitLayer を作り直すだけで dom.textEditor 自体は
+  // 作り直さないため、この中で render() を呼んでもフォーカスは失われない。
+  dom.textEditor.addEventListener('input', () => {
+    const st = inst.state;
+    if (!st.editingShapeId) return;
+    const shape = st.shapes.find((s) => s.id === st.editingShapeId);
+    if (!shape) return;
+    shape.text = dom.textEditor.value; // 履歴は積まない(確定は commitPendingTextEdit で行う)
+    render(inst);
+    layoutTextEditor(inst, shape);
   });
 
+  // 吹き出しのダブルクリックでのテキスト編集開始は dblclick イベントではなく
+  // onCanvasMouseDown 内で mousedown の e.detail を見て判定する(理由は
+  // onCanvasMouseDown のコメント参照)。
   dom.svg.addEventListener('mousedown', (e) => onCanvasMouseDown(inst, e));
 
   inst._keydownHandler = (e) => onKeyDown(inst, e);
@@ -977,6 +1013,15 @@ function onKeyDown(inst, e) {
 
   if (isTyping) return;
 
+  if (e.key === 'Enter' || e.key === 'F2') {
+    const shape = inst.state.selectedShapeId ? inst.state.shapes.find((s) => s.id === inst.state.selectedShapeId) : null;
+    if (shape && shape.type === 'callout') {
+      e.preventDefault(); // 既定動作のままだと textarea にフォーカスが移った直後に改行が入力されてしまう
+      openTextEditor(inst, shape);
+      return;
+    }
+  }
+
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
     e.preventDefault();
     undo(inst);
@@ -1017,8 +1062,21 @@ function onCanvasMouseDown(inst, e) {
     }
     if (shapeTarget) {
       const id = shapeTarget.dataset.shapeId;
-      st.selectedShapeId = id;
       const shape = st.shapes.find((s) => s.id === id);
+      // 吹き出しのダブルクリックでのテキスト編集開始は、dblclick イベントではなく
+      // ここ(mousedown の e.detail)で判定する。render() は mousedown のたびに
+      // hitLayer の当たり判定要素を全部作り直すため、マウスを押した要素が
+      // mouseup 前に DOM から外れてしまい、Chromium は click / dblclick を
+      // 発火しない。一方 mousedown の e.detail(1→2)は正しく積算されるため、
+      // これで代用する。
+      if (shape && shape.type === 'callout' && e.detail >= 2) {
+        e.preventDefault(); // 既定動作でフォーカスが textarea から外れて即 blur → commit してしまうのを防ぐ
+        st.selectedShapeId = id;
+        render(inst);
+        openTextEditor(inst, shape);
+        return;
+      }
+      st.selectedShapeId = id;
       startMoveDrag(inst, shape, pt);
       render(inst);
       return;
@@ -1092,7 +1150,10 @@ function startMoveDrag(inst, shape, startPt) {
       const dx = pt.x - startPt.x;
       const dy = pt.y - startPt.y;
       applyMove(shape, startShape, dx, dy);
-      pushHistory(inst);
+      // 実際には動いていない(選択するだけの)クリックでは履歴を汚さない
+      if (dx !== 0 || dy !== 0) {
+        pushHistory(inst);
+      }
       render(inst);
     }
   );

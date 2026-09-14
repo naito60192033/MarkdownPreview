@@ -221,6 +221,38 @@ async function getDebugState(page) {
   return page.evaluate(() => window.__annotator.getDebugState());
 }
 
+// 吹き出しのテキスト編集用 textarea の表示/非表示を待つ(作成直後・ダブルクリック・
+// Enter/F2 のいずれで開いた場合も同じ .annotator-text-editor を使うため共通化する)
+async function waitForTextEditorVisible(page) {
+  await waitFor(
+    async () =>
+      page.evaluate(() => {
+        const el = document.querySelector('.annotator-text-editor');
+        return el && el.style.display !== 'none';
+      }),
+    { message: 'テキスト編集用の textarea が表示されませんでした' }
+  );
+}
+
+async function waitForTextEditorHidden(page) {
+  await waitFor(
+    async () =>
+      page.evaluate(() => {
+        const el = document.querySelector('.annotator-text-editor');
+        return el && el.style.display === 'none';
+      }),
+    { message: 'テキスト編集用の textarea が非表示になりませんでした' }
+  );
+}
+
+async function getTextEditorValue(page) {
+  return page.evaluate(() => document.querySelector('.annotator-text-editor').value);
+}
+
+async function getTextEditorWidthPx(page) {
+  return page.evaluate(() => parseFloat(document.querySelector('.annotator-text-editor').style.width));
+}
+
 // 矢印の実際の描画座標を読む。始点は <line> の x1/y1 でそのまま取れるが、
 // 終点は矢じり(<polygon>)の分だけ <line> の x2/y2 が手前で止められているため、
 // 矢じりの先端(points の1点目 = 実際の to 座標)から読む(shapes.js の
@@ -537,6 +569,170 @@ async function runTests(browser) {
       assert.ok(hasBlend, `50%縮小時に境界付近で中間色が見られず、ジャギーの疑いがあります: ${reds}`);
 
       printConsoleErrors(consoleErrors, '4K画像の保存');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n8) 吹き出しの文言をダブルクリックで後から修正できる');
+  await test('吹き出しをダブルクリックすると文言を修正でき、履歴がちょうど1つ増える', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      await selectTool(page, 'callout');
+      await clickOnCanvas(page, { x: 300, y: 300 });
+      await waitForTextEditorVisible(page);
+      await page.fill('.annotator-text-editor', '最初の文言');
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      const before = await getDebugState(page);
+      const callout = before.shapes.find((s) => s.type === 'callout');
+      assert.ok(callout, '吹き出しが作成されていません');
+      assert.equal(callout.text, '最初の文言');
+
+      // render() が hitLayer を作り直すため dblclick イベント自体は発火しない環境でも、
+      // 実際の page.mouse.dblclick(mousedown の e.detail 判定)で編集を開始できることを確認する
+      const inner = await imgToClient(page, callout.x + 5, callout.y + 5);
+      await page.mouse.dblclick(inner.x, inner.y);
+      await waitForTextEditorVisible(page);
+
+      const value = await getTextEditorValue(page);
+      assert.equal(value, '最初の文言', 'ダブルクリックで開いた textarea の初期値が元の文言と一致しません');
+
+      await page.fill('.annotator-text-editor', '修正後の文言');
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      const after = await getDebugState(page);
+      const updated = after.shapes.find((s) => s.id === callout.id);
+      assert.equal(updated.text, '修正後の文言', '吹き出しの文言が修正後の値に更新されていません');
+      assert.equal(after.historyLength - before.historyLength, 1, '履歴がちょうど1つ増えるはずです');
+
+      printConsoleErrors(consoleErrors, '吹き出しの再編集');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n9) 吹き出しの再編集を保存 → 再読み込みしても復元される');
+  await test('吹き出しをダブルクリックで修正して保存 → 再読み込みで修正後の文言が復元される', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      await selectTool(page, 'callout');
+      await clickOnCanvas(page, { x: 300, y: 300 });
+      await waitForTextEditorVisible(page);
+      await page.fill('.annotator-text-editor', '最初の文言');
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      await saveAndWaitClosed(page);
+      await reopenLastResult(page);
+
+      let st = await getDebugState(page);
+      let callout = st.shapes.find((s) => s.type === 'callout');
+      assert.ok(callout, '再読み込み後に吹き出しが見つかりません');
+      assert.equal(callout.text, '最初の文言');
+
+      const inner = await imgToClient(page, callout.x + 5, callout.y + 5);
+      await page.mouse.dblclick(inner.x, inner.y);
+      await waitForTextEditorVisible(page);
+      await page.fill('.annotator-text-editor', '修正後の文言');
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      await saveAndWaitClosed(page);
+      await reopenLastResult(page);
+
+      st = await getDebugState(page);
+      callout = st.shapes.find((s) => s.type === 'callout');
+      assert.ok(callout, '再々読み込み後に吹き出しが見つかりません');
+      assert.equal(callout.text, '修正後の文言', '修正後の文言が復元されていません');
+
+      printConsoleErrors(consoleErrors, '吹き出しの再編集の保存往復');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n10) 選択中の吹き出しを Enter / F2 で編集開始できる');
+  await test('選択中の吹き出しを Enter / F2 で編集開始でき、textarea に改行が混入しない', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      await selectTool(page, 'callout');
+      await clickOnCanvas(page, { x: 300, y: 300 });
+      await waitForTextEditorVisible(page);
+      await page.fill('.annotator-text-editor', 'Enterテスト');
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      // Escape での確定は「編集中のテキストを確定する」だけで選択は解除しない
+      // 仕様なので、そのまま Enter を押すだけで編集を再開できるはず
+      await page.keyboard.press('Enter');
+      await waitForTextEditorVisible(page);
+      let value = await getTextEditorValue(page);
+      assert.equal(value, 'Enterテスト', 'Enter で開いた textarea の初期値が一致しません');
+      assert.ok(!value.includes('\n'), 'Enter キーで textarea に改行が混入しています');
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      // F2 でも同様に編集開始できる
+      await page.keyboard.press('F2');
+      await waitForTextEditorVisible(page);
+      value = await getTextEditorValue(page);
+      assert.equal(value, 'Enterテスト', 'F2 で開いた textarea の初期値が一致しません');
+      assert.ok(!value.includes('\n'), 'F2 キーで textarea に改行が混入しています');
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      printConsoleErrors(consoleErrors, 'Enter/F2 での編集開始');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n11) 入力中に吹き出しの textarea 幅が追従する');
+  await test('長い1行を入力すると textarea の幅が広がる', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      await selectTool(page, 'callout');
+      await clickOnCanvas(page, { x: 300, y: 300 });
+      await waitForTextEditorVisible(page);
+
+      const widthBefore = await getTextEditorWidthPx(page);
+      await page.keyboard.type('とても長い一行のテキストを入力してtextareaの幅が広がることを確認する');
+      const widthAfter = await getTextEditorWidthPx(page);
+      assert.ok(
+        widthAfter > widthBefore,
+        `入力後に textarea の幅が広がっていません: before=${widthBefore}, after=${widthAfter}`
+      );
+
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      printConsoleErrors(consoleErrors, 'textarea 幅の追従');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n12) 図形を動かさないクリックでは履歴が増えない');
+  await test('選択ツールで図形を動かさずにクリックしても履歴が増えない', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      await selectTool(page, 'rect');
+      await dragOnCanvas(page, { x: 50, y: 50 }, { x: 150, y: 150 });
+      await selectTool(page, 'select');
+
+      const before = await getDebugState(page);
+
+      // ドラッグを伴わない単純なクリック(同じ点で down/up)で選択するだけの操作
+      await clickOnCanvas(page, { x: 100, y: 100 });
+
+      const after = await getDebugState(page);
+      assert.equal(after.selectedShapeId, before.shapes[0].id, '図形が選択されていません');
+      assert.equal(after.historyLength, before.historyLength, '移動していないクリックで履歴が増えてはいけません');
+
+      printConsoleErrors(consoleErrors, '移動なしクリック');
       assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
     });
   });
