@@ -12,6 +12,13 @@
 // File 相当のオブジェクトを返す。`createWritable().write()` は Blob / ArrayBuffer /
 // TypedArray / 文字列 / WriteParams(`{type:'write', data}`)のいずれも受け付ける。
 //
+// ファイル操作一式(新規作成・名前の変更・削除)のテスト用に、ファイルハンドルにだけ
+// `move(newName)`(実機と同じくフォルダには無い。Node 側は `fs.rename`、移動先が
+// 既にあれば失敗する)を持たせている。`window.__fakeFs.setFileMoveSupported(false)` で
+// `move()` が `NotSupportedError` を投げるようにでき、コピー方式のフォールバック経路も
+// テストできる。`removeEntry(name, { recursive })` はフォルダに対応し、recursive
+// なしで中身があれば `InvalidModificationError` を投げる。
+//
 // 実装方針:
 //   - `context.exposeBinding('__fsCall', ...)` でページ→Node のファイル操作を
 //     `node:fs/promises` にルーティングする。
@@ -191,15 +198,51 @@ async function handleFsCall(rootDir, op, args) {
         });
       }
       case 'remove': {
-        const [relPath] = args;
+        const [relPath, recursive] = args;
         const filePath = resolveSafe(rootDir, relPath);
         try {
-          await fs.unlink(filePath);
+          const st = await fs.stat(filePath);
+          if (st.isDirectory()) {
+            if (!recursive) {
+              const entries = await fs.readdir(filePath);
+              if (entries.length > 0) {
+                return { ok: false, code: 'InvalidModificationError', message: 'the directory is not empty' };
+              }
+            }
+            await fs.rm(filePath, { recursive: true, force: true });
+          } else {
+            await fs.unlink(filePath);
+          }
         } catch (e) {
           if (e.code !== 'ENOENT') throw e;
         }
         fileGenerations.delete(filePath);
         return { ok: true };
+      }
+      case 'move': {
+        const [relFrom, relTo] = args;
+        const fromPath = resolveSafe(rootDir, relFrom);
+        const toPath = resolveSafe(rootDir, relTo);
+        return withFileLock(fromPath, async () => {
+          // 移動先が既にあれば失敗させる(実機の move() は上書きしない)。
+          try {
+            await fs.access(toPath);
+            return { ok: false, code: 'InvalidModificationError', message: 'the destination already exists' };
+          } catch {
+            /* 無ければ続行 */
+          }
+          try {
+            await fs.rename(fromPath, toPath);
+          } catch (e) {
+            if (e.code === 'ENOENT') return { ok: false, code: 'NotFoundError' };
+            throw e;
+          }
+          // 世代番号(競合検知用)は新しいパスへ引き継ぐ。
+          const gen = fileGenerations.get(fromPath) || 0;
+          fileGenerations.delete(fromPath);
+          fileGenerations.set(toPath, gen);
+          return { ok: true };
+        });
       }
       case 'mkdir': {
         const [relPath] = args;
@@ -315,28 +358,32 @@ function initPageFakeFs({ rootName }) {
     return map[ext] || '';
   }
 
-  function makeFileHandle(relPath, name) {
+  function makeFileHandle(initialRelPath, initialName) {
     // 直近の getFile() で観測した世代番号。createWritable().close() 時にこれを
     // Node へ渡し、書き込み直前の最新世代とズレていれば競合とみなす。
     // (`writeData` が createWritable() の直前に getFile() を呼ぶ前提に対応)
     let observedGen = null;
-    return {
+    // move() で書き換わるため、クロージャの定数ではなく可変にしておく
+    // (name はハンドル自身のプロパティを直接書き換える)。
+    let relPath = initialRelPath;
+    const fh = {
       kind: 'file',
-      name,
+      name: initialName,
       async getFile() {
         const res = await window.__fsCall('read', [relPath]);
         if (!res.ok) throw makeError(res.code || 'NotFoundError', 'not found: ' + relPath);
         observedGen = typeof res.gen === 'number' ? res.gen : null;
         const bytes = base64ToBytes(res.dataB64);
-        const type = guessMimeType(name);
+        const type = guessMimeType(fh.name);
         // 本物の File(Blob のサブクラス)を返す。実際の FSA の getFile() も File を
         // 返すため、URL.createObjectURL() 等がそのまま使える(手組みのオブジェクトだと
         // "Overload resolution failed" で弾かれ、blob URL 化のテストができない)。
-        return new File([bytes], name, { type, lastModified: res.lastModified });
+        return new File([bytes], fh.name, { type, lastModified: res.lastModified });
       },
       async createWritable() {
         const chunks = [];
         const genAtOpen = observedGen;
+        const targetRelPath = relPath; // 書き込み中に move されない前提でクロージャに固定する
         return {
           async write(input) {
             let data = input;
@@ -356,7 +403,7 @@ function initPageFakeFs({ rootName }) {
           async close() {
             await maybeFault('close');
             const b64 = bytesToBase64(concatBytes(chunks));
-            const res = await window.__fsCall('write', [relPath, b64, genAtOpen]);
+            const res = await window.__fsCall('write', [targetRelPath, b64, genAtOpen]);
             if (!res.ok) {
               throw makeError(
                 res.code || 'UnknownError',
@@ -370,9 +417,26 @@ function initPageFakeFs({ rootName }) {
         };
       },
       async isSameEntry(other) {
-        return !!other && other.kind === 'file' && other.name === name;
+        return !!other && other.kind === 'file' && other.name === fh.name;
+      },
+      // 実機の move() は同じフォルダ内・別フォルダのどちらも受け付けるが、mdpreview は
+      // 同じフォルダ内の名前変更にしか使わない。フォルダは実機にならい move() を持たない。
+      async move(newName) {
+        if (window.__fakeFsMoveSupported === false) {
+          throw makeError('NotSupportedError', "Failed to execute 'move' on 'FileSystemFileHandle': not supported");
+        }
+        await maybeFault('move');
+        const slash = relPath.lastIndexOf('/');
+        const dir = slash === -1 ? '' : relPath.slice(0, slash);
+        const newRel = joinRel(dir, newName);
+        const res = await window.__fsCall('move', [relPath, newRel]);
+        if (!res.ok) throw makeError(res.code || 'UnknownError', res.message || 'move failed');
+        relPath = newRel;
+        fh.name = newName;
+        observedGen = null;
       },
     };
+    return fh;
   }
 
   function makeDirHandle(relPath, name) {
@@ -413,9 +477,9 @@ function initPageFakeFs({ rootName }) {
         }
         return makeDirHandle(childRel, dirName);
       },
-      async removeEntry(entryName) {
+      async removeEntry(entryName, options) {
         const childRel = joinRel(relPath, entryName);
-        const res = await window.__fsCall('remove', [childRel]);
+        const res = await window.__fsCall('remove', [childRel, !!(options && options.recursive)]);
         if (!res.ok) throw makeError(res.code || 'UnknownError', res.message || 'remove failed');
       },
       async isSameEntry(other) {
@@ -455,12 +519,19 @@ function initPageFakeFs({ rootName }) {
     return makeDirHandle('', rootName);
   };
 
+  // ファイルの move() が使えるかどうか(既定は使える)。false にすると move() が
+  // NotSupportedError を投げ、renameEntry() のコピー方式フォールバックをテストできる。
+  window.__fakeFsMoveSupported = true;
+
   window.__fakeFs = {
     async setFault(next) {
       return window.__fsSetFault(next);
     },
     async setDelay(next) {
       return window.__fsSetDelay(next);
+    },
+    setFileMoveSupported(supported) {
+      window.__fakeFsMoveSupported = supported !== false;
     },
   };
 

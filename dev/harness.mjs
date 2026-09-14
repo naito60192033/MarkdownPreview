@@ -22,6 +22,19 @@
 //      #workArea 全幅になりプレビューが隠れる。サイドバー表示中でも境界のドラッグが
 //      サイドバー幅分ずれない。境界をプレビュー側までドラッグでき、サイドバー開閉後も
 //      比率が保たれる。エディタのスクロール・入力でプレビューがずれ続けない
+//  11. (セクション27)ファイル操作一式(新規 md・新規フォルダ・名前の変更・削除)の確認:
+//      「＋ md」で開いている md のフォルダに 0 バイトの md ができて開かれ、ツリーに出る。
+//      フォルダ付きの入力(sub2/x)で途中のフォルダも作る。同名(大文字小文字違いを含む)・
+//      禁止文字はモーダル内エラーで閉じず既存ファイルは変わらない。フォルダの右クリックから
+//      その中に新規 md・新規フォルダを作れる。未保存のまま開いている md の名前を変えると
+//      内容と未保存の印が残り、保存で新パスに書かれ競合モーダルが出ない(#file= も更新)。
+//      move あり(既定)/ move なし(コピー方式にフォールバック、ステータスバーに明記)/
+//      大文字小文字だけの変更、のいずれでも正しく行われる。開いている md を含むフォルダの
+//      名前を変えると currentPath が付け替わり、md 以外(画像・ドット始まり)もバイト一致で
+//      コピーされ元のフォルダは消える。削除は confirm の OK/キャンセルで反映され、
+//      「完全に削除」の文言・フォルダの件数(md・その他のファイル・フォルダ)・未保存の警告が
+//      確認文に出て、開いていた md を削除すると閉じる。F2/Delete キーでも同じ操作ができる。
+//      ⟳ の再読込で外部変更が反映され、開いていたフォルダは開いたまま
 // すべてのテストでコンソールエラーが0件であることを確認する。
 //
 // 前提: 開発コンテナでは先に `bash dev/setup-container.sh` を1度実行しておく。
@@ -293,6 +306,64 @@ async function drawRectOnAnnotator(page, from, to) {
   await page.mouse.move((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, { steps: 3 });
   await page.mouse.move(p2.x, p2.y, { steps: 3 });
   await page.mouse.up();
+}
+
+// ---------- ファイル操作(新規作成・名前の変更・削除)のテスト用ヘルパー ----------
+async function waitNameModalVisible(page) {
+  await waitFor(async () => page.evaluate(() => document.getElementById('nameModal').style.display !== 'none'), {
+    message: '名前入力モーダルが開きませんでした',
+  });
+}
+async function getNameModalState(page) {
+  return page.evaluate(() => ({
+    visible: document.getElementById('nameModal').style.display !== 'none',
+    value: document.getElementById('nameModalInput').value,
+    errorVisible: document.getElementById('nameModalError').style.display !== 'none',
+    errorText: document.getElementById('nameModalError').textContent,
+  }));
+}
+// nameModal の入力欄の選択範囲(初期値の一部・全部)を消して置き換える。
+async function replaceNameModalInput(page, text) {
+  await page.keyboard.press('Control+a');
+  await page.keyboard.type(text);
+}
+async function rightClickTreeRow(page, selector) {
+  await page.click(selector, { button: 'right' });
+}
+// ツリーの余白(= ルート)を右クリックする。行の無い領域(ツリーの下端付近)を狙う。
+async function rightClickTreeBackground(page) {
+  const box = await page.evaluate(() => {
+    const el = document.getElementById('tree');
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.bottom - 6 };
+  });
+  await page.mouse.click(box.x, box.y, { button: 'right' });
+}
+async function waitContextMenuVisible(page) {
+  await waitFor(async () => page.evaluate(() => !!document.querySelector('.context-menu')), {
+    message: '右クリックメニューが開きませんでした',
+  });
+}
+async function clickContextMenuItem(page, label) {
+  await waitContextMenuVisible(page);
+  const clicked = await page.evaluate((l) => {
+    const items = Array.from(document.querySelectorAll('.context-menu-item'));
+    const btn = items.find((b) => b.textContent.trim() === l);
+    if (!btn) return false;
+    btn.click();
+    return true;
+  }, label);
+  assert.ok(clicked, `右クリックメニューに「${label}」が見つかりません`);
+}
+async function expandTreeDir(page, label) {
+  await page.evaluate((l) => {
+    const rows = Array.from(document.querySelectorAll('#tree .tree-dir-row'));
+    const row = rows.find((r) => r.querySelector('.tree-label').textContent.trim() === l);
+    row.click();
+  }, label);
+}
+async function readDirNames(dir) {
+  return fs.readdir(dir);
 }
 
 // ---------- テスト本体 ----------
@@ -3071,6 +3142,516 @@ async function runTests(browser) {
         }
 
         printConsoleErrors(consoleErrors, 'スクロール同期(下端付近での改行入力)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // 27) ファイル操作一式(新規 md・新規フォルダ・名前の変更・削除)
+  //   1. 「＋ md」: 開いている md のフォルダに 0 バイトの md ができ、開かれ、ツリーに出る。
+  //      sub2/x で途中のフォルダも作る
+  //   2. 同名(大文字小文字違いを含む)・禁止文字はモーダル内エラーで閉じず、既存ファイルは変わらない
+  //   3. フォルダの右クリック → 新規フォルダ / 新規 md がそのフォルダの中にできる
+  //   4. 未保存のまま開いている md の名前を変える(move あり / move なし=コピー方式 / 大文字小文字だけ)
+  //   5. 開いている md を含むフォルダの名前を変える(currentPath の付け替え・バイト一致コピー)
+  //   6. 削除(confirm の OK/キャンセル、フォルダの件数表示、開いていた md を閉じる)
+  //   7. ⟳: 外部で追加した md が出て、開いていたフォルダは開いたまま
+  //   8. F2 / Delete キー操作
+  // ---------------------------------------------------------------------
+
+  console.log('\n27) ファイル操作一式(新規 md・新規フォルダ・名前の変更・削除)');
+
+  await test('「＋ md」で開いている md のフォルダに 0 バイトの md ができて開かれ、ツリーに出る', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'a.md'), '# a\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'a.md');
+
+        await page.click('#newMdBtn');
+        await waitNameModalVisible(page);
+        const initial = await getNameModalState(page);
+        assert.equal(initial.value, '', 'ルート直下の md を開いているときの初期値が空ではありません');
+
+        await page.keyboard.type('newdoc');
+        await page.keyboard.press('Enter');
+
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'newdoc.md', {
+          message: '新規作成した md が開かれませんでした',
+        });
+
+        const st = await fs.stat(path.join(dir, 'newdoc.md'));
+        assert.equal(st.size, 0, '新規作成した md が 0 バイトではありません');
+
+        await waitFor(async () =>
+          page.evaluate(() => !!Array.from(document.querySelectorAll('#tree .tree-file-row')).find((r) => r.textContent.trim() === 'newdoc.md'))
+        , { message: '新規作成した md がツリーに出ていません' });
+
+        printConsoleErrors(consoleErrors, '新規 md(＋ md ボタン)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('ルートの余白の右クリック → 新規 md でフォルダ付きの入力(sub2/x)から途中のフォルダも作る', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'a.md'), '# a\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'a.md');
+
+        await rightClickTreeBackground(page);
+        await clickContextMenuItem(page, '新規 md');
+        await waitNameModalVisible(page);
+
+        await page.keyboard.type('sub2/x');
+        await page.keyboard.press('Enter');
+
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'sub2/x.md', {
+          message: 'sub2/x.md が開かれませんでした',
+        });
+
+        const st = await fs.stat(path.join(dir, 'sub2', 'x.md'));
+        assert.equal(st.size, 0, '途中のフォルダごと作成した md が 0 バイトではありません');
+
+        printConsoleErrors(consoleErrors, '新規 md(フォルダ付きパス)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('同名(大文字小文字違いを含む)・禁止文字はモーダル内エラーで閉じない。既存ファイルは変わらない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'Existing.md'), '既存の内容\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page);
+
+        await page.click('#newMdBtn');
+        await waitNameModalVisible(page);
+        await page.keyboard.type('existing'); // 大文字小文字違いで同名
+        await page.keyboard.press('Enter');
+
+        await waitFor(async () => (await getNameModalState(page)).errorVisible, {
+          message: '同名(大文字小文字違い)のエラーが表示されませんでした',
+        });
+        assert.ok((await getNameModalState(page)).visible, 'エラー時にモーダルが閉じてしまいました');
+
+        await replaceNameModalInput(page, 'bad:name');
+        await page.keyboard.press('Enter');
+        await waitFor(async () => (await getNameModalState(page)).errorVisible, {
+          message: '禁止文字のエラーが表示されませんでした',
+        });
+        assert.ok((await getNameModalState(page)).visible, 'エラー時にモーダルが閉じてしまいました(禁止文字)');
+
+        await page.keyboard.press('Escape');
+        await waitFor(async () => !(await getNameModalState(page)).visible, { message: 'Escape でモーダルが閉じませんでした' });
+
+        const names = await readDirNames(dir);
+        assert.deepEqual(names.sort(), ['Existing.md'], '既存ファイル以外が作られています: ' + JSON.stringify(names));
+        const content = await fs.readFile(path.join(dir, 'Existing.md'), 'utf8');
+        assert.equal(content, '既存の内容\n', '既存ファイルの内容が変わっています');
+
+        printConsoleErrors(consoleErrors, '新規作成の検証エラー');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('フォルダの右クリック → 新規フォルダ / 新規 md がそのフォルダの中にできる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'projA'));
+      await fs.writeFile(path.join(dir, 'projA', 'keep.md'), '# keep\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page);
+
+        await rightClickTreeRow(page, '.tree-dir-row[data-path="projA"]');
+        await clickContextMenuItem(page, '新規フォルダ');
+        await waitNameModalVisible(page);
+        const initial = await getNameModalState(page);
+        assert.equal(initial.value, 'projA/', 'フォルダの右クリックからの新規フォルダの初期値が違います');
+        await page.keyboard.type('sub');
+        await page.keyboard.press('Enter');
+        await waitFor(async () => {
+          const st = await fs.stat(path.join(dir, 'projA', 'sub')).catch(() => null);
+          return !!st && st.isDirectory();
+        }, { message: 'projA/sub フォルダが作られませんでした' });
+
+        await rightClickTreeRow(page, '.tree-dir-row[data-path="projA"]');
+        await clickContextMenuItem(page, '新規 md');
+        await waitNameModalVisible(page);
+        await page.keyboard.type('note');
+        await page.keyboard.press('Enter');
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'projA/note.md', {
+          message: 'projA/note.md が開かれませんでした',
+        });
+        const st = await fs.stat(path.join(dir, 'projA', 'note.md'));
+        assert.equal(st.size, 0);
+
+        printConsoleErrors(consoleErrors, 'フォルダの右クリックからの新規作成');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('名前の変更(move): 未保存のまま開いている md の名前を変える。内容と未保存の印は残り、保存で新パスに書かれ競合モーダルが出ない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 初期\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        await page.click('.cm-content');
+        await page.keyboard.press('Control+End');
+        await page.keyboard.type('\n未保存の本文');
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).dirty);
+
+        await rightClickTreeRow(page, '.tree-file-row[data-path="doc.md"]');
+        await clickContextMenuItem(page, '名前の変更');
+        await waitNameModalVisible(page);
+        const initial = await getNameModalState(page);
+        assert.equal(initial.value, 'doc.md');
+        await page.keyboard.type('renamed'); // 拡張子の手前が選択されているので置き換わる
+        await page.keyboard.press('Enter');
+
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'renamed.md', {
+          message: '名前の変更後に currentPath が付け替わりませんでした',
+        });
+        const stateAfterRename = await page.evaluate(() => window.__mdpreview.getState());
+        assert.equal(stateAfterRename.dirty, true, '未保存の印が消えています');
+        assert.ok((await page.evaluate(() => window.__mdpreview.getEditorText())).includes('未保存の本文'), '編集中の内容が失われました');
+        const hash = await page.evaluate(() => location.hash);
+        assert.equal(decodeURIComponent(hash), '#file=renamed.md', '#file= が新しいパスになっていません');
+
+        await fs.access(path.join(dir, 'doc.md')).then(
+          () => assert.fail('旧ファイル doc.md が残っています'),
+          () => {}
+        );
+        const renamedOnDiskBeforeSave = await fs.readFile(path.join(dir, 'renamed.md'), 'utf8');
+        assert.equal(renamedOnDiskBeforeSave, '# 初期\n', 'ディスク上の内容が保存前に変わっています');
+
+        await page.evaluate(() => window.__mdpreview.save());
+        await waitFor(async () => !(await page.evaluate(() => window.__mdpreview.getState())).dirty, {
+          message: '名前の変更後の保存が完了しませんでした',
+        });
+        assert.equal(
+          await page.evaluate(() => window.__mdpreview.isConflictModalVisible()),
+          false,
+          '名前の変更後の保存で競合モーダルが誤って出ました'
+        );
+        const onDisk = await fs.readFile(path.join(dir, 'renamed.md'), 'utf8');
+        assert.ok(onDisk.includes('未保存の本文'), '保存後のディスクの内容が正しくありません');
+
+        const msg = await page.evaluate(() => window.__mdpreview.getStatusMessage());
+        assert.ok(!msg.includes('コピー方式'), 'move が使える環境でコピー方式のメッセージが出ています: ' + msg);
+
+        printConsoleErrors(consoleErrors, '名前の変更(move・未保存の引き継ぎ)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('名前の変更(move 非対応): コピー方式にフォールバックし、内容を保ったまま名前が変わる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# コピー方式で変更\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.evaluate(() => window.__fakeFs.setFileMoveSupported(false));
+
+        await rightClickTreeRow(page, '.tree-file-row[data-path="doc.md"]');
+        await clickContextMenuItem(page, '名前の変更');
+        await waitNameModalVisible(page);
+        await page.keyboard.type('copied');
+        await page.keyboard.press('Enter');
+
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'copied.md', {
+          message: 'コピー方式での名前の変更後に currentPath が付け替わりませんでした',
+        });
+        const msg = await page.evaluate(() => window.__mdpreview.getStatusMessage());
+        assert.ok(msg.includes('コピー方式'), 'コピー方式で行われたことがステータスバーに出ていません: ' + msg);
+
+        await fs.access(path.join(dir, 'doc.md')).then(
+          () => assert.fail('旧ファイル doc.md が残っています'),
+          () => {}
+        );
+        const content = await fs.readFile(path.join(dir, 'copied.md'), 'utf8');
+        assert.equal(content, '# コピー方式で変更\n', 'コピー方式での内容が一致しません');
+
+        printConsoleErrors(consoleErrors, '名前の変更(コピー方式)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('名前の変更: 大文字小文字だけの変更ができる(move あり)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'lower.md'), '# 大文字小文字\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'lower.md');
+
+        await rightClickTreeRow(page, '.tree-file-row[data-path="lower.md"]');
+        await clickContextMenuItem(page, '名前の変更');
+        await waitNameModalVisible(page);
+        await page.keyboard.type('LOWER'); // 拡張子の手前(lower)が選択されている
+        await page.keyboard.press('Enter');
+
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'LOWER.md', {
+          message: '大文字小文字だけの変更後に currentPath が付け替わりませんでした',
+        });
+
+        const names = await readDirNames(dir);
+        assert.ok(names.includes('LOWER.md'), 'LOWER.md がディスクにありません: ' + JSON.stringify(names));
+        assert.ok(!names.includes('lower.md'), 'lower.md が残っています(大文字小文字だけの変更で二重に存在): ' + JSON.stringify(names));
+        const content = await fs.readFile(path.join(dir, 'LOWER.md'), 'utf8');
+        assert.equal(content, '# 大文字小文字\n');
+
+        printConsoleErrors(consoleErrors, '名前の変更(大文字小文字だけ)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('開いている md を含むフォルダの名前を変える: currentPath が付け替わり、md 以外(画像・ドット始まり)もバイト一致でコピーされ、元のフォルダは消える', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'proj', 'images'), { recursive: true });
+      await fs.writeFile(path.join(dir, 'proj', 'note.md'), '# proj\n', 'utf8');
+      await fs.writeFile(path.join(dir, 'proj', '.hidden'), 'hidden-data\n', 'utf8');
+      const pngBuf = Buffer.from(TEST_PNG_BASE64, 'base64');
+      await fs.writeFile(path.join(dir, 'proj', 'images', 'pic.png'), pngBuf);
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'proj/note.md');
+
+        await rightClickTreeRow(page, '.tree-dir-row[data-path="proj"]');
+        await clickContextMenuItem(page, '名前の変更');
+        await waitNameModalVisible(page);
+        await page.keyboard.type('proj2');
+        await page.keyboard.press('Enter');
+
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'proj2/note.md', {
+          message: 'フォルダの名前の変更後に currentPath が付け替わりませんでした',
+        });
+
+        await fs.access(path.join(dir, 'proj')).then(
+          () => assert.fail('元のフォルダ proj が残っています'),
+          () => {}
+        );
+        const noteContent = await fs.readFile(path.join(dir, 'proj2', 'note.md'), 'utf8');
+        assert.equal(noteContent, '# proj\n');
+        const hiddenContent = await fs.readFile(path.join(dir, 'proj2', '.hidden'), 'utf8');
+        assert.equal(hiddenContent, 'hidden-data\n', 'ドット始まりのファイルがコピーされていません');
+        const copiedPng = await fs.readFile(path.join(dir, 'proj2', 'images', 'pic.png'));
+        assert.ok(copiedPng.equals(pngBuf), '画像がバイト一致でコピーされていません');
+
+        printConsoleErrors(consoleErrors, 'フォルダの名前の変更(開いている md を含む)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('削除: confirm で OK するとディスクから消え、開いていた md なら閉じる。キャンセルすると何も変わらない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'a.md'), '# a\n', 'utf8');
+      await fs.writeFile(path.join(dir, 'b.md'), '# b\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'a.md');
+
+        // キャンセル: 何も変わらない。
+        page.once('dialog', (d) => d.dismiss());
+        await rightClickTreeRow(page, '.tree-file-row[data-path="b.md"]');
+        await clickContextMenuItem(page, '削除');
+        await sleep(300);
+        await fs.access(path.join(dir, 'b.md')); // 例外なく読めれば残っている
+
+        // OK: 開いていた a.md を削除 → 閉じる。
+        let confirmText = null;
+        page.once('dialog', (d) => {
+          confirmText = d.message();
+          d.accept();
+        });
+        await rightClickTreeRow(page, '.tree-file-row[data-path="a.md"]');
+        await clickContextMenuItem(page, '削除');
+
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === null, {
+          message: '削除した md が閉じられませんでした',
+        });
+        assert.ok(confirmText && confirmText.includes('完全に削除'), '削除確認に「完全に削除」の文言がありません: ' + confirmText);
+
+        await fs.access(path.join(dir, 'a.md')).then(
+          () => assert.fail('削除したはずの a.md が残っています'),
+          () => {}
+        );
+
+        printConsoleErrors(consoleErrors, '削除(ファイル・OK/キャンセル)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('削除: フォルダの確認文に件数(md・その他のファイル・フォルダ)が出て、中身ごと削除される', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'proj', 'sub'), { recursive: true });
+      await fs.writeFile(path.join(dir, 'proj', 'a.md'), '# a\n', 'utf8');
+      await fs.writeFile(path.join(dir, 'proj', 'b.md'), '# b\n', 'utf8');
+      await fs.writeFile(path.join(dir, 'proj', 'notes.txt'), 'plain\n', 'utf8');
+      await fs.writeFile(path.join(dir, 'proj', 'sub', 'c.md'), '# c\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page);
+
+        let confirmText = null;
+        page.once('dialog', (d) => {
+          confirmText = d.message();
+          d.accept();
+        });
+        await rightClickTreeRow(page, '.tree-dir-row[data-path="proj"]');
+        await clickContextMenuItem(page, '削除');
+
+        await waitFor(async () => confirmText != null, { message: '確認ダイアログが出ませんでした' });
+        assert.ok(confirmText.includes('md 3 件'), '確認文の md 件数が違います: ' + confirmText);
+        assert.ok(confirmText.includes('その他のファイル 1 件'), '確認文のその他のファイル件数が違います: ' + confirmText);
+        assert.ok(confirmText.includes('フォルダ 1 件'), '確認文のフォルダ件数が違います: ' + confirmText);
+        assert.ok(confirmText.includes('完全に削除'), '確認文に「完全に削除」の文言がありません: ' + confirmText);
+
+        await waitFor(async () => {
+          const st = await fs.stat(path.join(dir, 'proj')).catch(() => null);
+          return st == null;
+        }, { message: 'フォルダが削除されませんでした' });
+
+        printConsoleErrors(consoleErrors, '削除(フォルダ・件数表示)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('削除: 開いている md が未保存のときは確認文に「未保存の変更も失われます」が出る', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# doc\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('.cm-content');
+        await page.keyboard.type('未保存の追記');
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).dirty);
+
+        let confirmText = null;
+        page.once('dialog', (d) => {
+          confirmText = d.message();
+          d.accept();
+        });
+        await rightClickTreeRow(page, '.tree-file-row[data-path="doc.md"]');
+        await clickContextMenuItem(page, '削除');
+
+        await waitFor(async () => confirmText != null);
+        assert.ok(confirmText.includes('未保存の変更も失われます'), '確認文に未保存の警告がありません: ' + confirmText);
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === null);
+
+        printConsoleErrors(consoleErrors, '削除(未保存の警告)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('F2 で名前の変更モーダル、Delete で削除の確認ダイアログが開く(ツリーの行にフォーカスがあるとき)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# doc\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page);
+
+        await page.focus('.tree-file-row[data-path="doc.md"]');
+        await page.keyboard.press('F2');
+        await waitNameModalVisible(page);
+        assert.equal((await getNameModalState(page)).value, 'doc.md');
+        await page.keyboard.press('Escape');
+
+        await page.focus('.tree-file-row[data-path="doc.md"]');
+        let confirmText = null;
+        page.once('dialog', (d) => {
+          confirmText = d.message();
+          d.dismiss();
+        });
+        await page.keyboard.press('Delete');
+        await waitFor(async () => confirmText != null, { message: 'Delete キーで確認ダイアログが出ませんでした' });
+        await sleep(200);
+        await fs.access(path.join(dir, 'doc.md')); // キャンセルしたので残っている
+
+        printConsoleErrors(consoleErrors, 'F2 / Delete キー操作');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('⟳: 外部で追加した md が出て、開いていたフォルダは開いたまま', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'sub'));
+      await fs.writeFile(path.join(dir, 'sub', 'x.md'), '# x\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page);
+
+        await expandTreeDir(page, 'sub');
+        await waitFor(async () =>
+          page.evaluate(() => !!Array.from(document.querySelectorAll('#tree .tree-file-row')).find((r) => r.textContent.trim() === 'x.md'))
+        );
+
+        await fs.writeFile(path.join(dir, 'sub', 'y.md'), '# y\n', 'utf8');
+        await page.click('#refreshTreeBtn');
+
+        await waitFor(async () =>
+          page.evaluate(() => !!Array.from(document.querySelectorAll('#tree .tree-file-row')).find((r) => r.textContent.trim() === 'y.md'))
+        , { message: '外部で追加した md が再読込後に出ていません' });
+        // sub フォルダが開いたまま(x.md がまだ見えている)であること。
+        assert.ok(
+          await page.evaluate(() => !!Array.from(document.querySelectorAll('#tree .tree-file-row')).find((r) => r.textContent.trim() === 'x.md')),
+          '再読込でフォルダが閉じてしまいました'
+        );
+
+        printConsoleErrors(consoleErrors, 'ツリーの再読込(⟳)');
         assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
       });
     } finally {

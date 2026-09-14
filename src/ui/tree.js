@@ -4,6 +4,14 @@
 // 表示するのはフォルダと .md / .markdown だけ。フォルダが先、ファイルが後、
 // それぞれ日本語順(localeCompare('ja'))。ドットで始まるものは隠す。
 // 開いているファイルは .active クラスで強調する。
+//
+// 開いているフォルダのパス集合(openPaths)を持っており、refresh()(外部変更の
+// 取り込みやファイル操作後の再読み込み)は開いていたフォルダを開いたまま再描画する。
+// reveal(path) は祖先フォルダを開いて再描画し、対象の行までスクロールする。
+//
+// ファイル操作(新規作成・名前の変更・削除)の入口として、行または余白の右クリックで
+// onContextMenu({ kind: 'file' | 'dir' | 'root', path, x, y })、行にフォーカスがある
+// 状態での F2 / Delete で onKeyAction({ action: 'rename' | 'delete', kind, path }) を呼ぶ。
 
 import { extname, joinPath } from '../fs/paths.js';
 
@@ -13,10 +21,16 @@ function isVisibleMarkdown(name) {
 }
 
 /**
- * @param {{ container: HTMLElement, onOpenFile: (path: string) => void }} opts
+ * @param {{ container: HTMLElement, onOpenFile: (path: string) => void,
+ *           onContextMenu?: (info: { kind: string, path: string, x: number, y: number }) => void,
+ *           onKeyAction?: (info: { action: string, kind: string, path: string }) => void }} opts
  */
-export function createTree({ container, onOpenFile }) {
+export function createTree({ container, onOpenFile, onContextMenu, onKeyAction }) {
   let currentPath = null;
+  let rootHandle = null;
+  // 開いている(展開している)フォルダのルート相対パスの集合。refresh() はこれを
+  // 保ったまま再描画し、setRoot()(ワークスペースの切り替え)はリセットする。
+  let openPaths = new Set();
 
   async function listEntries(dirHandle) {
     const dirs = [];
@@ -34,6 +48,11 @@ export function createTree({ container, onOpenFile }) {
     return { dirs, files };
   }
 
+  function fireContextMenu(e, kind, path) {
+    e.preventDefault();
+    if (typeof onContextMenu === 'function') onContextMenu({ kind, path, x: e.clientX, y: e.clientY });
+  }
+
   function buildFileRow(fileHandle, path) {
     const li = document.createElement('li');
     li.className = 'tree-file';
@@ -42,30 +61,39 @@ export function createTree({ container, onOpenFile }) {
     row.tabIndex = 0;
     row.textContent = fileHandle.name;
     row.dataset.path = path;
+    row.dataset.kind = 'file';
     if (path === currentPath) row.classList.add('active');
     row.addEventListener('click', () => {
       if (typeof onOpenFile === 'function') onOpenFile(path);
     });
+    row.addEventListener('contextmenu', (e) => fireContextMenu(e, 'file', path));
     row.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         if (typeof onOpenFile === 'function') onOpenFile(path);
+      } else if (e.key === 'F2') {
+        e.preventDefault();
+        if (typeof onKeyAction === 'function') onKeyAction({ action: 'rename', kind: 'file', path });
+      } else if (e.key === 'Delete') {
+        e.preventDefault();
+        if (typeof onKeyAction === 'function') onKeyAction({ action: 'delete', kind: 'file', path });
       }
     });
     li.appendChild(row);
     return li;
   }
 
-  function buildDirRow(dirHandle, path) {
+  function buildDirRow(dirHandle, path, pending) {
     const li = document.createElement('li');
     li.className = 'tree-dir';
     const row = document.createElement('div');
     row.className = 'tree-row tree-dir-row';
     row.tabIndex = 0;
+    row.dataset.path = path;
+    row.dataset.kind = 'dir';
 
     const caret = document.createElement('span');
     caret.className = 'tree-caret';
-    caret.textContent = '▶';
     const label = document.createElement('span');
     label.className = 'tree-label';
     label.textContent = dirHandle.name;
@@ -75,17 +103,21 @@ export function createTree({ container, onOpenFile }) {
 
     const childUl = document.createElement('ul');
     childUl.className = 'tree-children';
-    childUl.hidden = true;
     li.appendChild(childUl);
 
     let loaded = false;
-    async function toggle() {
-      const isOpen = !childUl.hidden;
-      if (isOpen) {
-        childUl.hidden = true;
-        caret.textContent = '▶';
-        return;
-      }
+    const openAtBuild = openPaths.has(path);
+    caret.textContent = openAtBuild ? '▼' : '▶';
+    childUl.hidden = !openAtBuild;
+    if (openAtBuild) {
+      loaded = true;
+      // 開いたままのフォルダの中身。renderDir() が兄弟と並行して待つ(refresh() / reveal() が
+      // 返った時点で、開いているフォルダの中身まで描画し終わっているようにするため)。
+      pending.push(renderDir(dirHandle, path, childUl));
+    }
+
+    async function openDir() {
+      openPaths.add(path);
       childUl.hidden = false;
       caret.textContent = '▼';
       if (!loaded) {
@@ -93,11 +125,27 @@ export function createTree({ container, onOpenFile }) {
         await renderDir(dirHandle, path, childUl);
       }
     }
+    function closeDir() {
+      openPaths.delete(path);
+      childUl.hidden = true;
+      caret.textContent = '▶';
+    }
+    async function toggle() {
+      if (childUl.hidden) await openDir();
+      else closeDir();
+    }
     row.addEventListener('click', toggle);
+    row.addEventListener('contextmenu', (e) => fireContextMenu(e, 'dir', path));
     row.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         toggle();
+      } else if (e.key === 'F2') {
+        e.preventDefault();
+        if (typeof onKeyAction === 'function') onKeyAction({ action: 'rename', kind: 'dir', path });
+      } else if (e.key === 'Delete') {
+        e.preventDefault();
+        if (typeof onKeyAction === 'function') onKeyAction({ action: 'delete', kind: 'dir', path });
       }
     });
 
@@ -116,21 +164,80 @@ export function createTree({ container, onOpenFile }) {
       ulEl.appendChild(li);
       return;
     }
+    const pending = [];
     for (const dir of entries.dirs) {
-      ulEl.appendChild(buildDirRow(dir, joinPath(dirPath, dir.name)));
+      ulEl.appendChild(buildDirRow(dir, joinPath(dirPath, dir.name), pending));
     }
     for (const file of entries.files) {
       ulEl.appendChild(buildFileRow(file, joinPath(dirPath, file.name)));
     }
+    await Promise.all(pending);
+  }
+
+  // 新しいツリーは DOM の外で組み立て終えてから差し替える(SMB で一覧に時間がかかっても
+  // ツリーが空になって点滅しないように)。refresh() が重なったときは、後から始めたものだけを
+  // 反映する(先に始めた描画が後から終わって古い内容で上書きしないように)。
+  let renderSeq = 0;
+  async function renderRoot() {
+    const mySeq = ++renderSeq;
+    if (!rootHandle) {
+      container.innerHTML = '';
+      return;
+    }
+    const rootUl = document.createElement('ul');
+    rootUl.className = 'tree-root';
+    await renderDir(rootHandle, '', rootUl);
+    if (mySeq !== renderSeq) return;
+    container.replaceChildren(rootUl);
   }
 
   async function setRoot(root) {
-    container.innerHTML = '';
-    if (!root) return;
-    const rootUl = document.createElement('ul');
-    rootUl.className = 'tree-root';
-    container.appendChild(rootUl);
-    await renderDir(root, '', rootUl);
+    rootHandle = root;
+    openPaths = new Set();
+    await renderRoot();
+  }
+
+  /** 開いていたフォルダを開いたまま再描画する(外部変更の取り込み・ファイル操作後の更新用)。 */
+  async function refresh() {
+    if (!rootHandle) return;
+    await renderRoot();
+  }
+
+  /** 祖先フォルダを開いて再描画し、対象の行までスクロールする。 */
+  async function reveal(path) {
+    if (!rootHandle || !path) return;
+    const segs = path.split('/');
+    segs.pop(); // 最後の区切りは対象自身の名前なので、祖先だけ開く
+    let acc = '';
+    for (const seg of segs) {
+      acc = acc ? `${acc}/${seg}` : seg;
+      openPaths.add(acc);
+    }
+    await refresh();
+    for (const row of container.querySelectorAll('.tree-row')) {
+      if (row.dataset.path === path) {
+        row.scrollIntoView({ block: 'nearest' });
+        break;
+      }
+    }
+  }
+
+  /** 名前を変更したフォルダの配下にある openPaths を新しいパスへ付け替える。 */
+  function renamed(oldPath, newPath) {
+    const next = new Set();
+    for (const p of openPaths) {
+      if (p === oldPath) next.add(newPath);
+      else if (p.startsWith(`${oldPath}/`)) next.add(newPath + p.slice(oldPath.length));
+      else next.add(p);
+    }
+    openPaths = next;
+  }
+
+  /** 削除したフォルダの配下にある openPaths を取り除く。 */
+  function removed(path) {
+    for (const p of Array.from(openPaths)) {
+      if (p === path || p.startsWith(`${path}/`)) openPaths.delete(p);
+    }
   }
 
   function setActivePath(path) {
@@ -140,5 +247,13 @@ export function createTree({ container, onOpenFile }) {
     });
   }
 
-  return { setRoot, setActivePath };
+  // 行の上ならその行、余白なら kind: 'root' で通知する。
+  container.addEventListener('contextmenu', (e) => {
+    const row = e.target.closest('.tree-row');
+    if (row) return; // 行自身のハンドラ(fireContextMenu)に任せる
+    e.preventDefault();
+    if (typeof onContextMenu === 'function') onContextMenu({ kind: 'root', path: '', x: e.clientX, y: e.clientY });
+  });
+
+  return { setRoot, setActivePath, refresh, reveal, renamed, removed };
 }

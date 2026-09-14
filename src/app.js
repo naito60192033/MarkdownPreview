@@ -13,6 +13,8 @@ import { createTree } from './ui/tree.js';
 import { createStartScreen } from './ui/start.js';
 import { createSettingsPanel } from './ui/settings-panel.js';
 import { createConflictModal } from './ui/conflict-modal.js';
+import { createNameModal } from './ui/name-modal.js';
+import { createContextMenu } from './ui/context-menu.js';
 import { createNotifyBar } from './ui/notify-bar.js';
 import { createStatusBar } from './ui/statusbar.js';
 import { createResizer } from './ui/resizer.js';
@@ -25,8 +27,23 @@ import { loadSettings } from './settings.js';
 import baseCss from './theme/base.css';
 import { renderDocument, collectHeadingsFor } from './render/pipeline.js';
 import { updateTocBlocks } from './render/toc.js';
-import { ensurePermission, readTextByPath, writeByPath, ConflictError } from './fs/workspace.js';
+import {
+  ensurePermission,
+  readTextByPath,
+  writeByPath,
+  getDirHandle,
+  createFileByPath,
+  createDirByPath,
+  renameEntry,
+  deleteEntry,
+  countEntries,
+  findEntryName,
+  ConflictError,
+  AlreadyExistsError,
+} from './fs/workspace.js';
 import { rememberRoot, reconnectRoot, checkRootPermission } from './fs/recent-roots.js';
+import { dirname, basename } from './fs/paths.js';
+import { validateEntryName, validateCreatePath, ensureMdExtension } from './fs/names.js';
 
 const LAST_ROOT_ID_KEY = 'mdpreview.lastRootId';
 const VIEW_MODE_KEY = 'mdpreview.viewMode';
@@ -42,8 +59,12 @@ const state = {
   eol: '\n',
   dirty: false,
   saving: false,
+  // ファイル操作(新規作成・名前の変更・削除)の実行中フラグ。true の間は他の操作
+  // ボタン・右クリックメニュー・保存を受け付けない(排他)。
+  fileOpBusy: false,
   // 保存の開始時・終了時に増やす世代番号(レビュー指摘: 変更検知と保存の競合対策)。
   // watch.js の確認処理はこの値を使い、開始時から変わっていれば結果を捨てる。
+  // ファイル操作の開始時・終了時にも増やす(監視の結果とすれ違わないように)。
   writeGeneration: 0,
   suppressChangeEvents: false,
   lineMap: [],
@@ -53,7 +74,7 @@ const state = {
 
 let els = {};
 let editor, preview, tree, watcher, scrollSync, imageEdit;
-let startScreen, settingsPanel, conflictModal, notifyBar, statusbar, resizer;
+let startScreen, settingsPanel, conflictModal, nameModal, contextMenu, notifyBar, statusbar, resizer;
 
 // ---------- localStorage ヘルパー ----------
 function lastFileKey(rootId) {
@@ -101,6 +122,9 @@ function cacheEls() {
     toggleSidebarBtn: document.getElementById('toggleSidebarBtn'),
     workspaceName: document.getElementById('workspaceName'),
     viewModeBtns: Array.from(document.querySelectorAll('.view-mode-btn')),
+    newMdBtn: document.getElementById('newMdBtn'),
+    newFolderBtn: document.getElementById('newFolderBtn'),
+    refreshTreeBtn: document.getElementById('refreshTreeBtn'),
     saveBtn: document.getElementById('saveBtn'),
     exportBtn: document.getElementById('exportBtn'),
     exportMenu: document.getElementById('exportMenu'),
@@ -160,6 +184,13 @@ function cacheEls() {
     conflictCancelBtn: document.getElementById('conflictCancelBtn'),
     conflictReloadBtn: document.getElementById('conflictReloadBtn'),
     conflictOverwriteBtn: document.getElementById('conflictOverwriteBtn'),
+
+    nameModal: document.getElementById('nameModal'),
+    nameModalTitle: document.getElementById('nameModalTitle'),
+    nameModalInput: document.getElementById('nameModalInput'),
+    nameModalError: document.getElementById('nameModalError'),
+    nameModalCancelBtn: document.getElementById('nameModalCancelBtn'),
+    nameModalOkBtn: document.getElementById('nameModalOkBtn'),
   };
 }
 
@@ -318,6 +349,328 @@ async function reloadCurrentFile() {
   await scheduleRender(true);
 }
 
+// ---------- ファイルを閉じる(削除で開いていた md が消えたときに使う) ----------
+async function closeCurrentFile() {
+  if (state.currentPath) watcher.unwatch(state.currentPath);
+  unwatchAllDeps();
+  state.currentPath = null;
+  state.dirty = false;
+  state.lastModified = null;
+  setEditorTextSilently('', { preserveCursor: false });
+  await preview.render({ html: '', lineMap: [], root: state.root, mdPath: '' });
+  history.replaceState(null, '', location.pathname + location.search);
+  try {
+    localStorage.removeItem(lastFileKey(state.rootId));
+  } catch {
+    /* noop */
+  }
+  syncDirtyUi();
+  tree.setActivePath(null);
+}
+
+// ---------- ファイル操作(新規 md・新規フォルダ・名前の変更・削除) ----------
+// 操作中は state.fileOpBusy を立て、他の操作ボタン・右クリックメニュー・保存
+// (doSave)を受け付けない(排他)。watch.js の isWriting() もこのフラグを見る。
+// 開始・終了のたびに writeGeneration を増やし、監視の確認処理とすれ違わないようにする
+// (src/watch.js の保存との競合対策と同じ仕組み)。
+function beginFileOp() {
+  state.fileOpBusy = true;
+  state.writeGeneration++;
+}
+function endFileOp() {
+  state.fileOpBusy = false;
+  state.writeGeneration++;
+}
+async function runFileOp(fn) {
+  beginFileOp();
+  try {
+    await fn();
+  } finally {
+    endFileOp();
+  }
+}
+
+// 新規作成の作成先の初期値: 今開いている md のフォルダ(開いていなければルート)。
+function defaultCreateDir() {
+  return state.currentPath ? dirname(state.currentPath) : '';
+}
+
+// NotFoundError(フォルダが無い)は null として返す(新規作成の同名チェックでは
+// 「まだ無い」= 衝突なしとして扱ってよいため)。
+async function safeGetDirHandle(dirPath) {
+  try {
+    return await getDirHandle(state.root, dirPath, { create: false });
+  } catch (e) {
+    if (e && e.name === 'NotFoundError') return null;
+    throw e;
+  }
+}
+
+// 新規作成モーダルの入力値(ルート相対パス)に .md の拡張子を補う。
+// 入力欄が「フォルダ/」のまま(名前未入力)のときは補わない
+// (validateCreatePath() 側で「名前を入力してください」を出させるため)。
+function normalizeCreatePath(raw, kind) {
+  return kind === 'file' && !raw.endsWith('/') ? ensureMdExtension(raw) : raw;
+}
+
+async function validateCreateInput(raw, kind) {
+  const path = normalizeCreatePath(raw, kind);
+  const syntaxErr = validateCreatePath(path);
+  if (syntaxErr) return syntaxErr;
+  const dirPath = dirname(path);
+  const name = basename(path);
+  try {
+    const dirHandle = await safeGetDirHandle(dirPath);
+    if (dirHandle) {
+      const existing = await findEntryName(dirHandle, name);
+      if (existing != null) return `既に同じ名前の${kind === 'file' ? 'ファイル' : 'フォルダ'}があります`;
+    }
+  } catch (e) {
+    return '確認できませんでした: ' + ((e && e.message) || String(e));
+  }
+  return null;
+}
+
+async function doCreateMd(dirPath) {
+  if (!state.root) return;
+  if (state.fileOpBusy) {
+    statusbar.setMessage('ファイル操作中です', { isError: true });
+    return;
+  }
+  const initial = dirPath ? `${dirPath}/` : '';
+  const value = await nameModal.open({
+    title: '新規 md',
+    initialValue: initial,
+    selectionStart: initial.length,
+    selectionEnd: initial.length,
+    validate: (raw) => validateCreateInput(raw, 'file'),
+  });
+  if (value == null) return; // キャンセル
+  const inputPath = normalizeCreatePath(value, 'file');
+
+  await runFileOp(async () => {
+    // 実際に作ったパス(途中のフォルダは実在の大文字小文字に合わせたもの)を使う。
+    let finalPath;
+    try {
+      finalPath = await createFileByPath(state.root, inputPath);
+    } catch (e) {
+      const msg = e instanceof AlreadyExistsError ? '既に同じ名前のファイルがあります' : (e && e.message) || String(e);
+      statusbar.setMessage('作成に失敗しました: ' + msg, { isError: true });
+      return;
+    }
+    await tree.reveal(finalPath);
+    const opened = await openFile(finalPath);
+    statusbar.setMessage(opened ? '作成しました' : '作成しました(開いていません)');
+  });
+}
+
+async function doCreateFolder(dirPath) {
+  if (!state.root) return;
+  if (state.fileOpBusy) {
+    statusbar.setMessage('ファイル操作中です', { isError: true });
+    return;
+  }
+  const initial = dirPath ? `${dirPath}/` : '';
+  const value = await nameModal.open({
+    title: '新規フォルダ',
+    initialValue: initial,
+    selectionStart: initial.length,
+    selectionEnd: initial.length,
+    validate: (raw) => validateCreateInput(raw, 'dir'),
+  });
+  if (value == null) return; // キャンセル
+  const inputPath = normalizeCreatePath(value, 'dir');
+
+  await runFileOp(async () => {
+    let finalPath;
+    try {
+      finalPath = await createDirByPath(state.root, inputPath);
+    } catch (e) {
+      const msg = e instanceof AlreadyExistsError ? '既に同じ名前のフォルダがあります' : (e && e.message) || String(e);
+      statusbar.setMessage('作成に失敗しました: ' + msg, { isError: true });
+      return;
+    }
+    await tree.reveal(finalPath);
+    statusbar.setMessage('作成しました');
+  });
+}
+
+async function openRenameModal(kind, path) {
+  if (!state.root) return;
+  if (state.fileOpBusy) {
+    statusbar.setMessage('ファイル操作中です', { isError: true });
+    return;
+  }
+  const dirPath = dirname(path);
+  const oldName = basename(path);
+  let selEnd = oldName.length;
+  if (kind === 'file') {
+    const dot = oldName.lastIndexOf('.');
+    if (dot > 0) selEnd = dot; // 拡張子の手前までを選択した状態で開く
+  }
+  const value = await nameModal.open({
+    title: '名前の変更',
+    initialValue: oldName,
+    selectionStart: 0,
+    selectionEnd: selEnd,
+    validate: async (raw) => {
+      if (raw.includes('/')) return '「/」は使えません(別フォルダへは移動できません)';
+      const name = kind === 'file' ? ensureMdExtension(raw) : raw;
+      const err = validateEntryName(name);
+      if (err) return err;
+      if (name === oldName) return null; // 変更なし(呼び出し側で何もしない扱いにする)
+      try {
+        const dirHandle = await safeGetDirHandle(dirPath);
+        const existing = dirHandle ? await findEntryName(dirHandle, name) : null;
+        // 自分自身(大文字小文字だけの変更)以外に同名があれば不可。
+        if (existing != null && existing !== oldName) {
+          return `既に同じ名前の${kind === 'file' ? 'ファイル' : 'フォルダ'}があります`;
+        }
+      } catch (e) {
+        return '確認できませんでした: ' + ((e && e.message) || String(e));
+      }
+      return null;
+    },
+  });
+  if (value == null) return; // キャンセル
+  const newName = kind === 'file' ? ensureMdExtension(value) : value;
+  if (newName === oldName) return; // 実質変更なし
+  await doRenameCommit(kind, path, newName);
+}
+
+async function doRenameCommit(kind, path, newName) {
+  await runFileOp(async () => {
+    const isCurrentFile = kind === 'file' && state.currentPath === path;
+    const isCurrentInsideDir =
+      kind === 'dir' && !!state.currentPath && (state.currentPath === path || state.currentPath.startsWith(`${path}/`));
+
+    // 影響を受ける監視(開いている md のパス)は先に外す(途中で「見つからなく
+    // なりました」が誤って出ないように)。
+    if (isCurrentFile || isCurrentInsideDir) {
+      watcher.unwatch(state.currentPath);
+      unwatchAllDeps();
+    }
+
+    statusbar.setMessage(kind === 'dir' ? 'コピー中...' : '名前を変更中...', { timeoutMs: 0 });
+    let result;
+    try {
+      result = await renameEntry(state.root, path, newName, {
+        onProgress: (p) => statusbar.setMessage(`コピー中 ${p.current}/${p.total}`, { timeoutMs: 0 }),
+      });
+    } catch (e) {
+      // 失敗: 外した監視を元のパスへ戻し、@import 先の監視も再描画で登録し直す。
+      // 一時名が残るなど途中の状態がありうるため、ツリーも読み直す。
+      if (isCurrentFile || isCurrentInsideDir) {
+        watcher.watch(state.currentPath, handleMdExternalChange, state.lastModified);
+        await scheduleRender(true);
+      }
+      await tree.refresh();
+      // 一時名の案内を含むことがあるため、次の操作まで消さない(timeoutMs: 0)。
+      statusbar.setMessage('名前の変更に失敗しました: ' + ((e && e.message) || String(e)), { isError: true, timeoutMs: 0 });
+      return;
+    }
+
+    if (kind === 'dir') tree.renamed(path, result.path);
+    await tree.refresh();
+
+    if (isCurrentFile || isCurrentInsideDir) {
+      const newCurrentPath = isCurrentFile ? result.path : result.path + state.currentPath.slice(path.length);
+      state.currentPath = newCurrentPath;
+      // 新しいファイルの lastModified を読み直す(次の保存で競合モーダルが誤って
+      // 出ないように)。編集中の内容と未保存状態(state.dirty)はそのまま引き継ぐ。
+      let fresh = null;
+      try {
+        fresh = await readTextByPath(state.root, newCurrentPath);
+      } catch {
+        /* noop */
+      }
+      state.lastModified = fresh ? fresh.lastModified : null;
+      watcher.watch(newCurrentPath, handleMdExternalChange, state.lastModified);
+      setHashFile(newCurrentPath);
+      setLastFile(state.rootId, newCurrentPath);
+      tree.setActivePath(newCurrentPath);
+      syncDirtyUi();
+      // 相対 @import・画像の基準(パス)が変わるため再描画する。
+      await scheduleRender(true);
+    }
+
+    statusbar.setMessage(result.method === 'move' ? '名前を変更しました' : '名前を変更しました(コピー方式)');
+  });
+}
+
+async function doDeleteEntry(kind, path) {
+  if (!state.root) return;
+  if (state.fileOpBusy) {
+    statusbar.setMessage('ファイル操作中です', { isError: true });
+    return;
+  }
+  const name = basename(path);
+  const isCurrentFile = kind === 'file' && state.currentPath === path;
+  const isCurrentInsideDir =
+    kind === 'dir' && !!state.currentPath && (state.currentPath === path || state.currentPath.startsWith(`${path}/`));
+  const willLoseUnsaved = (isCurrentFile || isCurrentInsideDir) && state.dirty;
+
+  let confirmText;
+  if (kind === 'file') {
+    confirmText = `「${name}」を削除します。ごみ箱に入らず完全に削除されます(元に戻せません)。よろしいですか?`;
+  } else {
+    let counts;
+    try {
+      const dirHandle = await getDirHandle(state.root, path, { create: false });
+      counts = await countEntries(dirHandle);
+    } catch (e) {
+      statusbar.setMessage('フォルダの中身を確認できませんでした: ' + ((e && e.message) || String(e)), { isError: true });
+      return;
+    }
+    confirmText =
+      `「${name}」を中身ごと削除します(md ${counts.md} 件・その他のファイル ${counts.otherFiles} 件・フォルダ ${counts.dirs} 件)。` +
+      'ごみ箱に入らず完全に削除されます(元に戻せません)。よろしいですか?';
+  }
+  if (willLoseUnsaved) confirmText += '\n未保存の変更も失われます。';
+
+  if (!window.confirm(confirmText)) return;
+
+  await runFileOp(async () => {
+    try {
+      await deleteEntry(state.root, path);
+    } catch (e) {
+      statusbar.setMessage('削除に失敗しました: ' + ((e && e.message) || String(e)), { isError: true });
+      return;
+    }
+    if (kind === 'dir') tree.removed(path);
+    await tree.refresh();
+    if (isCurrentFile || isCurrentInsideDir) {
+      await closeCurrentFile();
+    }
+    statusbar.setMessage('削除しました');
+  });
+}
+
+// ---------- ツリーの右クリックメニュー・F2/Delete ----------
+function showTreeContextMenu({ kind, path, x, y }) {
+  if (!state.root) return;
+  const items = [];
+  if (kind === 'file') {
+    items.push({ label: '名前の変更', onClick: () => openRenameModal('file', path) });
+    items.push({ label: '削除', onClick: () => doDeleteEntry('file', path) });
+  } else if (kind === 'dir') {
+    items.push({ label: '新規 md', onClick: () => doCreateMd(path) });
+    items.push({ label: '新規フォルダ', onClick: () => doCreateFolder(path) });
+    items.push({ separator: true });
+    items.push({ label: '名前の変更', onClick: () => openRenameModal('dir', path) });
+    items.push({ label: '削除', onClick: () => doDeleteEntry('dir', path) });
+  } else {
+    items.push({ label: '新規 md', onClick: () => doCreateMd('') });
+    items.push({ label: '新規フォルダ', onClick: () => doCreateFolder('') });
+  }
+  contextMenu.open(x, y, items);
+}
+
+function handleTreeKeyAction({ action, kind, path }) {
+  if (action === 'rename') openRenameModal(kind, path);
+  else if (action === 'delete') doDeleteEntry(kind, path);
+}
+
 // ---------- 外部変更の取り込み ----------
 function handleMdExternalChange(info) {
   if (info.missing) {
@@ -399,6 +752,10 @@ function markSaved(lastModified, savedLf) {
 
 async function doSave() {
   if (!state.root || !state.currentPath) return;
+  if (state.fileOpBusy) {
+    statusbar.setMessage('ファイル操作中です', { isError: true });
+    return;
+  }
   if (state.saving) return; // レビュー指摘: 保存中の再実行(二重 Ctrl+S)は無視する
   // state.saving は await をまたぐ前に同期的に立てる(これより後に await を挟むと、
   // ほぼ同時に呼ばれた2回目の doSave() がこのチェックをすり抜けてしまうため)。
@@ -601,6 +958,10 @@ function bindStaticUi() {
 
   els.saveBtn.addEventListener('click', () => doSave());
 
+  els.newMdBtn.addEventListener('click', () => doCreateMd(defaultCreateDir()));
+  els.newFolderBtn.addEventListener('click', () => doCreateFolder(defaultCreateDir()));
+  els.refreshTreeBtn.addEventListener('click', () => tree.refresh());
+
   els.exportBtn.addEventListener('click', () => {
     els.exportMenu.style.display = els.exportMenu.style.display === 'none' ? '' : 'none';
   });
@@ -671,12 +1032,17 @@ async function setup() {
     getLineMap: () => state.lineMap,
   });
 
-  tree = createTree({ container: els.treeContainer, onOpenFile: (path) => openFile(path) });
+  tree = createTree({
+    container: els.treeContainer,
+    onOpenFile: (path) => openFile(path),
+    onContextMenu: (info) => showTreeContextMenu(info),
+    onKeyAction: (info) => handleTreeKeyAction(info),
+  });
 
   watcher = createWatcher({
     getRoot: () => state.root,
     getSettings: () => state.settings,
-    isWriting: () => state.saving,
+    isWriting: () => state.saving || state.fileOpBusy,
     getWriteGeneration: () => state.writeGeneration,
   });
 
@@ -714,6 +1080,17 @@ async function setup() {
     reloadBtn: els.conflictReloadBtn,
     cancelBtn: els.conflictCancelBtn,
   });
+
+  nameModal = createNameModal({
+    overlay: els.nameModal,
+    titleEl: els.nameModalTitle,
+    input: els.nameModalInput,
+    errorEl: els.nameModalError,
+    okBtn: els.nameModalOkBtn,
+    cancelBtn: els.nameModalCancelBtn,
+  });
+
+  contextMenu = createContextMenu();
 
   settingsPanel = createSettingsPanel({
     overlay: els.settingsPanel,
@@ -809,6 +1186,7 @@ function exposeTestHooks() {
       lastModified: state.lastModified,
       deps: state.deps.slice(),
       writeGeneration: state.writeGeneration,
+      fileOpBusy: state.fileOpBusy,
     }),
 
     getPreviewDocument: () => preview.getDocument(),

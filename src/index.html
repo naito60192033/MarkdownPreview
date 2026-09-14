@@ -60,6 +60,11 @@
 
     <div class="main" id="mainArea">
       <aside id="sidebar" class="sidebar">
+        <div class="sidebar-actions">
+          <button id="newMdBtn" type="button" class="btn btn-small" title="新規 md">＋ md</button>
+          <button id="newFolderBtn" type="button" class="btn btn-small" title="新規フォルダ">＋ フォルダ</button>
+          <button id="refreshTreeBtn" type="button" class="icon-btn" title="ツリーの再読込">⟳</button>
+        </div>
         <div id="tree" class="tree"></div>
       </aside>
       <!-- エディタ | 境界 | プレビュー。幅の比率はこの要素の幅に対して決める(src/ui/resizer.js) -->
@@ -175,6 +180,21 @@
       <div class="modal-footer">
         <div></div>
         <button id="settingsCloseBtn" type="button" class="btn btn-primary">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 名前を入力するモーダル(新規作成・名前の変更で共用) -->
+  <div id="nameModal" class="modal-overlay" style="display:none;">
+    <div class="modal name-modal">
+      <h2 id="nameModalTitle">名前を入力</h2>
+      <input type="text" id="nameModalInput" class="name-modal-input" autocomplete="off" spellcheck="false" />
+      <p id="nameModalError" class="name-modal-error" style="display:none;"></p>
+      <div class="modal-footer">
+        <button id="nameModalCancelBtn" type="button" class="btn">キャンセル</button>
+        <div class="right">
+          <button id="nameModalOkBtn" type="button" class="btn btn-primary">OK</button>
+        </div>
       </div>
     </div>
   </div>
