@@ -62,12 +62,15 @@
       <aside id="sidebar" class="sidebar">
         <div id="tree" class="tree"></div>
       </aside>
-      <div id="editorPane" class="pane editor-pane">
-        <div id="editorHost" class="editor-host"></div>
-      </div>
-      <div id="previewResizer" class="resizer resizer-vertical"></div>
-      <div id="previewPane" class="pane preview-pane">
-        <iframe id="preview" class="preview-frame" title="プレビュー"></iframe>
+      <!-- エディタ | 境界 | プレビュー。幅の比率はこの要素の幅に対して決める(src/ui/resizer.js) -->
+      <div id="workArea" class="workarea">
+        <div id="editorPane" class="pane editor-pane">
+          <div id="editorHost" class="editor-host"></div>
+        </div>
+        <div id="previewResizer" class="resizer resizer-vertical"></div>
+        <div id="previewPane" class="pane preview-pane">
+          <iframe id="preview" class="preview-frame" title="プレビュー"></iframe>
+        </div>
       </div>
     </div>
 

@@ -379,8 +379,17 @@ button {
   flex-direction: column;
 }
 
+/* エディタ | 境界 | プレビュー を包む要素。幅の比率はこの要素の幅が基準(src/ui/resizer.js) */
+.workarea {
+  flex: 1 1 auto;
+  display: flex;
+  min-width: 0;
+}
+
 .editor-pane {
-  flex: 1 1 50%;
+  /* 幅は src/ui/resizer.js が .workarea に設定する --resizer-ratio(0.1〜0.9)で決める */
+  flex: 0 0 calc(var(--resizer-ratio, 0.5) * 100%);
+  min-width: 240px;
   border-right: 1px solid var(--color-border);
 }
 
@@ -413,8 +422,14 @@ body.resizing {
   user-select: none;
 }
 
+/* ドラッグ中はプレビューの iframe にマウスイベントを渡さない(渡すと mousemove / mouseup が
+ * 親に届かず、プレビュー側へ境界を動かせなくなる) */
+body.resizing .preview-frame {
+  pointer-events: none;
+}
+
 .preview-pane {
-  flex: 1 1 50%;
+  flex: 1 1 0;
 }
 
 .preview-frame {
@@ -432,6 +447,7 @@ body.resizing {
 }
 
 .main.view-editor-only .editor-pane {
+  flex: 1 1 auto;
   border-right: none;
 }
 

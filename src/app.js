@@ -115,6 +115,7 @@ function cacheEls() {
     notifyDismissBtn: document.getElementById('notifyDismissBtn'),
 
     mainArea: document.getElementById('mainArea'),
+    workArea: document.getElementById('workArea'),
     treeContainer: document.getElementById('tree'),
     editorPane: document.getElementById('editorPane'),
     editorHost: document.getElementById('editorHost'),
@@ -166,7 +167,6 @@ function cacheEls() {
 function showAppScreen() {
   els.startScreen.style.display = 'none';
   els.appScreen.style.display = '';
-  if (resizer) resizer.reapply();
 }
 
 // ---------- 未保存の確認 ----------
@@ -637,12 +637,12 @@ function bindStaticUi() {
     }
   });
 
+  // 比率の基準はサイドバーを含まない #workArea(含めるとドラッグ位置がサイドバー分ずれる)。
+  // 最小幅は CSS(.editor-pane の min-width)で決める。
   resizer = createResizer({
     handle: els.previewResizer,
-    leftPane: els.editorPane,
-    container: els.mainArea,
+    container: els.workArea,
     storageKey: 'mdpreview.editorWidthRatio',
-    min: 240,
   });
 }
 

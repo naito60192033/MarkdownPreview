@@ -51,8 +51,16 @@ function collectLineElements(doc) {
     .filter((x) => !Number.isNaN(x.line));
 }
 
+// el の、scrollRoot のスクロール内容の先頭からの位置(px)。
+// scrollRoot がページ全体のスクロール(iframe の <html> = scrollingElement)の場合、
+// <html> 自身の getBoundingClientRect().top は -scrollTop になる(一緒にスクロールする)ため
+// 基準にしてはいけない(scrollTop が二重に加算され、同期のたびにプレビューが下へずれていく)。
+// ビューポートの上端(0)を基準にする。
 function topOf(el, scrollRoot) {
-  return el.getBoundingClientRect().top - scrollRoot.getBoundingClientRect().top + scrollRoot.scrollTop;
+  const doc = scrollRoot.ownerDocument;
+  const isViewport = scrollRoot === doc.scrollingElement || scrollRoot === doc.documentElement;
+  const rootTop = isViewport ? 0 : scrollRoot.getBoundingClientRect().top;
+  return el.getBoundingClientRect().top - rootTop + scrollRoot.scrollTop;
 }
 
 /**

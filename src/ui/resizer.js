@@ -1,17 +1,33 @@
 // src/ui/resizer.js
 //
 // 2つのペインの境界をドラッグして幅を変えられるようにする汎用のリサイザー。
-// leftPane の幅を px 固定(flex-basis)にして左右比率を決め、rightPane 側は
-// flex:1 で残りを埋める前提。比率は localStorage に保存し、次回起動時にも復元する。
+// 左ペインの幅は container に対する比率(0.1〜0.9)で持ち、CSS 変数
+// `--resizer-ratio` として container に設定する(左ペインの flex-basis は CSS 側で
+// この変数から % で決める。src/app.css の .editor-pane)。% 指定なので、ウィンドウの
+// 幅やサイドバーの開閉が変わっても再計算は要らない。最小幅は CSS の min-width に任せる。
+//
+// container は「左ペイン・ハンドル・右ペイン」だけを包む要素にすること(サイドバー等を
+// 含めると、ドラッグ位置と境界がその分ずれる)。
+//
+// ドラッグ中は body に .resizing を付ける。右ペインが iframe の場合、マウスが iframe に
+// 乗ると mousemove / mouseup が親ドキュメントに届かなくなるため、CSS 側で
+// `body.resizing` のときに iframe の pointer-events を切ること(src/app.css 参照)。
+//
+// 比率は localStorage に保存し、次回起動時にも復元する。
 
-export function createResizer({ handle, leftPane, container, storageKey, min = 200, max = null, defaultRatio = 0.5 }) {
-  function applyRatio(ratio) {
-    const width = container.clientWidth;
-    if (!width) return;
-    let px = width * ratio;
-    px = Math.max(min, px);
-    if (max != null) px = Math.min(max, px);
-    leftPane.style.flex = `0 0 ${px}px`;
+const MIN_RATIO = 0.1;
+const MAX_RATIO = 0.9;
+
+function clampRatio(ratio) {
+  return Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio));
+}
+
+export function createResizer({ handle, container, storageKey, defaultRatio = 0.5 }) {
+  let ratio = defaultRatio;
+
+  function applyRatio(next) {
+    ratio = clampRatio(next);
+    container.style.setProperty('--resizer-ratio', String(ratio));
   }
 
   function loadRatio() {
@@ -21,40 +37,41 @@ export function createResizer({ handle, leftPane, container, storageKey, min = 2
     } catch {
       /* noop */
     }
-    const ratio = raw ? Number(raw) : defaultRatio;
-    return Number.isFinite(ratio) && ratio > 0 && ratio < 1 ? ratio : defaultRatio;
+    const value = raw ? Number(raw) : defaultRatio;
+    return Number.isFinite(value) && value > 0 && value < 1 ? value : defaultRatio;
   }
 
-  function saveRatio(ratio) {
+  function saveRatio(value) {
     if (!storageKey) return;
     try {
-      localStorage.setItem(storageKey, String(ratio));
+      localStorage.setItem(storageKey, String(value));
     } catch {
       /* noop */
     }
   }
 
   let dragging = false;
+  // ハンドルのどこを掴んだか(ハンドル左端からの距離)。境界がカーソルに対して
+  // 掴んだ位置のまま動くようにする。
+  let grabOffset = 0;
 
   function onMouseMove(e) {
     if (!dragging) return;
     const rect = container.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const ratio = Math.min(0.9, Math.max(0.1, px / rect.width));
-    applyRatio(ratio);
+    if (rect.width > 0) applyRatio((e.clientX - grabOffset - rect.left) / rect.width);
   }
 
   function onMouseUp() {
     if (!dragging) return;
     dragging = false;
     document.body.classList.remove('resizing');
-    const rect = container.getBoundingClientRect();
-    const px = leftPane.getBoundingClientRect().width;
-    if (rect.width > 0) saveRatio(Math.min(0.9, Math.max(0.1, px / rect.width)));
+    saveRatio(ratio);
   }
 
   handle.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
     dragging = true;
+    grabOffset = e.clientX - handle.getBoundingClientRect().left;
     e.preventDefault();
     document.body.classList.add('resizing');
   });
@@ -64,10 +81,6 @@ export function createResizer({ handle, leftPane, container, storageKey, min = 2
   applyRatio(loadRatio());
 
   return {
-    // コンテナのサイズが変わった後(サイドバー開閉など)に再適用したいとき用。
-    reapply() {
-      applyRatio(loadRatio());
-    },
     destroy() {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);

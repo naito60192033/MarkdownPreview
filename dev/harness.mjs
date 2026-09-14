@@ -18,6 +18,10 @@
 //   7. mermaid が SVG で描画される。コードブロックが highlight.js で色付けされる
 //   8. #file= 付きで開くとそのファイルが開く。再読み込み後にルートと最後のファイルが復元
 //   9. プレビュー内の相対 .md リンクをクリックするとそのファイルが開く
+//  10. (セクション26)編集画面の不具合修正の確認: 「エディタのみ」表示でエディタが
+//      #workArea 全幅になりプレビューが隠れる。サイドバー表示中でも境界のドラッグが
+//      サイドバー幅分ずれない。境界をプレビュー側までドラッグでき、サイドバー開閉後も
+//      比率が保たれる。エディタのスクロール・入力でプレビューがずれ続けない
 // すべてのテストでコンソールエラーが0件であることを確認する。
 //
 // 前提: 開発コンテナでは先に `bash dev/setup-container.sh` を1度実行しておく。
@@ -2753,6 +2757,283 @@ async function runTests(browser) {
 
         await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
         await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'markbox.png') });
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // 編集画面の不具合修正(表示モード・サイドバー考慮のドラッグ位置・
+  // プレビュー側へのドラッグ・スクロール同期のドリフト)の検証。
+  // ---------------------------------------------------------------------
+
+  console.log('\n26) 編集画面の不具合修正(表示モード・ドラッグ位置・スクロール同期)');
+
+  await test('「エディタのみ」表示でエディタが #workArea 全幅になり、プレビューが隠れる。「両方」に戻すとプレビューが再表示される', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 見出し\n\n本文\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        await page.click('.view-mode-btn[data-view-mode="editor"]');
+        await waitFor(async () =>
+          page.evaluate(() => document.getElementById('mainArea').classList.contains('view-editor-only'))
+        );
+
+        const widths = await page.evaluate(() => ({
+          editor: document.getElementById('editorPane').getBoundingClientRect().width,
+          workArea: document.getElementById('workArea').getBoundingClientRect().width,
+        }));
+        assert.ok(
+          Math.abs(widths.editor - widths.workArea) <= 2,
+          `「エディタのみ」表示でエディタ幅が #workArea 幅と一致しません: ${JSON.stringify(widths)}`
+        );
+
+        const previewHiddenInEditorOnly = await page.evaluate(
+          () => getComputedStyle(document.getElementById('previewPane')).display === 'none'
+        );
+        assert.ok(previewHiddenInEditorOnly, '「エディタのみ」表示なのにプレビューが非表示になっていません');
+
+        await page.click('.view-mode-btn[data-view-mode="both"]');
+        await waitFor(
+          async () =>
+            page.evaluate(() => getComputedStyle(document.getElementById('previewPane')).display !== 'none'),
+          { message: '「両方」に戻してもプレビューが再表示されませんでした' }
+        );
+
+        printConsoleErrors(consoleErrors, '「エディタのみ」表示');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('サイドバー表示中に境界(#previewResizer)をドラッグすると、サイドバー幅分ずれずにカーソル位置に境界がついてくる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 見出し\n\n本文\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        const sidebarCollapsed = await page.evaluate(() =>
+          document.getElementById('mainArea').classList.contains('sidebar-collapsed')
+        );
+        assert.equal(sidebarCollapsed, false, '前提条件が崩れています: サイドバーが表示されていません');
+
+        const rects = await page.evaluate(() => {
+          const workArea = document.getElementById('workArea').getBoundingClientRect();
+          const resizer = document.getElementById('previewResizer').getBoundingClientRect();
+          return {
+            workAreaLeft: workArea.left,
+            workAreaWidth: workArea.width,
+            resizerLeft: resizer.left,
+            resizerTop: resizer.top,
+            resizerWidth: resizer.width,
+            resizerHeight: resizer.height,
+          };
+        });
+        const startX = rects.resizerLeft + rects.resizerWidth / 2;
+        const startY = rects.resizerTop + rects.resizerHeight / 2;
+        const targetX = rects.workAreaLeft + rects.workAreaWidth * 0.3;
+
+        await page.mouse.move(startX, startY);
+        await page.mouse.down();
+        await page.mouse.move(targetX, startY, { steps: 10 });
+        await page.mouse.up();
+
+        const resizerAfter = await page.evaluate(() => {
+          const r = document.getElementById('previewResizer').getBoundingClientRect();
+          return { left: r.left, width: r.width };
+        });
+        assert.ok(
+          targetX >= resizerAfter.left - 2 && targetX <= resizerAfter.left + resizerAfter.width + 2,
+          `境界がカーソル位置についてきていません(サイドバー幅分ずれている疑い): targetX=${targetX}, resizer=${JSON.stringify(resizerAfter)}`
+        );
+
+        printConsoleErrors(consoleErrors, 'サイドバー表示中のドラッグ');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('境界をプレビュー側までドラッグでき、mouseup 後に比率が保存される。サイドバーを閉じても幅比率が保たれる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 見出し\n\n本文\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        const rects = await page.evaluate(() => {
+          const workArea = document.getElementById('workArea').getBoundingClientRect();
+          const resizer = document.getElementById('previewResizer').getBoundingClientRect();
+          return {
+            workAreaLeft: workArea.left,
+            workAreaWidth: workArea.width,
+            resizerLeft: resizer.left,
+            resizerTop: resizer.top,
+            resizerWidth: resizer.width,
+            resizerHeight: resizer.height,
+          };
+        });
+        const startX = rects.resizerLeft + rects.resizerWidth / 2;
+        const startY = rects.resizerTop + rects.resizerHeight / 2;
+        const targetX = rects.workAreaLeft + rects.workAreaWidth * 0.8;
+
+        await page.mouse.move(startX, startY);
+        await page.mouse.down();
+        await page.mouse.move(targetX, startY, { steps: 10 });
+        await page.mouse.up();
+
+        const resizerAfter = await page.evaluate(() => {
+          const r = document.getElementById('previewResizer').getBoundingClientRect();
+          return { left: r.left, width: r.width };
+        });
+        assert.ok(
+          targetX >= resizerAfter.left - 2 && targetX <= resizerAfter.left + resizerAfter.width + 2,
+          `境界がプレビュー側のカーソル位置についてきていません: targetX=${targetX}, resizer=${JSON.stringify(resizerAfter)}`
+        );
+
+        const resizingAfterUp = await page.evaluate(() => document.body.classList.contains('resizing'));
+        assert.equal(resizingAfterUp, false, 'mouseup 後も body.resizing が残っています(iframe にマウスが乗って mouseup が届かなかった疑い)');
+
+        const savedRatio = await page.evaluate(() => Number(localStorage.getItem('mdpreview.editorWidthRatio')));
+        assert.ok(Math.abs(savedRatio - 0.8) <= 0.02, `localStorage に保存された比率が 0.8 付近ではありません: ${savedRatio}`);
+
+        const widthRatio = () =>
+          page.evaluate(() => {
+            const editorWidth = document.getElementById('editorPane').getBoundingClientRect().width;
+            const workAreaWidth = document.getElementById('workArea').getBoundingClientRect().width;
+            return editorWidth / workAreaWidth;
+          });
+        assert.ok(Math.abs((await widthRatio()) - 0.8) <= 0.02, `ドラッグ直後の幅比率が 0.8 付近ではありません: ${await widthRatio()}`);
+
+        await page.click('#toggleSidebarBtn');
+        await waitFor(async () =>
+          page.evaluate(() => document.getElementById('mainArea').classList.contains('sidebar-collapsed'))
+        );
+        assert.ok(
+          Math.abs((await widthRatio()) - 0.8) <= 0.02,
+          `サイドバーを閉じた後も幅比率が 0.8 付近に保たれていません: ${await widthRatio()}`
+        );
+
+        printConsoleErrors(consoleErrors, 'プレビュー側へのドラッグ');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('エディタを40pxずつ刻んでスクロールしても直接ジャンプしても、プレビューの到達点がほぼ一致し、先頭に戻すとプレビューも先頭付近に戻る', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const paras = Array.from({ length: 60 }, (_, i) => `## 見出し${i}\n\n本文${i} の段落です。\n`).join('');
+      await fs.writeFile(path.join(dir, 'doc.md'), paras, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await sleep(300); // 初回描画の安定待ち
+
+        // 前提チェック: エディタが十分スクロールできること。
+        const scrollable = await page.evaluate(() => {
+          const el = document.querySelector('.cm-scroller');
+          return el.scrollHeight - el.clientHeight;
+        });
+        assert.ok(scrollable > 800, `前提条件が崩れています: エディタが十分スクロールできません(scrollable=${scrollable})`);
+
+        for (let i = 0; i < 10; i++) {
+          await page.evaluate((top) => {
+            document.querySelector('.cm-scroller').scrollTop = top;
+          }, (i + 1) * 40);
+          await sleep(120);
+        }
+        const p1 = await page.evaluate(() => window.__mdpreview.getPreviewDocument().scrollingElement.scrollTop);
+
+        await page.evaluate(() => {
+          document.querySelector('.cm-scroller').scrollTop = 0;
+        });
+        await waitFor(
+          async () =>
+            (await page.evaluate(() => window.__mdpreview.getPreviewDocument().scrollingElement.scrollTop)) < 50,
+          { message: 'エディタを先頭に戻してもプレビューが先頭付近(50px未満)に戻りませんでした' }
+        );
+
+        await page.evaluate(() => {
+          document.querySelector('.cm-scroller').scrollTop = 400;
+        });
+        await sleep(300);
+        const p2 = await page.evaluate(() => window.__mdpreview.getPreviewDocument().scrollingElement.scrollTop);
+
+        const maxPreviewScroll = await page.evaluate(() => {
+          const se = window.__mdpreview.getPreviewDocument().scrollingElement;
+          return se.scrollHeight - se.clientHeight;
+        });
+
+        assert.ok(
+          Math.abs(p1 - p2) <= 30,
+          `40px刻みのスクロールと直接ジャンプでプレビューの到達点が一致しません: P1=${p1}, P2=${p2}`
+        );
+        assert.ok(
+          p1 < maxPreviewScroll * 0.5,
+          `P1 がプレビューの最大 scrollTop に対して十分小さくありません(スクロール同期がずれ続けている疑い): P1=${p1}, max=${maxPreviewScroll}`
+        );
+
+        printConsoleErrors(consoleErrors, 'スクロール同期(刻み vs 直接ジャンプ)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('スクロールしたエディタの表示最下部付近で End+Enter を繰り返しても、プレビューの scrollTop が1回あたり大きく飛ばない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const paras = Array.from({ length: 60 }, (_, i) => `## 見出し${i}\n\n本文${i} の段落です。\n`).join('');
+      await fs.writeFile(path.join(dir, 'doc.md'), paras, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await sleep(300);
+
+        // エディタを一旦先頭に戻してから 300px までスクロールし、プレビューとの
+        // 同期を落ち着かせる(プレビュー・エディタとも初期位置は0)。
+        await page.evaluate(() => {
+          document.querySelector('.cm-scroller').scrollTop = 0;
+        });
+        await sleep(200);
+        await page.evaluate(() => {
+          document.querySelector('.cm-scroller').scrollTop = 300;
+        });
+        await sleep(300);
+
+        const box = await page.evaluate(() => {
+          const el = document.querySelector('.cm-scroller');
+          const r = el.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.bottom - 12 };
+        });
+        await page.mouse.click(box.x, box.y);
+
+        let prevPreview = await page.evaluate(
+          () => window.__mdpreview.getPreviewDocument().scrollingElement.scrollTop
+        );
+        for (let i = 0; i < 3; i++) {
+          await page.keyboard.press('End');
+          await page.keyboard.press('Enter');
+          await sleep(400);
+          const curPreview = await page.evaluate(
+            () => window.__mdpreview.getPreviewDocument().scrollingElement.scrollTop
+          );
+          const delta = curPreview - prevPreview;
+          assert.ok(delta < 150, `${i + 1}回目の Enter でプレビューが大きく飛びました: delta=${delta}`);
+          prevPreview = curPreview;
+        }
+
+        printConsoleErrors(consoleErrors, 'スクロール同期(下端付近での改行入力)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
       });
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
