@@ -1059,6 +1059,336 @@ async function runTests(browser) {
     }
   });
 
+  console.log('\n18-2) アラート拡張: GitHub 方式と Qiita 方式の混在・9 種類');
+  await test('GitHub 方式と Qiita 方式のアラートが同じ構造(div.markdown-alert)で描画され、枠線・背景色が付く', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = [
+        '# アラート確認',
+        '',
+        '> [!NOTE]',
+        '> note 本文(GitHub 方式)',
+        '',
+        ':::note info',
+        'note 本文(Qiita 方式)',
+        ':::',
+        '',
+        '> [!LINK]',
+        '> link 本文(GitHub 方式)',
+        '',
+        ':::note link',
+        'link 本文(Qiita 方式)',
+        ':::',
+        '',
+        '> [!MEMO]',
+        '> memo 本文(GitHub 方式)',
+        '',
+        ':::memo',
+        'memo 本文(Qiita 方式・省略形)',
+        ':::',
+        '',
+      ].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        await waitFor(async () =>
+          page.evaluate(
+            () => window.__mdpreview.getPreviewDocument().querySelectorAll('div.markdown-alert.markdown-alert-note').length === 2
+          ),
+          { message: 'GitHub 方式・Qiita 方式それぞれの note アラートが描画されませんでした' }
+        );
+        assert.equal(
+          await page.evaluate(
+            () => window.__mdpreview.getPreviewDocument().querySelectorAll('div.markdown-alert.markdown-alert-link').length
+          ),
+          2,
+          'GitHub 方式・Qiita 方式それぞれの link アラートが描画されませんでした'
+        );
+
+        const styles = await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          const divs = Array.from(doc.querySelectorAll('div.markdown-alert.markdown-alert-note'));
+          return divs.map((el) => {
+            const cs = getComputedStyle(el);
+            return {
+              borderWidth: cs.borderTopWidth,
+              borderStyle: cs.borderTopStyle,
+              borderColor: cs.borderTopColor,
+              backgroundColor: cs.backgroundColor,
+              borderRadius: cs.borderTopLeftRadius,
+            };
+          });
+        });
+        assert.equal(styles.length, 2);
+        for (const s of styles) {
+          assert.equal(s.borderWidth, '1px', '枠線の太さが 1px ではありません: ' + JSON.stringify(s));
+          assert.equal(s.borderStyle, 'solid', '枠線が実線ではありません: ' + JSON.stringify(s));
+          assert.equal(s.borderColor, 'rgb(169, 193, 221)', 'note の枠線色が想定と異なります: ' + JSON.stringify(s));
+          assert.equal(s.backgroundColor, 'rgb(244, 248, 252)', 'note の背景色が想定と異なります: ' + JSON.stringify(s));
+          assert.equal(s.borderRadius, '6px', '角丸になっていません: ' + JSON.stringify(s));
+        }
+        // GitHub 方式・Qiita 方式で同じ見た目(構造)になっていること
+        assert.deepEqual(styles[0], styles[1], 'GitHub 方式と Qiita 方式で見た目が異なります');
+
+        const titleColor = await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          const title = doc.querySelector('div.markdown-alert.markdown-alert-note .markdown-alert-title');
+          return getComputedStyle(title).color;
+        });
+        assert.equal(titleColor, 'rgb(44, 95, 148)', 'note のタイトル文字色が想定と異なります');
+
+        // 追加した memo(GitHub 方式・Qiita 方式省略形の両方)も同じ構造で描画される。
+        assert.equal(
+          await page.evaluate(
+            () => window.__mdpreview.getPreviewDocument().querySelectorAll('div.markdown-alert.markdown-alert-memo').length
+          ),
+          2,
+          'GitHub 方式・Qiita 方式(省略形)それぞれの memo アラートが描画されませんでした'
+        );
+        const memoStyle = await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          const el = doc.querySelector('div.markdown-alert.markdown-alert-memo');
+          const cs = getComputedStyle(el);
+          return { borderColor: cs.borderTopColor, backgroundColor: cs.backgroundColor };
+        });
+        assert.equal(memoStyle.borderColor, 'rgb(214, 202, 187)', 'memo の枠線色が想定と異なります');
+        assert.equal(memoStyle.backgroundColor, 'rgb(250, 248, 245)', 'memo の背景色が想定と異なります');
+
+        const hasIcon = await page.evaluate(
+          () => !!window.__mdpreview.getPreviewDocument().querySelector('.markdown-alert-title svg.octicon')
+        );
+        assert.ok(hasIcon, 'タイトルにアイコンの svg がありません');
+
+        printConsoleErrors(consoleErrors, 'アラート拡張(混在・9種類)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('1ファイル出力にもアイコンの svg が含まれる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# アラート\n\n> [!NOTE]\n> 本文\n\n:::note warn\n本文\n:::\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () =>
+          page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelectorAll('.markdown-alert-title svg.octicon').length === 2)
+        );
+        await page.evaluate(() => window.__mdpreview.exportStandalone());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.standalone.html')));
+      });
+
+      const context = await browser.newContext();
+      const page2 = await context.newPage();
+      try {
+        await page2.goto('file://' + path.join(dir, 'doc.standalone.html'));
+        const iconCount = await page2.evaluate(() => document.querySelectorAll('.markdown-alert-title svg.octicon').length);
+        assert.equal(iconCount, 2, 'HTML 出力(1ファイル)にアイコンの svg が含まれていません');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('9 種類 × 2 方式のアラートを並べたプレビューのスクリーンショットを保存する', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const kinds = [
+        ['NOTE', 'info'],
+        ['TIP', 'tip'],
+        ['IMPORTANT', 'important'],
+        ['WARNING', 'warn'],
+        ['CAUTION', 'alert'],
+        ['LINK', 'link'],
+        ['MEMO', 'memo'],
+        ['CHECK', 'check'],
+        ['QUESTION', 'question'],
+      ];
+      const lines = ['# アラート一覧(GitHub 方式・Qiita 方式)', ''];
+      for (const [marker] of kinds) {
+        lines.push(`> [!${marker}]`, `> ${marker} の本文です(GitHub 方式)。`, '');
+      }
+      for (const [marker, qiitaWord] of kinds) {
+        lines.push(`:::${qiitaWord}`, `${marker} の本文です(Qiita 方式・省略形)。`, ':::', '');
+      }
+      await fs.writeFile(path.join(dir, 'doc.md'), lines.join('\n'), 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await page.setViewportSize({ width: 1400, height: 1000 });
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () =>
+          page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelectorAll('div.markdown-alert').length === 18)
+        );
+
+        await page.click('.view-mode-btn[data-view-mode="preview"]');
+        await sleep(200); // レイアウト安定待ち
+
+        await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+        await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'alerts.png') });
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('タイトル空欄(アイコンのみ)のプレビューのスクリーンショットを保存する', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = [
+        '# タイトル空欄(アイコンのみ)',
+        '',
+        '> [!NOTE]',
+        '> タイトルを空欄にすると、アイコンだけが左上に表示されます。',
+        '',
+        '> [!TIP]',
+        '> 本文 1 行目とアイコンの縦位置が揃います。',
+        '',
+        '> [!WARNING] タイトルを書けば設定が空欄でも表示されます',
+        '> md 側で明示的にタイトルを書いた場合の例です。',
+        '',
+      ].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await page.setViewportSize({ width: 1400, height: 1000 });
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () =>
+          page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelectorAll('div.markdown-alert').length === 3)
+        );
+
+        // 設定パネルで note と tip のタイトルを空欄にする(warning は空欄のままにし、
+        // md 側の明示タイトルが優先されることを確認する)。
+        await page.click('#settingsBtn');
+        await page.evaluate(() => {
+          for (const id of ['settingAlertTitleNote', 'settingAlertTitleTip', 'settingAlertTitleWarning']) {
+            const input = document.getElementById(id);
+            input.value = '';
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        });
+        await page.click('#settingsCloseBtn');
+
+        await waitFor(async () =>
+          page.evaluate(() => {
+            const doc = window.__mdpreview.getPreviewDocument();
+            return (
+              doc.querySelectorAll('div.markdown-alert-notitle').length === 2 &&
+              !doc.querySelector('div.markdown-alert-warning').classList.contains('markdown-alert-notitle')
+            );
+          }),
+          { message: 'タイトル空欄の反映がプレビューに出ませんでした' }
+        );
+
+        await page.click('.view-mode-btn[data-view-mode="preview"]');
+        await sleep(200); // レイアウト安定待ち
+
+        await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+        await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'alerts-notitle.png') });
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n18-3) アラート拡張: 設定でタイトルを空欄にする(空欄と未設定の区別)');
+  await test('アラートのタイトルを空欄にすると本文がアイコンのみになり、再読み込み後も既定値に戻らない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 見出し\n\n> [!NOTE]\n> 本文\n', 'utf8');
+
+      const context = await browser.newContext();
+      await installFakeFs(context, { rootDir: dir });
+      const page = await context.newPage();
+      const consoleErrors = [];
+      attachDebugLogging(page, consoleErrors);
+      try {
+        await page.goto(DIST_URL);
+        await ensureHooks(page);
+        await pickFolderAndOpen(page, 'doc.md');
+
+        await waitFor(async () =>
+          page.evaluate(() => !!window.__mdpreview.getPreviewDocument().querySelector('div.markdown-alert.markdown-alert-note'))
+        );
+
+        // 設定パネルでタイトルを空欄にする。
+        await page.click('#settingsBtn');
+        await page.evaluate(() => {
+          const input = document.getElementById('settingAlertTitleNote');
+          input.value = '';
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+
+        await waitFor(
+          async () =>
+            page.evaluate(() => {
+              const doc = window.__mdpreview.getPreviewDocument();
+              const div = doc.querySelector('div.markdown-alert.markdown-alert-note');
+              return !!div && div.classList.contains('markdown-alert-notitle');
+            }),
+          { message: 'タイトルを空欄にしても markdown-alert-notitle が付きませんでした' }
+        );
+
+        const titleTextBefore = await page.evaluate(
+          () => window.__mdpreview.getPreviewDocument().querySelector('.markdown-alert-note .markdown-alert-title').textContent
+        );
+        assert.equal(titleTextBefore, '', 'アイコンのみのはずが、タイトル文字が残っています');
+
+        // 再読み込みしても「空欄」のままで、既定値(Note)に戻らないこと。
+        await page.reload();
+        await ensureHooks(page);
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).hasRoot);
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'doc.md');
+
+        const settingsAfterReload = await page.evaluate(() => window.__mdpreview.getSettings());
+        assert.equal(settingsAfterReload.alertTitles.note, '', '再読み込み後に既定値(Note)へ戻ってしまいました');
+
+        await waitFor(
+          async () =>
+            page.evaluate(() => {
+              const doc = window.__mdpreview.getPreviewDocument();
+              const div = doc.querySelector('div.markdown-alert.markdown-alert-note');
+              return !!div && div.classList.contains('markdown-alert-notitle');
+            }),
+          { message: '再読み込み後にアイコンのみの表示が保たれませんでした' }
+        );
+
+        // 「既定に戻す」ボタンで既定のタイトル(Note)に戻ることも確認する。
+        await page.click('#settingsBtn');
+        await page.click('#resetAlertTitleNote');
+        await waitFor(
+          async () =>
+            page.evaluate(() => {
+              const doc = window.__mdpreview.getPreviewDocument();
+              const div = doc.querySelector('div.markdown-alert.markdown-alert-note');
+              return !!div && !div.classList.contains('markdown-alert-notitle');
+            }),
+          { message: '「既定に戻す」ボタンを押しても既定のタイトルに戻りませんでした' }
+        );
+        const titleTextAfterReset = await page.evaluate(
+          () => window.__mdpreview.getPreviewDocument().querySelector('.markdown-alert-note .markdown-alert-title').textContent
+        );
+        assert.equal(titleTextAfterReset, 'Note', '「既定に戻す」後のタイトルが Note になっていません');
+        assert.equal(
+          await page.evaluate(() => document.getElementById('settingAlertTitleNote').value),
+          'Note',
+          '「既定に戻す」後の入力欄の値が Note になっていません'
+        );
+
+        printConsoleErrors(consoleErrors, 'タイトル空欄設定の永続化');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   console.log('\n19) MPE互換: 日本語見出しの id');
   await test('## 1. はじめに の id が 1-はじめに になる(既存 md の #見出し リンクとの互換用)', async () => {
     const dir = await mkTmpDir();

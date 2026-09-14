@@ -532,6 +532,10 @@ body.resizing {
   min-width: 0;
 }
 
+.settings-row-alert label {
+  min-width: 76px;
+}
+
 .modal-footer {
   display: flex;
   align-items: center;

@@ -57,7 +57,7 @@ test('アラートが div.markdown-alert として描画される', async () => 
   const text = '> [!WARNING]\n> 注意\n';
   const { html } = await renderDocument(text, { path: 'a.md', readText: makeReadText({}) });
   assert.match(html, /class="markdown-alert markdown-alert-warning"/);
-  assert.match(html, /<p class="markdown-alert-title" data-line="0">Warning<\/p>/);
+  assert.match(html, /<p class="markdown-alert-title" data-line="0"><svg class="octicon octicon-alert"[^>]*>.*<\/svg>Warning<\/p>/);
 });
 
 test('alertTitles でタイトルを差し替えられる', async () => {
@@ -67,7 +67,7 @@ test('alertTitles でタイトルを差し替えられる', async () => {
     readText: makeReadText({}),
     alertTitles: { note: 'メモ' },
   });
-  assert.match(html, /<p class="markdown-alert-title" data-line="0">メモ<\/p>/);
+  assert.match(html, /<p class="markdown-alert-title" data-line="0"><svg class="octicon octicon-info"[^>]*>.*<\/svg>メモ<\/p>/);
 });
 
 test('collectHeadingsFor: @import 先の見出しも含めて集め、保存時の TOC 再生成に使える', async () => {

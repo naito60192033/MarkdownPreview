@@ -40,6 +40,16 @@
 - [x] 通常出力(CSS インライン、mermaid SVG、画像は相対パス) — src/export.js
 - [x] 1 ファイル出力(画像を base64 で埋め込み)
 
+## 追加要望(2026-09-14): アラートの拡張
+- [x] 種類「リンク」(`> [!LINK]`)と設定のタイトル
+- [x] 種類 memo / check / question の追加(計 9 種類)、`:::memo` などの省略形
+- [x] タイトルを空欄にしたらアイコンのみ(本文の左に配置)。空欄と未設定を区別して保存
+- [x] README に 9 種類の使いどころと書き方を明記
+- [x] GitHub と同じアイコン(Octicons 19.36.0: info / light-bulb / report / alert / stop / link / pencil / check-circle / question)
+- [x] Qiita 方式(`:::note info|warn|alert`)も GitHub 方式と同じ HTML で表示(資料に混在しているため)
+- [x] 角丸の枠で囲むデザイン、社内資料向けの落ち着いた配色(文字のコントラスト比 5.6:1 以上)
+- [x] テスト・README・スクリーンショットでの配色確認(枠内の余白は既定テーマより強い詳細度で指定)
+
 ## フェーズ 7: README と最終確認
 - [x] README(導入と使い方)
 - [ ] 全テスト、Windows 実機での確認依頼
