@@ -314,7 +314,9 @@ button {
 .sidebar {
   flex: 0 0 var(--sidebar-width);
   width: var(--sidebar-width);
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--color-panel);
   border-right: 1px solid var(--color-border);
 }
@@ -323,7 +325,26 @@ button {
   display: none;
 }
 
+/* ---------- サイドバー上部: ファイル操作の入口 ---------- */
+.sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sidebar-actions .icon-btn {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  font-size: 14px;
+}
+
 .tree {
+  flex: 1 1 auto;
+  overflow: auto;
   padding: 8px 4px;
   font-size: 13px;
 }
@@ -570,4 +591,61 @@ body.resizing .preview-frame {
 .modal-footer .right {
   display: flex;
   gap: 8px;
+}
+
+/* ---------- 名前を入力するモーダル ---------- */
+.name-modal-input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  margin-bottom: 10px;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+/* `.modal p`(0,1,1)の文字色・余白に負けないよう .modal を付けて詳細度を上げる。 */
+.modal .name-modal-error {
+  margin: -4px 0 14px;
+  padding: 8px 10px;
+  background: #fff1f0;
+  border: 1px solid #ffccc7;
+  border-radius: 6px;
+  color: var(--color-danger);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* ---------- 右クリックメニュー(ツリー) ---------- */
+.context-menu {
+  position: fixed;
+  z-index: 1200;
+  min-width: 140px;
+  padding: 4px 0;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+}
+
+.context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 7px 14px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.context-menu-item:hover {
+  background: var(--color-bg);
+}
+
+.context-menu-separator {
+  margin: 4px 0;
+  border-top: 1px solid var(--color-border);
 }
