@@ -1,0 +1,73 @@
+/* src/theme/outline.css
+ *
+ * 見出しの連番・字下げ(設定でオン/オフできる。src/render/outline.js が本文の
+ * DOM に付ける mdp-heading-number span / data-mdp-indent 属性の見た目)。
+ * alerts.css と同じく、標準 CSS(base.css)を「使う」をオフにしても常に適用される
+ * (見た目を独自の style.css に置き換えても、連番・字下げの表示が崩れないため)。
+ *
+ * ---- CSS 変数(`.crossnote.markdown-preview` に定義) ----
+ *   --mdp-indent-step  字下げ 1 段あたりの幅(既定 1.5em)。style.css で上書き
+ *                       すれば変えられる
+ */
+
+.crossnote.markdown-preview {
+  --mdp-indent-step: 1.5em;
+}
+
+.mdp-heading-number {
+  margin-right: 0.4em;
+}
+
+/* base.css の `.crossnote.markdown-preview p` 等(詳細度 0,2,1)より詳細度を
+ * 上げるため、属性セレクタを重ねて (0,3,0) にする。要素の種類を限定しないので
+ * 見出し・段落・リスト・表・引用など本文直下のどの要素にも効く。 */
+.crossnote.markdown-preview [data-mdp-indent="1"] {
+  margin-left: calc(var(--mdp-indent-step) * 1);
+}
+.crossnote.markdown-preview [data-mdp-indent="2"] {
+  margin-left: calc(var(--mdp-indent-step) * 2);
+}
+.crossnote.markdown-preview [data-mdp-indent="3"] {
+  margin-left: calc(var(--mdp-indent-step) * 3);
+}
+.crossnote.markdown-preview [data-mdp-indent="4"] {
+  margin-left: calc(var(--mdp-indent-step) * 4);
+}
+.crossnote.markdown-preview [data-mdp-indent="5"] {
+  margin-left: calc(var(--mdp-indent-step) * 5);
+}
+
+/* 字下げした表が本文幅からはみ出さないようにする(margin-left で右にずらす分だけ
+ * 幅を狭める)。`{.full}` の表(width: 100%)は width を、それ以外(max-width: 100%)
+ * は max-width を上書きする(base.css の table / table.full より詳細度を上げる)。 */
+.crossnote.markdown-preview table[data-mdp-indent="1"] {
+  max-width: calc(100% - var(--mdp-indent-step) * 1);
+}
+.crossnote.markdown-preview table[data-mdp-indent="2"] {
+  max-width: calc(100% - var(--mdp-indent-step) * 2);
+}
+.crossnote.markdown-preview table[data-mdp-indent="3"] {
+  max-width: calc(100% - var(--mdp-indent-step) * 3);
+}
+.crossnote.markdown-preview table[data-mdp-indent="4"] {
+  max-width: calc(100% - var(--mdp-indent-step) * 4);
+}
+.crossnote.markdown-preview table[data-mdp-indent="5"] {
+  max-width: calc(100% - var(--mdp-indent-step) * 5);
+}
+
+.crossnote.markdown-preview table.full[data-mdp-indent="1"] {
+  width: calc(100% - var(--mdp-indent-step) * 1);
+}
+.crossnote.markdown-preview table.full[data-mdp-indent="2"] {
+  width: calc(100% - var(--mdp-indent-step) * 2);
+}
+.crossnote.markdown-preview table.full[data-mdp-indent="3"] {
+  width: calc(100% - var(--mdp-indent-step) * 3);
+}
+.crossnote.markdown-preview table.full[data-mdp-indent="4"] {
+  width: calc(100% - var(--mdp-indent-step) * 4);
+}
+.crossnote.markdown-preview table.full[data-mdp-indent="5"] {
+  width: calc(100% - var(--mdp-indent-step) * 5);
+}

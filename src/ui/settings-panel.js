@@ -1,7 +1,7 @@
 // src/ui/settings-panel.js
 //
 // 設定パネル(ポーリングのオン/オフ・間隔、CSS のパス、標準 CSS の使用可否、
-// アラートのタイトル)。開閉と、値が変わるたびに即座に保存し、呼び出し側に
+// 見出しの連番・字下げ、アラートのタイトル)。開閉と、値が変わるたびに即座に保存し、呼び出し側に
 // 反映してもらうための onChange コールバックを呼ぶだけの薄い UI。
 // 「標準 CSS を書き出す」ボタンはファイルを直接扱わず、クリック時に
 // onExportStandardCss を呼ぶだけ(書き込みは呼び出し側 = app.js の責務)。
@@ -20,6 +20,9 @@ export function createSettingsPanel({
   cssPathInput,
   useStandardCssInput,
   exportStandardCssBtn, // 「標準 CSS を書き出す」ボタン(押されたら onExportStandardCss を呼ぶだけ)
+  headingNumbersInput,
+  headingNumberDepthInput,
+  headingIndentInput,
   alertTitleInputs, // { note, tip, important, warning, caution, link, memo, check, question } の input 要素
   alertTitleResetButtons, // 同じキーの「既定に戻す」ボタン要素(省略可)
   onChange,
@@ -39,6 +42,9 @@ export function createSettingsPanel({
     pollIntervalInput.value = String(Math.round((settings.pollIntervalMs || 2000) / 1000));
     cssPathInput.value = settings.cssPath || 'style.css';
     if (useStandardCssInput) useStandardCssInput.checked = settings.useStandardCss !== false;
+    if (headingNumbersInput) headingNumbersInput.checked = !!settings.headingNumbers;
+    if (headingNumberDepthInput) headingNumberDepthInput.value = String(settings.headingNumberDepth || 6);
+    if (headingIndentInput) headingIndentInput.checked = !!settings.headingIndent;
     if (alertTitleInputs) {
       for (const kind of ALERT_KINDS) {
         const input = alertTitleInputs[kind];
@@ -71,6 +77,9 @@ export function createSettingsPanel({
       pollIntervalMs: intervalSec * 1000,
       cssPath: (cssPathInput.value || 'style.css').trim() || 'style.css',
       useStandardCss: useStandardCssInput ? useStandardCssInput.checked : true,
+      headingNumbers: headingNumbersInput ? headingNumbersInput.checked : false,
+      headingNumberDepth: headingNumberDepthInput ? Number(headingNumberDepthInput.value) || 6 : 6,
+      headingIndent: headingIndentInput ? headingIndentInput.checked : false,
       alertTitles,
     });
     if (typeof onChange === 'function') onChange(next);
@@ -83,6 +92,9 @@ export function createSettingsPanel({
   pollIntervalInput.addEventListener('change', commit);
   cssPathInput.addEventListener('change', commit);
   if (useStandardCssInput) useStandardCssInput.addEventListener('change', commit);
+  if (headingNumbersInput) headingNumbersInput.addEventListener('change', commit);
+  if (headingNumberDepthInput) headingNumberDepthInput.addEventListener('change', commit);
+  if (headingIndentInput) headingIndentInput.addEventListener('change', commit);
   if (exportStandardCssBtn) {
     exportStandardCssBtn.addEventListener('click', () => {
       if (typeof onExportStandardCss === 'function') onExportStandardCss();

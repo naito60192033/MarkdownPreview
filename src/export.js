@@ -12,7 +12,8 @@
 //
 // 出力構造: <!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
 // <meta name="viewport" ...><title>(最初の h1、無ければファイル名)</title>
-// <style>標準 CSS(base.css。設定でオフなら空) + alerts.css + style.css</style></head>
+// <style>標準 CSS(base.css。設定でオフなら空) + alerts.css + outline.css +
+// style.css</style></head>
 // <body><div class="crossnote markdown-preview">本文</div></body></html>
 //
 // 書き込みは writeByPath(root, path, html, {})(競合チェックなし。常に上書き)。
@@ -24,10 +25,10 @@ function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// base.css(標準 CSS。オフなら空文字) → alerts.css → style.css の順
+// base.css(標準 CSS。オフなら空文字) → alerts.css → outline.css → style.css の順
 // (preview.js の <style> 要素の並びと同じ)。
 function buildCss(doc) {
-  const ids = ['mdpreview-base-style', 'mdpreview-alerts-style', 'mdpreview-user-style'];
+  const ids = ['mdpreview-base-style', 'mdpreview-alerts-style', 'mdpreview-outline-style', 'mdpreview-user-style'];
   return ids.map((id) => (doc.getElementById(id) ? doc.getElementById(id).textContent || '' : '')).join('\n');
 }
 

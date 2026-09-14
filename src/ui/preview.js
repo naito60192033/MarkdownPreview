@@ -5,8 +5,9 @@
 // 差し替えることでスクロール位置を保つ。
 //
 // 担当範囲:
-//   - base.css(標準 CSS。設定でオフにできる)→ alerts.css → style.css の順で
-//     <style> に反映
+//   - base.css(標準 CSS。設定でオフにできる)→ alerts.css → outline.css →
+//     style.css の順で <style> に反映(outline.css は見出しの連番・字下げの
+//     見た目。alerts.css と同じく標準 CSS のオン/オフに関係なく常に適用する)
 //   - html を一旦(リソースを読み込まない)<template> に入れてから、外部 URL でない
 //     img[src] を data-src に退避し、その後で本文に差し込む(HTML で直接書かれた
 //     `<img src="images/a.png" width="300">` のような MPE 由来の記法にも同じ変換が
@@ -32,8 +33,10 @@
 import mermaid from 'mermaid';
 import baseCss from '../theme/base.css';
 import alertsCss from '../theme/alerts.css';
+import outlineCss from '../theme/outline.css';
 import { dirname, joinPath, isExternalUrl, urlToPath, extname } from '../fs/paths.js';
 import { getFileHandleByPath } from '../fs/workspace.js';
+import { applyOutline } from '../render/outline.js';
 
 mermaid.initialize({ startOnLoad: false });
 
@@ -41,6 +44,7 @@ const SKELETON_HTML =
   '<!DOCTYPE html><html><head><meta charset="utf-8">' +
   '<style id="mdpreview-base-style"></style>' +
   '<style id="mdpreview-alerts-style"></style>' +
+  '<style id="mdpreview-outline-style"></style>' +
   '<style id="mdpreview-user-style"></style>' +
   '</head><body><div class="crossnote markdown-preview" id="mdpreview-root"></div></body></html>';
 
@@ -60,6 +64,8 @@ export function createPreview({ iframe, onOpenMdLink }) {
   // setUseStandardCss() は iframe の load 前(init() 直後)にも呼ばれうるため、
   // 値は state として持っておき、load 時に最新の値を反映する。
   let useStandardCss = true;
+  // 見出しの連番・字下げの設定(既定オフ)。render() のたびに本文へ適用する。
+  let outlineOptions = { numbers: false, depth: 6, indent: false };
 
   let currentRoot = null;
   let currentMdDir = '';
@@ -112,6 +118,8 @@ export function createPreview({ iframe, onOpenMdLink }) {
           if (baseStyleEl) baseStyleEl.textContent = useStandardCss ? baseCss : '';
           const alertsStyleEl = docRef.getElementById('mdpreview-alerts-style');
           if (alertsStyleEl) alertsStyleEl.textContent = alertsCss;
+          const outlineStyleEl = docRef.getElementById('mdpreview-outline-style');
+          if (outlineStyleEl) outlineStyleEl.textContent = outlineCss;
           attachLinkHandler();
           ready = true;
           resolve();
@@ -143,6 +151,14 @@ export function createPreview({ iframe, onOpenMdLink }) {
     if (!docRef) return;
     const el = docRef.getElementById('mdpreview-base-style');
     if (el) el.textContent = useStandardCss ? baseCss : '';
+  }
+
+  /**
+   * 見出しの連番・字下げの設定を保持する。次回以降の render() で本文に適用される
+   * (呼び出し側は alertTitles の変更時と同様、変更後すぐに再描画する想定)。
+   */
+  function setOutlineOptions(opts) {
+    outlineOptions = { numbers: !!(opts && opts.numbers), depth: (opts && opts.depth) || 6, indent: !!(opts && opts.indent) };
   }
 
   function applyMermaidResult(el, result) {
@@ -248,6 +264,9 @@ export function createPreview({ iframe, onOpenMdLink }) {
     moveImageSrcToDataSrc(template.content);
     wrapperEl.innerHTML = '';
     wrapperEl.appendChild(template.content);
+    // innerHTML を丸ごと入れ直した直後の本文に対して適用する(オフのときの
+    // 「外す」処理が要らないのはこのため。src/render/outline.js 参照)。
+    applyOutline(wrapperEl, outlineOptions);
 
     await Promise.all([renderMermaidBlocks(mySeq), resolveImages(mySeq)]);
   }
@@ -257,6 +276,7 @@ export function createPreview({ iframe, onOpenMdLink }) {
     whenReady,
     setUserCss,
     setUseStandardCss,
+    setOutlineOptions,
     render,
     getDocument: () => docRef,
     getWrapperElement: () => wrapperEl,

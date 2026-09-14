@@ -102,6 +102,26 @@
       <div class="settings-row">
         <button type="button" id="exportStandardCssBtn" class="btn btn-small">標準 CSS を書き出す</button>
       </div>
+      <h3 class="settings-subheading">見出し</h3>
+      <label class="settings-row">
+        <input type="checkbox" id="settingHeadingNumbers" />
+        h2 以降の見出しに連番を付ける(例: 1-2-3.)
+      </label>
+      <label class="settings-row">
+        <span>番号を付ける深さ</span>
+        <select id="settingHeadingNumberDepth">
+          <option value="2">h2 のみ</option>
+          <option value="3">h2〜h3</option>
+          <option value="4">h2〜h4</option>
+          <option value="5">h2〜h5</option>
+          <option value="6">h2〜h6</option>
+        </select>
+      </label>
+      <label class="settings-row">
+        <input type="checkbox" id="settingHeadingIndent" />
+        見出しの階層ごとに字下げする
+      </label>
+      <p>手書きの番号(<code>## 1. はじめに</code> など)がある資料では番号が二重になります。番号を付けたくない見出しは <code>## 改訂履歴 {.nonum}</code> のように書きます。</p>
       <h3 class="settings-subheading">アラートのタイトル</h3>
       <p>空欄にすると、タイトル文字を出さずアイコンだけを表示します。</p>
       <div class="settings-row settings-row-alert">

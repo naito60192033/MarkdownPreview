@@ -496,6 +496,13 @@ body.resizing {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
 }
 
+/* 設定パネルは項目数が多く縦に長くなるため、画面に収まらない場合はパネル内で
+ * スクロールする(閉じるボタンが画面外に出てクリックできなくなるのを防ぐ)。 */
+.settings-modal {
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+
 .modal h2 {
   margin: 0 0 12px;
   font-size: 16px;

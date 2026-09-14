@@ -5,8 +5,9 @@
 - [x] 2. 複数画像のキャンバス 前半・後半(feature/annotator-canvas。worktree `../MarkdownPreview-canvas`)
   - 実装で確定した点: 無限キャンバス(viewBox をカメラにする)、画像は 2 枚以上のときだけ選択可、
     余白・背景色の設定は作らない(白固定)
-- [ ] 3. 標準 CSS(dev 上で実装済み。ユーザーの目視確認待ちで未 commit)
-- [ ] feature/annotator-canvas を dev にマージ(3 の commit 後)し、dist を作り直す。tasks/todo.md に統合
+- [x] 3. 標準 CSS(ユーザー確認済み、dev に commit)
+- [x] feature/annotator-canvas を dev にマージし、dist を作り直す。tasks/todo.md に統合
+- 続きの要望(見出しの連番と字下げ)は tasks/todo.md で管理する
 
 ユーザーの回答(2026-09-14):
 - 画像の外にはみ出した注釈も出力に含め、白背景で広げる → OK

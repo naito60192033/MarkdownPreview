@@ -133,6 +133,9 @@ function cacheEls() {
     settingCssPath: document.getElementById('settingCssPath'),
     settingUseStandardCss: document.getElementById('settingUseStandardCss'),
     exportStandardCssBtn: document.getElementById('exportStandardCssBtn'),
+    settingHeadingNumbers: document.getElementById('settingHeadingNumbers'),
+    settingHeadingNumberDepth: document.getElementById('settingHeadingNumberDepth'),
+    settingHeadingIndent: document.getElementById('settingHeadingIndent'),
     settingAlertTitleNote: document.getElementById('settingAlertTitleNote'),
     settingAlertTitleTip: document.getElementById('settingAlertTitleTip'),
     settingAlertTitleImportant: document.getElementById('settingAlertTitleImportant'),
@@ -545,10 +548,22 @@ function setViewMode(mode) {
 }
 
 // ---------- 設定の変更 ----------
+function applyOutlineOptions(settings) {
+  preview.setOutlineOptions({
+    numbers: settings.headingNumbers,
+    depth: settings.headingNumberDepth,
+    indent: settings.headingIndent,
+  });
+}
+
 function handleSettingsChange(newSettings) {
   const cssPathChanged = newSettings.cssPath !== state.settings.cssPath;
   const useStandardCssChanged = newSettings.useStandardCss !== state.settings.useStandardCss;
   const alertTitlesChanged = JSON.stringify(newSettings.alertTitles) !== JSON.stringify(state.settings.alertTitles);
+  const outlineChanged =
+    newSettings.headingNumbers !== state.settings.headingNumbers ||
+    newSettings.headingNumberDepth !== state.settings.headingNumberDepth ||
+    newSettings.headingIndent !== state.settings.headingIndent;
   state.settings = newSettings;
   watcher.reschedule();
   if (useStandardCssChanged) {
@@ -557,7 +572,12 @@ function handleSettingsChange(newSettings) {
   if (cssPathChanged && state.root) {
     loadCssAndWatch();
   }
-  if (alertTitlesChanged && state.currentPath) {
+  if (outlineChanged) {
+    // 描画後の DOM に適用する処理(src/render/outline.js)なので、alertTitles と
+    // 同様にプレビューをすぐ再描画して反映する。
+    applyOutlineOptions(newSettings);
+  }
+  if ((alertTitlesChanged || outlineChanged) && state.currentPath) {
     scheduleRender(true);
   }
 }
@@ -635,6 +655,7 @@ async function setup() {
   preview.init();
   // load 前に呼んでも(setUseStandardCss 内部で)値を保持し、load 時に反映される。
   preview.setUseStandardCss(state.settings.useStandardCss !== false);
+  applyOutlineOptions(state.settings);
   await preview.whenReady();
 
   attachImagePasteAndDrop({
@@ -703,6 +724,9 @@ async function setup() {
     cssPathInput: els.settingCssPath,
     useStandardCssInput: els.settingUseStandardCss,
     exportStandardCssBtn: els.exportStandardCssBtn,
+    headingNumbersInput: els.settingHeadingNumbers,
+    headingNumberDepthInput: els.settingHeadingNumberDepth,
+    headingIndentInput: els.settingHeadingIndent,
     alertTitleInputs: {
       note: els.settingAlertTitleNote,
       tip: els.settingAlertTitleTip,

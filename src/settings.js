@@ -15,6 +15,10 @@ export const DEFAULT_SETTINGS = {
   // 標準 CSS(src/theme/base.css)を使うかどうか。オフにすると CSS のパスの
   // ファイルだけを使う(アラートの見た目は常に適用される)。
   useStandardCss: true,
+  // 見出しの連番・字下げ(src/render/outline.js。既定はどちらもオフ)。
+  headingNumbers: false,
+  headingNumberDepth: 6, // 番号を付ける最も深い見出しレベル(2〜6。2 = h2 のみ)
+  headingIndent: false,
   // アラート(> [!NOTE] 等)のタイトル表記(src/render/alerts.js の既定値と同じ)
   alertTitles: {
     note: 'Note',

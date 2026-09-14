@@ -231,6 +231,19 @@ async function nudgeFocus(page) {
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
 }
 
+// 設定パネルのチェックボックスを ON/OFF して change イベントを発火する
+// (commit() が呼ばれ、即座に保存・反映される)。
+async function setSettingCheckbox(page, id, checked) {
+  await page.evaluate(
+    ({ id, checked }) => {
+      const input = document.getElementById(id);
+      input.checked = checked;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    },
+    { id, checked }
+  );
+}
+
 async function getPreviewText(page) {
   return page.evaluate(() => window.__mdpreview.getPreviewDocument().body.textContent);
 }
@@ -2200,6 +2213,371 @@ async function runTests(browser) {
         );
 
         printConsoleErrors(consoleErrors, '表の {.full}');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n24) 見出しの連番と字下げ');
+  await test('既定(オフ)では番号の span も data-mdp-indent も付かない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# タイトル\n\n## 概要\n\n本文\n\n### 詳細\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('h2'))));
+
+        const { hasNumberSpan, hasIndentAttr } = await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          return {
+            hasNumberSpan: !!doc.querySelector('.mdp-heading-number'),
+            hasIndentAttr: !!doc.querySelector('[data-mdp-indent]'),
+          };
+        });
+        assert.equal(hasNumberSpan, false, '既定オフなのに番号の span が付いています');
+        assert.equal(hasIndentAttr, false, '既定オフなのに data-mdp-indent が付いています');
+
+        printConsoleErrors(consoleErrors, '見出しの連番と字下げ(既定オフ)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('連番をオンにすると h2/h3/h4 に 1. / 1-1. / 1-1-1. が付き、見出しの id は変わらない。nonum の見出しとその配下には付かず、番号は消費されない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = [
+        '# ドキュメント',
+        '',
+        '## 概要',
+        '',
+        '### 詳細',
+        '',
+        '#### 深堀り',
+        '',
+        '## 改訂履歴 {.nonum}',
+        '',
+        '### 却下案',
+        '',
+        '## まとめ',
+        '',
+      ].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await waitFor(
+          async () =>
+            (await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelectorAll('h2, h3, h4').length)) === 6
+        );
+
+        const idsBefore = await page.evaluate(() =>
+          Array.from(window.__mdpreview.getPreviewDocument().querySelectorAll('h2, h3, h4')).map((el) => el.id)
+        );
+
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingHeadingNumbers', true);
+        await page.click('#settingsCloseBtn');
+        await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdp-heading-number'))));
+
+        const { idsAfter, numbers } = await page.evaluate(() => {
+          const headings = Array.from(window.__mdpreview.getPreviewDocument().querySelectorAll('h2, h3, h4'));
+          return {
+            idsAfter: headings.map((el) => el.id),
+            numbers: headings.map((el) => {
+              const span = el.querySelector('.mdp-heading-number');
+              return span ? span.textContent : null;
+            }),
+          };
+        });
+
+        assert.deepEqual(idsAfter, idsBefore, '連番をオンにすると見出しの id が変わってしまいました');
+        assert.deepEqual(
+          numbers,
+          ['1.', '1-1.', '1-1-1.', null, null, '2.'],
+          `番号の付き方が期待と違います: ${JSON.stringify(numbers)}`
+        );
+
+        printConsoleErrors(consoleErrors, '見出しの連番(基本形・nonum)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('深さを h2〜h3 にすると h4 には付かない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = ['# ドキュメント', '', '## 概要', '', '### 詳細', '', '#### 深堀り', ''].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingHeadingNumbers', true);
+        await page.selectOption('#settingHeadingNumberDepth', '3');
+        await page.click('#settingsCloseBtn');
+        await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdp-heading-number'))));
+
+        const numbers = await page.evaluate(() =>
+          Array.from(window.__mdpreview.getPreviewDocument().querySelectorAll('h2, h3, h4')).map((el) => {
+            const span = el.querySelector('.mdp-heading-number');
+            return span ? span.textContent : null;
+          })
+        );
+        assert.deepEqual(numbers, ['1.', '1-1.', null], `深さ h2〜h3 の指定が反映されていません: ${JSON.stringify(numbers)}`);
+
+        printConsoleErrors(consoleErrors, '見出しの連番(深さの制限)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('[TOC] と MPE 方式の目次の項目にも同じ番号が付く。本文の段落中のリンクには付かない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = [
+        '# ドキュメント',
+        '',
+        '[TOC]',
+        '',
+        '<!-- @import "[TOC]" {orderedList=true} -->',
+        '',
+        '## 概要',
+        '',
+        '本文です。[概要へ](#概要) を参照してください。',
+        '',
+        '### 詳細',
+        '',
+      ].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingHeadingNumbers', true);
+        await page.click('#settingsCloseBtn');
+        await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('h2 .mdp-heading-number'))));
+
+        // 保存でソース書き込み型 TOC(<!-- @import "[TOC]" --> の直後のブロック)を
+        // 生成させ、再読込で通常の markdown リストとして描画された状態を確認する。
+        await page.evaluate(() => window.__mdpreview.save());
+        await waitFor(async () => !(await page.evaluate(() => window.__mdpreview.getState())).dirty);
+        await page.evaluate(() => window.__mdpreview.reloadCurrentFile());
+        await waitFor(
+          async () =>
+            (await page.evaluate(
+              () => window.__mdpreview.getPreviewDocument().querySelectorAll('li a[href^="#"] .mdp-heading-number').length
+            )) >= 4
+        );
+
+        const result = await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          const tocEntries = Array.from(doc.querySelectorAll('li'))
+            .map((li) => li.firstElementChild)
+            .filter((a) => a && a.tagName === 'A' && /^#/.test(a.getAttribute('href') || ''))
+            .map((a) => a.textContent.trim());
+          const bodyLink = Array.from(doc.querySelectorAll('p a')).find((a) => a.textContent.trim() === '概要へ');
+          return {
+            tocEntries,
+            bodyLinkText: bodyLink ? bodyLink.textContent.trim() : null,
+            bodyLinkHasSpan: bodyLink ? !!bodyLink.querySelector('.mdp-heading-number') : null,
+          };
+        });
+
+        // [TOC] と MPE 方式の両方に、概要(1.)・詳細(1-1.)の項目がそれぞれ現れる。
+        assert.equal(
+          result.tocEntries.filter((t) => t === '1.概要').length,
+          2,
+          `目次の「概要」に番号が付いていません: ${JSON.stringify(result.tocEntries)}`
+        );
+        assert.equal(
+          result.tocEntries.filter((t) => t === '1-1.詳細').length,
+          2,
+          `目次の「詳細」に番号が付いていません: ${JSON.stringify(result.tocEntries)}`
+        );
+        assert.equal(result.bodyLinkText, '概要へ', '本文中の [概要へ](#概要) リンクが見つかりません');
+        assert.equal(result.bodyLinkHasSpan, false, '本文の段落中のリンクに番号が付いてしまいました');
+
+        printConsoleErrors(consoleErrors, '目次への連番の反映');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('字下げをオンにすると見出し・本文が階層ごとに下がる({.full} の表は本文幅からはみ出さない)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = [
+        '# ドキュメント',
+        '',
+        '## 階層',
+        '',
+        '段落その1',
+        '',
+        '### 小節',
+        '',
+        '段落その2',
+        '',
+        '| a | b |',
+        '|---|---|',
+        '| 1 | 2 |',
+        '',
+        '{.full}',
+        '',
+      ].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingHeadingIndent', true);
+        await page.click('#settingsCloseBtn');
+        await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('table[data-mdp-indent]'))));
+
+        const result = await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          const container = doc.querySelector('.crossnote.markdown-preview');
+          const cs = getComputedStyle(container);
+          const containerContentRight = container.getBoundingClientRect().right - parseFloat(cs.paddingRight);
+          const ratio = (el) => {
+            const s = getComputedStyle(el);
+            return parseFloat(s.marginLeft) / parseFloat(s.fontSize);
+          };
+          const h2 = doc.querySelector('h2');
+          const h3 = doc.querySelector('h3');
+          const paragraphs = Array.from(doc.querySelectorAll('p'));
+          const table = doc.querySelector('table');
+          return {
+            h2Ratio: ratio(h2),
+            p1Ratio: ratio(paragraphs[0]),
+            h3Ratio: ratio(h3),
+            p2Ratio: ratio(paragraphs[1]),
+            tableIndentAttr: table.getAttribute('data-mdp-indent'),
+            tableRight: table.getBoundingClientRect().right,
+            containerContentRight,
+          };
+        });
+
+        assert.ok(Math.abs(result.h2Ratio - 0) < 0.02, `h2 の margin-left が 0 ではありません(ratio=${result.h2Ratio})`);
+        assert.ok(Math.abs(result.p1Ratio - 1.5) < 0.02, `h2 直後の段落が 1 段になっていません(ratio=${result.p1Ratio})`);
+        assert.ok(Math.abs(result.h3Ratio - 1.5) < 0.02, `h3 が 1 段になっていません(ratio=${result.h3Ratio})`);
+        assert.ok(Math.abs(result.p2Ratio - 3.0) < 0.02, `h3 の本文が 2 段になっていません(ratio=${result.p2Ratio})`);
+        assert.equal(result.tableIndentAttr, '2', `表の data-mdp-indent が期待通りではありません(${result.tableIndentAttr})`);
+        assert.ok(
+          result.tableRight <= result.containerContentRight + 1,
+          `{.full} の表が本文幅からはみ出しています(table right=${result.tableRight}, container content right=${result.containerContentRight})`
+        );
+
+        printConsoleErrors(consoleErrors, '見出しの字下げ');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('「標準 CSS を使う」をオフにしても連番・字下げは効く', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# ドキュメント\n\n## 概要\n\n本文\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingUseStandardCss', false);
+        await setSettingCheckbox(page, 'settingHeadingNumbers', true);
+        await setSettingCheckbox(page, 'settingHeadingIndent', true);
+        await page.click('#settingsCloseBtn');
+        await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdp-heading-number'))));
+
+        const { numberText, indentMarginLeft } = await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          const span = doc.querySelector('h2 .mdp-heading-number');
+          const p = doc.querySelector('p[data-mdp-indent]');
+          return {
+            numberText: span ? span.textContent : null,
+            indentMarginLeft: p ? parseFloat(getComputedStyle(p).marginLeft) : 0,
+          };
+        });
+        assert.equal(numberText, '1.', '標準 CSS オフでも見出しの連番が付くはずです');
+        assert.ok(indentMarginLeft > 0, `標準 CSS オフでも字下げが効くはずです(margin-left=${indentMarginLeft})`);
+
+        printConsoleErrors(consoleErrors, '標準 CSS オフでも連番・字下げ');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('HTML 出力に見出しの連番・data-mdp-indent・outline.css の内容が含まれる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# ドキュメント\n\n## 概要\n\n本文\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingHeadingNumbers', true);
+        await setSettingCheckbox(page, 'settingHeadingIndent', true);
+        await page.click('#settingsCloseBtn');
+        await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdp-heading-number'))));
+
+        await page.evaluate(() => window.__mdpreview.exportNormal());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
+        const html = await fs.readFile(path.join(dir, 'doc.html'), 'utf8');
+        assert.ok(html.includes('mdp-heading-number'), 'HTML 出力に見出しの連番の span が含まれていません');
+        assert.ok(/data-mdp-indent="1"/.test(html), 'HTML 出力に data-mdp-indent が含まれていません');
+        assert.ok(html.includes('--mdp-indent-step'), 'HTML 出力に outline.css の内容が含まれていません');
+
+        printConsoleErrors(consoleErrors, 'HTML 出力への反映');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('設定(連番・深さ・字下げ)は再読み込み後も保持する', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# ドキュメント\n\n## 概要\n\n### 詳細\n\n#### 深堀り\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingHeadingNumbers', true);
+        await page.selectOption('#settingHeadingNumberDepth', '3');
+        await setSettingCheckbox(page, 'settingHeadingIndent', true);
+        await page.click('#settingsCloseBtn');
+        await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdp-heading-number'))));
+
+        await page.reload();
+        await ensureHooks(page);
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).hasRoot);
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'doc.md');
+
+        const settings = await page.evaluate(() => window.__mdpreview.getSettings());
+        assert.equal(settings.headingNumbers, true, '再読み込み後に見出しの連番がオフに戻ってしまいました');
+        assert.equal(settings.headingNumberDepth, 3, '再読み込み後に深さの設定が保持されていません');
+        assert.equal(settings.headingIndent, true, '再読み込み後に字下げがオフに戻ってしまいました');
+
+        await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdp-heading-number'))));
+        const { hasH4Number, hasIndentAttr } = await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          const h4 = doc.querySelector('h4');
+          return {
+            hasH4Number: h4 ? !!h4.querySelector('.mdp-heading-number') : null,
+            hasIndentAttr: !!doc.querySelector('[data-mdp-indent]'),
+          };
+        });
+        assert.equal(hasH4Number, false, '再読み込み後、深さ設定(h2〜h3)が反映されず h4 にも番号が付いています');
+        assert.equal(hasIndentAttr, true, '再読み込み後、字下げが反映されていません');
+
+        printConsoleErrors(consoleErrors, '設定の永続化(見出しの連番・字下げ)');
         assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
       });
     } finally {
