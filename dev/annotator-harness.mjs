@@ -916,6 +916,25 @@ async function runTests(browser) {
     });
   });
 
+  await test('Excel の画像のコピー(空の string:image/svg+xml が先、file:image/png が後)を Ctrl+V で貼り付けると2枚目の画像が追加される', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 400, height: 300, fillColor: '#3050a0' });
+      const before = await getDebugState(page);
+      assert.equal(before.images.length, 1);
+
+      await page.evaluate(() =>
+        window.__annotator.pasteExcelLikeImage({ format: 'png', width: 100, height: 80, fillColor: '#20a040' })
+      );
+      await waitFor(async () => (await getDebugState(page)).images.length === 2, { message: '貼り付けで2枚目が追加されませんでした' });
+
+      const st = await getDebugState(page);
+      assert.equal(st.images.length, 2, '画像が2枚になっていません');
+
+      printConsoleErrors(consoleErrors, 'Excelの画像のコピーの貼り付け');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
   console.log('\n16) ファイル選択・ドロップでも画像を追加できる');
   await test('ファイル選択(input)とドロップで画像を追加できる。ドロップは位置が画像の中心になる', async () => {
     await withPage(browser, async ({ page, consoleErrors }) => {

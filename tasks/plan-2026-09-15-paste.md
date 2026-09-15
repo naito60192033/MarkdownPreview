@@ -14,7 +14,9 @@
 
 ## 1. 注釈エディタで Excel の画像を Ctrl+V で貼れない(不具合)
 
-### 原因(推定。デモページで実機確認する)
+### 原因(2026-09-15 デモページで実機確認済み・確定)
+- 実機の Excel の画像のコピー: items は 1. string:image/svg+xml(空文字)2. file:image/png(1,177,379 bytes)の順。
+  今の処理は 1 を選んで失敗、修正後の処理(kind === 'file')は成功
 - `src/annotator/annotator.js` の `_pasteHandler` は clipboardData.items から「type が image/ で始まる
   **最初の項目**」を選んで `getAsFile()` している。kind(file / string)を見ていない
 - Excel の画像のコピーには、画像のファイル項目(file:image/png)の前に、画像形式の文字列項目

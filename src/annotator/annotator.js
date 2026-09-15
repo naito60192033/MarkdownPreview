@@ -461,7 +461,7 @@ function buildImageGroup() {
   addBtn.type = 'button';
   addBtn.className = 'annotator-icon-btn';
   addBtn.dataset.action = 'addImage';
-  addBtn.title = '画像を追加';
+  addBtn.title = '画像を追加(Ctrl+V で貼り付け・ドラッグ&ドロップでも追加できます)';
   addBtn.textContent = '画像を追加';
   group.appendChild(addBtn);
 
@@ -1442,7 +1442,13 @@ function wireEvents(inst) {
     if (inst.state.editingShapeId) return;
     const items = e.clipboardData && e.clipboardData.items;
     if (!items) return;
-    const imageItem = Array.from(items).find((it) => it.type && it.type.startsWith('image/'));
+    // kind も見て絞り込む(src/paste.js と同じ条件)。Windows の Chrome では
+    // Excel の画像をコピーすると、中身が空の kind=string, type=image/svg+xml が
+    // 本物の画像(kind=file, type=image/png)より先に入るため、type だけで
+    // 選ぶと空の svg を拾って何も貼り付けられない(2026-09-15 実機で確認)。
+    const imageItem = Array.from(items).find(
+      (it) => it.kind === 'file' && it.type && it.type.startsWith('image/')
+    );
     if (!imageItem) return;
     e.preventDefault();
     const file = imageItem.getAsFile();

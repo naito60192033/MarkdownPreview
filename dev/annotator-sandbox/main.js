@@ -134,6 +134,25 @@ window.__annotator = {
     document.dispatchEvent(evt);
   },
 
+  // Windows の Chrome で Excel の画像をコピーしたときと同じ並び(中身が空の
+  // string:image/svg+xml が先、本物の file:image/png が後)の clipboardData.items で
+  // paste イベントを発火する(2026-09-15 実機で確認した並び)。
+  async pasteExcelLikeImage(opts) {
+    const blob = await createTestImageBlob(opts);
+    const file = new File([blob], 'pasted.png', { type: blob.type });
+    const dt = new DataTransfer();
+    dt.items.add('', 'image/svg+xml');
+    dt.items.add(file);
+    if (dt.items[0].kind !== 'string' || dt.items[0].type !== 'image/svg+xml') {
+      throw new Error(`items[0] が期待どおりではありません: kind=${dt.items[0].kind}, type=${dt.items[0].type}`);
+    }
+    if (dt.items[1].kind !== 'file' || dt.items[1].type !== 'image/png') {
+      throw new Error(`items[1] が期待どおりではありません: kind=${dt.items[1].kind}, type=${dt.items[1].type}`);
+    }
+    const evt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+    document.dispatchEvent(evt);
+  },
+
   // 別の色のテスト画像を作って .annotator-overlay に drop イベントとして発火する
   // (2枚目以降の画像追加の入口「ドロップ」のテスト用)。point はクライアント座標。
   async dropTestImage(opts, point) {

@@ -113,12 +113,13 @@
 
 ## 追加要望(2026-09-15): 貼り付けの改善と表の整形
 方針の詳細: tasks/plan-2026-09-15-paste.md(feature/paste、worktree: ../MarkdownPreview-paste)
-- [ ] デモページ(案 A の選択メニュー・保存中の表示・表での貼り付け・表の整形・クリップボードの中身の表示)— dev/paste-demo/
+- [x] デモページ(案 A の選択メニュー・保存中の表示・表での貼り付け・表の整形・クリップボードの中身の表示)— dev/paste-demo/
 - [ ] ユーザーがデモを実機で確認(Excel のセル・Excel の画像)→ 本体への組み込み方を決める
+  - Excel の画像: 実機で確認済み(空の string:image/svg+xml が先、file:image/png が後)
 - [ ] md への画像の貼り付け: 保存中の表示、保存中の貼り付けを受け付けない、ファイル切り替え時は挿入しない — src/paste.js
 - [ ] 画像とテキストの両方がある貼り付けの選択(案 A)と、表(Markdown)での貼り付け — src/paste.js、src/paste-ui.js
 - [ ] 表の整形(Alt+Shift+F) — src/md-table.js
-- [ ] 注釈エディタ: Excel の画像の Ctrl+V(kind === 'file' の項目から選ぶ)、ツールチップ(elbow のマージ後)
+- [x] 注釈エディタ: Excel の画像の Ctrl+V(kind === 'file' の項目から選ぶ)、ツールチップ。E2E(修正前は失敗を確認)
 - [ ] テスト(単体・E2E)、README、dist
 - [ ] ユーザーの目視確認後に dev へマージ
 
