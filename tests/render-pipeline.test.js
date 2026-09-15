@@ -87,3 +87,35 @@ test('日本語見出しの id が MPE 互換で生成される', async () => {
   const { html } = await renderDocument(text, { path: 'a.md', readText: makeReadText({}) });
   assert.match(html, /<h2 id="1-はじめに"/);
 });
+
+test('段落内の 1 回の改行が <br> になる(breaks: true)', async () => {
+  const { html } = await renderDocument('1行目\n2行目\n', { path: 'a.md', readText: makeReadText({}) });
+  assert.match(html, /1行目<br>\n2行目/);
+});
+
+test('行末 2 空白の改行は <br> が二重にならない', async () => {
+  const { html } = await renderDocument('1行目  \n2行目\n', { path: 'a.md', readText: makeReadText({}) });
+  const matches = html.match(/<br>/g) || [];
+  assert.equal(matches.length, 1);
+});
+
+test('アラートのタイトル段落には <br> を入れず、本文の改行は <br> になる', async () => {
+  const text = '> [!NOTE]\n> 本文1\n> 本文2\n';
+  const { html } = await renderDocument(text, { path: 'a.md', readText: makeReadText({}) });
+  const titleMatch = html.match(/<p class="markdown-alert-title"[^>]*>.*?<\/p>/s);
+  assert.ok(titleMatch);
+  assert.doesNotMatch(titleMatch[0], /<br>/);
+  assert.match(html, /本文1<br>\n本文2/);
+});
+
+test('次の行に {.foo} を書いた段落は、その手前の改行が <br> として残らない', async () => {
+  const { html } = await renderDocument('段落の文\n{.foo}\n', { path: 'a.md', readText: makeReadText({}) });
+  assert.match(html, /<p class="foo"[^>]*>段落の文<\/p>/);
+  assert.doesNotMatch(html, /<br>/);
+});
+
+test('```mark コードブロックの中は改行しても <br> にならない', async () => {
+  const text = '```mark\nA ==B==\nC\n```\n';
+  const { html } = await renderDocument(text, { path: 'a.md', readText: makeReadText({}) });
+  assert.doesNotMatch(html, /<br>/);
+});
