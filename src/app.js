@@ -7,6 +7,7 @@
 // localStorage のキーはすべて `mdpreview.` 接頭辞を付ける(file:// では
 // task-kanri と保存領域を共有するため)。
 
+import { keymap } from '@codemirror/view';
 import { createEditor } from './editor.js';
 import { createPreview } from './ui/preview.js';
 import { createTree } from './ui/tree.js';
@@ -22,6 +23,8 @@ import { createImageEdit } from './ui/image-edit.js';
 import { createWatcher } from './watch.js';
 import { createScrollSync } from './scroll-sync.js';
 import { attachImagePasteAndDrop } from './paste.js';
+import { savingPlaceholderExtension } from './paste-ui.js';
+import { formatMarkdownTables } from './md-table.js';
 import { exportNormal, exportStandalone } from './export.js';
 import { loadSettings } from './settings.js';
 import baseCss from './theme/base.css';
@@ -125,6 +128,7 @@ function cacheEls() {
     newMdBtn: document.getElementById('newMdBtn'),
     newFolderBtn: document.getElementById('newFolderBtn'),
     refreshTreeBtn: document.getElementById('refreshTreeBtn'),
+    formatTablesBtn: document.getElementById('formatTablesBtn'),
     saveBtn: document.getElementById('saveBtn'),
     exportBtn: document.getElementById('exportBtn'),
     exportMenu: document.getElementById('exportMenu'),
@@ -290,6 +294,19 @@ function setEditorTextSilently(text, { preserveCursor = true } = {}) {
   state.suppressChangeEvents = true;
   editor.setText(text, { preserveCursor });
   state.suppressChangeEvents = false;
+}
+
+// ---------- 表の整形(ツールバーのボタン・Alt+Shift+F) ----------
+function formatTables() {
+  if (!state.currentPath) return;
+  const result = formatMarkdownTables(editor.getText());
+  if (result.count === 0) {
+    statusbar.setMessage('整形が必要な表はありません');
+    return;
+  }
+  // 1回の dispatch でまとめて適用する(docChanged → handleEditorChange で未保存の印が付く)。
+  editor.view.dispatch({ changes: result.changes, userEvent: 'input.format' });
+  statusbar.setMessage(`表を${result.count}個整形しました`);
 }
 
 // ---------- ファイルを開く ----------
@@ -973,6 +990,10 @@ function bindStaticUi() {
   els.newMdBtn.addEventListener('click', () => doCreateMd(defaultCreateDir()));
   els.newFolderBtn.addEventListener('click', () => doCreateFolder(defaultCreateDir()));
   els.refreshTreeBtn.addEventListener('click', () => tree.refresh());
+  els.formatTablesBtn.addEventListener('click', () => {
+    formatTables();
+    editor.focus();
+  });
 
   els.exportBtn.addEventListener('click', () => {
     els.exportMenu.style.display = els.exportMenu.style.display === 'none' ? '' : 'none';
@@ -1023,7 +1044,24 @@ function bindStaticUi() {
 async function setup() {
   cacheEls();
 
-  editor = createEditor({ parent: els.editorHost, doc: '', onChange: handleEditorChange });
+  editor = createEditor({
+    parent: els.editorHost,
+    doc: '',
+    onChange: handleEditorChange,
+    extensions: [
+      savingPlaceholderExtension(),
+      keymap.of([
+        {
+          key: 'Alt-Shift-f',
+          run: () => {
+            formatTables();
+            return true;
+          },
+          preventDefault: true,
+        },
+      ]),
+    ],
+  });
   preview = createPreview({ iframe: els.preview, onOpenMdLink: (path) => openFile(path) });
   preview.init();
   // load 前に呼んでも(setUseStandardCss 内部で)値を保持し、load 時に反映される。

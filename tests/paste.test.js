@@ -1,8 +1,12 @@
-// tests/paste.test.js — src/paste.js の連番の決め方の単体テスト
+// tests/paste.test.js — src/paste-save.js(画像の保存まわりの純粋なロジック)の単体テスト
+//
+// src/paste.js は src/paste-ui.js(CSS を import する)を使うため plain `node --test`
+// では読み込めない。ここで検証したい連番の決め方などの純粋なロジックは
+// src/paste-save.js に分離してあるので、そちらを直接 import する。
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nextImageSerial, extFromFile, isDrawioClipboardText } from '../src/paste.js';
+import { nextImageSerial, extFromFile, isDrawioClipboardText } from '../src/paste-save.js';
 
 test('nextImageSerial: 空のフォルダなら 1', () => {
   assert.equal(nextImageSerial([]), 1);

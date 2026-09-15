@@ -1744,6 +1744,369 @@ async function runTests(browser) {
     }
   });
 
+  console.log('\n20b) 貼り付けの選択メニュー・保存中表示・表の整形');
+
+  // 画像ファイル(1x1 PNG)とタブ区切りテキストの両方を持つ合成 ClipboardEvent を
+  // .cm-content に dispatch する(実クリップボードは使わない共通ヘルパー)。
+  async function pasteImageAndText(page, text) {
+    await page.evaluate(
+      ({ b64, text }) => {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        const file = new File([bytes], 'clipboard.png', { type: 'image/png' });
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        dt.setData('text/plain', text);
+        const target = document.querySelector('.cm-content');
+        const evt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+        target.dispatchEvent(evt);
+      },
+      { b64: TEST_PNG_BASE64, text }
+    );
+  }
+
+  // 画像だけの合成 ClipboardEvent を .cm-content に dispatch する。
+  async function pasteImageOnly(page) {
+    await page.evaluate((b64) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const file = new File([bytes], 'clipboard.png', { type: 'image/png' });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      const target = document.querySelector('.cm-content');
+      const evt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+      target.dispatchEvent(evt);
+    }, TEST_PNG_BASE64);
+  }
+
+  await test('画像とタブ区切りテキストを貼り付けると選択メニューが出て(項目3つ)、「3」で整形済みの表が挿入され画像は保存されない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 表貼り付け\n\n本文\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('.cm-content');
+        await page.keyboard.press('Control+End');
+
+        await pasteImageAndText(page, 'a\tb\nc\td\n');
+
+        await waitFor(async () => page.evaluate(() => !!document.querySelector('.mdp-paste-menu')), {
+          message: '貼り付け方法の選択メニューが表示されませんでした',
+        });
+        const menu = await page.evaluate(() => ({
+          heading: document.querySelector('.mdp-paste-menu-heading').textContent,
+          items: Array.from(document.querySelectorAll('.mdp-paste-menu-item')).map((btn) => ({
+            label: btn.querySelector('.mdp-paste-menu-label').textContent,
+            key: btn.querySelector('.mdp-paste-menu-key').textContent,
+          })),
+          footer: document.querySelector('.mdp-paste-menu-footer').textContent,
+        }));
+        assert.equal(menu.heading, '貼り付け方法');
+        assert.deepEqual(menu.items, [
+          { label: '画像で貼り付け', key: 'Enter / 1' },
+          { label: 'テキストで貼り付け', key: '2' },
+          { label: '表(Markdown)で貼り付け', key: '3' },
+        ]);
+        assert.equal(menu.footer, 'Esc で取り消し');
+
+        await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+        await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'app-paste-menu.png') });
+
+        await page.keyboard.press('3');
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getEditorText())).includes('| a   | b   |'), {
+          message: '表が挿入されませんでした',
+        });
+        const text = await page.evaluate(() => window.__mdpreview.getEditorText());
+        assert.equal(
+          text,
+          '# 表貼り付け\n\n本文\n\n| a   | b   |\n| --- | --- |\n| c   | d   |\n',
+          '整形済みの表の挿入結果が想定と異なります: ' + JSON.stringify(text)
+        );
+        assert.ok(!(await fs.readdir(dir)).includes('images'), '画像フォルダが作られています(表を選んだのに画像が保存されています)');
+
+        printConsoleErrors(consoleErrors, '貼り付けメニュー(表)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('選択メニューで「2」はタブ区切りのテキストのまま、Esc は本文が変わらず、Enter(既定)は画像を保存して参照を挿入する', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 表貼り付け\n\n本文\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('.cm-content');
+        await page.keyboard.press('Control+End');
+
+        // 「2」: タブ区切りのテキストがそのまま貼られ、画像は保存されない
+        await pasteImageAndText(page, 'a\tb\nc\td\n');
+        await waitFor(async () => page.evaluate(() => !!document.querySelector('.mdp-paste-menu')), {
+          message: '貼り付け方法の選択メニューが表示されませんでした(2)',
+        });
+        await page.keyboard.press('2');
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getEditorText())).includes('a\tb\nc\td\n'), {
+          message: 'タブ区切りのテキストが貼り付けられませんでした',
+        });
+        let text = await page.evaluate(() => window.__mdpreview.getEditorText());
+        assert.equal(text, '# 表貼り付け\n\n本文\na\tb\nc\td\n', 'テキストの貼り付け結果が想定と異なります: ' + JSON.stringify(text));
+        assert.ok(!(await fs.readdir(dir)).includes('images'), '「テキストで貼り付け」で画像フォルダが作られています');
+
+        // Esc: 本文が変わらず画像も保存されない
+        await page.keyboard.press('Control+End');
+        await pasteImageAndText(page, 'a\tb\nc\td\n');
+        await waitFor(async () => page.evaluate(() => !!document.querySelector('.mdp-paste-menu')), {
+          message: '貼り付け方法の選択メニューが表示されませんでした(Esc)',
+        });
+        await page.keyboard.press('Escape');
+        await waitFor(async () => !(await page.evaluate(() => !!document.querySelector('.mdp-paste-menu'))), {
+          message: 'Esc でメニューが閉じませんでした',
+        });
+        text = await page.evaluate(() => window.__mdpreview.getEditorText());
+        assert.equal(text, '# 表貼り付け\n\n本文\na\tb\nc\td\n', 'Esc で本文が変わっています: ' + JSON.stringify(text));
+        assert.ok(!(await fs.readdir(dir)).includes('images'), 'Esc で画像フォルダが作られています');
+
+        // Enter(既定 = 画像で貼り付け): 画像が保存され参照が挿入される
+        await pasteImageAndText(page, 'a\tb\nc\td\n');
+        await waitFor(async () => page.evaluate(() => !!document.querySelector('.mdp-paste-menu')), {
+          message: '貼り付け方法の選択メニューが表示されませんでした(Enter)',
+        });
+        await page.keyboard.press('Enter');
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getEditorText())).includes('](images/'), {
+          message: 'Enter で画像の参照が挿入されませんでした',
+        });
+        text = await page.evaluate(() => window.__mdpreview.getEditorText());
+        assert.match(text, /!\[\]\(images\/doc\/image-1\.png\)/, '画像参照の形式が想定と異なります: ' + text);
+        const files = await fs.readdir(path.join(dir, 'images', 'doc'));
+        assert.deepEqual(files, ['image-1.png'], '画像が保存されていません: ' + JSON.stringify(files));
+
+        printConsoleErrors(consoleErrors, '貼り付けメニュー(テキスト/Esc/画像)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('画像だけの貼り付け(保存を遅くする)ではメニューが出ず、保存中は表示とステータスが出て、完了後に消えて参照が入る', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 保存中\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('.cm-content');
+        await page.keyboard.press('Control+End');
+
+        await page.evaluate(() => window.__fakeFs.setDelay({ write: 600 }));
+        await pasteImageOnly(page);
+
+        assert.equal(
+          await page.evaluate(() => !!document.querySelector('.mdp-paste-menu')),
+          false,
+          '画像だけの貼り付けで選択メニューが表示されています'
+        );
+        assert.equal(
+          await page.evaluate(() => !!document.querySelector('.mdp-saving-placeholder')),
+          true,
+          '貼り付け直後に保存中のプレースホルダーが表示されていません'
+        );
+        assert.equal(
+          await page.evaluate(() => window.__mdpreview.getStatusMessage()),
+          '画像を保存中…',
+          '貼り付け直後のステータスが「画像を保存中…」になっていません'
+        );
+
+        await waitFor(async () => !(await page.evaluate(() => !!document.querySelector('.mdp-saving-placeholder'))), {
+          message: '保存完了後もプレースホルダーが残っています',
+        });
+        assert.equal(
+          await page.evaluate(() => window.__mdpreview.getStatusMessage()),
+          '画像を保存しました',
+          '保存完了後のステータスが「画像を保存しました」になっていません'
+        );
+        const text = await page.evaluate(() => window.__mdpreview.getEditorText());
+        assert.match(text, /!\[\]\(images\/doc\/image-1\.png\)/, '画像参照が挿入されていません: ' + text);
+
+        await page.evaluate(() => window.__fakeFs.setDelay({ write: 0 }));
+        printConsoleErrors(consoleErrors, '保存中の表示');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('画像の保存中にもう一度画像を貼り付けると受け付けず、完了後は最初の画像だけが保存される(二重貼り付け防止)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 二重貼り付け\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('.cm-content');
+        await page.keyboard.press('Control+End');
+
+        await page.evaluate(() => window.__fakeFs.setDelay({ write: 600 }));
+
+        await pasteImageOnly(page);
+        await waitFor(async () => page.evaluate(() => !!document.querySelector('.mdp-saving-placeholder')), {
+          message: '1回目の保存中プレースホルダーが表示されませんでした',
+        });
+
+        await pasteImageOnly(page);
+        const busyMsg = await page.evaluate(() => window.__mdpreview.getStatusMessage());
+        assert.equal(
+          busyMsg,
+          '前の画像を保存中です。保存が終わってから貼り付けてください',
+          '2回目の貼り付け直後のステータスが想定と異なります: ' + busyMsg
+        );
+
+        await waitFor(async () => !(await page.evaluate(() => !!document.querySelector('.mdp-saving-placeholder'))), {
+          message: '保存が完了しませんでした',
+        });
+        await page.evaluate(() => window.__fakeFs.setDelay({ write: 0 }));
+
+        const files = await fs.readdir(path.join(dir, 'images', 'doc'));
+        assert.deepEqual(files, ['image-1.png'], '画像が1件だけ保存されていません: ' + JSON.stringify(files));
+        const text = await page.evaluate(() => window.__mdpreview.getEditorText());
+        const refCount = (text.match(/!\[\]\(images\/doc\/image-1\.png\)/g) || []).length;
+        assert.equal(refCount, 1, '画像参照が1件だけ挿入されていません: ' + text);
+
+        printConsoleErrors(consoleErrors, '画像の二重貼り付け防止');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('画像の保存中に別の md を開くと、保存完了後も参照は挿入されず、ファイルを切り替えた旨のメッセージが出る', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'a.md'), '# a\n', 'utf8');
+      await fs.writeFile(path.join(dir, 'b.md'), '# b\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'a.md');
+        await page.click('.cm-content');
+        await page.keyboard.press('Control+End');
+
+        await page.evaluate(() => window.__fakeFs.setDelay({ write: 600 }));
+        await pasteImageOnly(page);
+        await waitFor(async () => page.evaluate(() => !!document.querySelector('.mdp-saving-placeholder')), {
+          message: '保存中のプレースホルダーが表示されませんでした',
+        });
+
+        await page.evaluate(() => window.__mdpreview.openFile('b.md'));
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'b.md', {
+          message: 'b.md を開けませんでした',
+        });
+
+        await waitFor(
+          async () =>
+            (await page.evaluate(() => window.__mdpreview.getStatusMessage())) ===
+            '画像は保存しましたが、ファイルを切り替えたため参照は挿入していません: images/a/image-1.png',
+          { message: 'ファイル切り替え時のメッセージが表示されませんでした' }
+        );
+
+        const text = await page.evaluate(() => window.__mdpreview.getEditorText());
+        assert.equal(text, '# b\n', 'b.md の本文に画像参照が挿入されています: ' + JSON.stringify(text));
+        const files = await fs.readdir(path.join(dir, 'images', 'a'));
+        assert.deepEqual(files, ['image-1.png'], '画像が保存されていません: ' + JSON.stringify(files));
+
+        await page.evaluate(() => window.__fakeFs.setDelay({ write: 0 }));
+        printConsoleErrors(consoleErrors, '保存中のファイル切り替え');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('「表を整形」ボタンと Alt+Shift+F で列がずれた表を整形できる。整形不要なら案内が出る', async () => {
+    const dir = await mkTmpDir();
+    const initial = '# 表\n\n内容\n\n|項目|値|説明|\n|:--|--:|:-:|\n|名前|山田太郎|フルネーム|\n|年齢|28|満年齢|\n';
+    const formatted =
+      '# 表\n\n内容\n\n| 項目 |       値 |    説明    |\n| :--- | -------: | :--------: |\n| 名前 | 山田太郎 | フルネーム |\n| 年齢 |       28 |   満年齢   |\n';
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), initial, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        await page.click('#formatTablesBtn');
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getEditorText())) === formatted, {
+          message: '表が整形されませんでした',
+        });
+        assert.equal(await page.evaluate(() => window.__mdpreview.getStatusMessage()), '表を1個整形しました');
+        assert.equal((await page.evaluate(() => window.__mdpreview.getState())).dirty, true, '未保存の印が付いていません');
+
+        await page.click('#formatTablesBtn');
+        assert.equal(await page.evaluate(() => window.__mdpreview.getStatusMessage()), '整形が必要な表はありません');
+
+        // Alt+Shift+F でも整形される(検証のため、いったん未整形の内容に戻す)。
+        await page.evaluate((t) => window.__mdpreview.setEditorText(t), initial);
+        await page.click('.cm-content');
+        await page.keyboard.press('Alt+Shift+F');
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getEditorText())) === formatted, {
+          message: 'Alt+Shift+F で整形されませんでした',
+        });
+        assert.equal(await page.evaluate(() => window.__mdpreview.getStatusMessage()), '表を1個整形しました');
+
+        await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+        await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'app-format-tables.png') });
+
+        printConsoleErrors(consoleErrors, '表の整形');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('Ctrl+Shift+V は実際のクリップボードに画像とテキストの両方があっても選択メニューを出さずテキストだけを貼り付ける', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# Ctrl+Shift+V\n', 'utf8');
+      const browserContext = await browser.newContext();
+      await browserContext.grantPermissions(['clipboard-read', 'clipboard-write']);
+      await installFakeFs(browserContext, { rootDir: dir });
+      const page = await browserContext.newPage();
+      const consoleErrors = [];
+      attachDebugLogging(page, consoleErrors);
+      try {
+        await page.goto(DIST_URL);
+        await ensureHooks(page);
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('.cm-content');
+        await page.keyboard.press('Control+End');
+
+        await page.evaluate(async (b64) => {
+          const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+          const imageBlob = new Blob([bytes], { type: 'image/png' });
+          const textBlob = new Blob(['セルの文字列'], { type: 'text/plain' });
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': imageBlob, 'text/plain': textBlob })]);
+        }, TEST_PNG_BASE64);
+
+        await page.keyboard.press('Control+Shift+V');
+
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getEditorText())).includes('セルの文字列'), {
+          message: 'Ctrl+Shift+V でテキストが貼り付けられませんでした',
+        });
+        assert.equal(
+          await page.evaluate(() => !!document.querySelector('.mdp-paste-menu')),
+          false,
+          'Ctrl+Shift+V で選択メニューが表示されています'
+        );
+        assert.ok(!(await fs.readdir(dir)).includes('images'), '画像フォルダが作られています(画像が保存されています)');
+
+        printConsoleErrors(consoleErrors, 'Ctrl+Shift+V');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      } finally {
+        await browserContext.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   console.log('\n21) 画像注釈エディタの組み込み');
   await test('画像の編集ボタン → 赤枠を描いて保存 → ファイルが更新され mdIM チャンクが入っている', async () => {
     const dir = await mkTmpDir();
