@@ -1383,6 +1383,147 @@ async function runTests(browser) {
       assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
     });
   });
+
+  console.log('\n28) 吹き出しの文字の大きさ・色');
+  await test('選択中の吹き出しの大きさ・色をツールバーで変えると反映され、Ctrl+Z で色が元に戻る', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      await selectTool(page, 'callout');
+      await clickOnCanvas(page, { x: 300, y: 300 });
+      await waitForTextEditorVisible(page);
+      await page.fill('.annotator-text-editor', 'テスト文言');
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      const st0 = await getDebugState(page);
+      const callout = st0.shapes.find((s) => s.type === 'callout');
+      assert.ok(callout, '吹き出しが作成されていません');
+      assert.equal(st0.selectedShapeId, callout.id, '作成した吹き出しが選択された状態のはずです');
+
+      const getBox = () =>
+        page.evaluate((id) => {
+          const path = document.querySelector(`.annotator-shapes-layer [data-shape-id="${id}"] path`);
+          const b = path.getBBox();
+          return { w: b.width, h: b.height };
+        }, callout.id);
+      const getTextFill = () =>
+        page.evaluate((id) => {
+          const t = document.querySelector(`.annotator-shapes-layer [data-shape-id="${id}"] text`);
+          return t.getAttribute('fill');
+        }, callout.id);
+
+      const boxBefore = await getBox();
+
+      await page.selectOption('.annotator-font-size', '48');
+      let st = await getDebugState(page);
+      let updated = st.shapes.find((s) => s.id === callout.id);
+      assert.equal(updated.fontSize, 48, '文字の大きさが反映されていません');
+
+      const boxAfter = await getBox();
+      assert.ok(
+        boxAfter.w > boxBefore.w && boxAfter.h > boxBefore.h,
+        `文字の大きさを変えても枠が大きくなっていません: before=${JSON.stringify(boxBefore)}, after=${JSON.stringify(boxAfter)}`
+      );
+
+      await page.click('.annotator-text-color-btn[data-text-color="#1e88e5"]');
+      st = await getDebugState(page);
+      updated = st.shapes.find((s) => s.id === callout.id);
+      assert.equal(updated.textColor, '#1e88e5', '文字の色が反映されていません');
+      assert.equal(await getTextFill(), '#1e88e5', 'SVG の text の fill が変わっていません');
+
+      await page.keyboard.press('Control+Z');
+      st = await getDebugState(page);
+      updated = st.shapes.find((s) => s.id === callout.id);
+      assert.equal(updated.textColor, '#222222', 'Ctrl+Z で文字の色が元に戻っていません');
+
+      printConsoleErrors(consoleErrors, '吹き出しの文字の大きさ・色');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('吹き出しの文字の大きさ・色を保存して開き直しても復元される', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      await selectTool(page, 'callout');
+      await clickOnCanvas(page, { x: 300, y: 300 });
+      await waitForTextEditorVisible(page);
+      await page.fill('.annotator-text-editor', 'テスト');
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      await page.selectOption('.annotator-font-size', '40');
+      await page.click('.annotator-text-color-btn[data-text-color="#43a047"]');
+
+      let st = await getDebugState(page);
+      let callout = st.shapes.find((s) => s.type === 'callout');
+      assert.equal(callout.fontSize, 40);
+      assert.equal(callout.textColor, '#43a047');
+
+      await saveAndWaitClosed(page);
+      await reopenLastResult(page);
+
+      st = await getDebugState(page);
+      callout = st.shapes.find((s) => s.type === 'callout');
+      assert.ok(callout, '再読み込み後に吹き出しが見つかりません');
+      assert.equal(callout.fontSize, 40, '再読み込み後の fontSize が復元されていません');
+      assert.equal(callout.textColor, '#43a047', '再読み込み後の textColor が復元されていません');
+
+      printConsoleErrors(consoleErrors, '吹き出しの文字の大きさ・色の保存往復');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('何も選んでいない状態で大きさ・色を変えると、次に作る吹き出しがその値になる', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      await selectTool(page, 'select'); // 前提: 何も選択していない状態
+      await page.selectOption('.annotator-font-size', '16');
+      await page.click('.annotator-text-color-btn[data-text-color="#e53935"]');
+
+      await selectTool(page, 'callout');
+      await clickOnCanvas(page, { x: 300, y: 300 });
+      await waitForTextEditorVisible(page);
+      await page.keyboard.press('Escape'); // テキストは空のまま確定
+      await waitForTextEditorHidden(page);
+
+      const st = await getDebugState(page);
+      const callout = st.shapes.find((s) => s.type === 'callout');
+      assert.ok(callout, '吹き出しが作成されていません');
+      assert.equal(callout.fontSize, 16, '既定の文字の大きさが新しい吹き出しに反映されていません');
+      assert.equal(callout.textColor, '#e53935', '既定の文字色が新しい吹き出しに反映されていません');
+
+      printConsoleErrors(consoleErrors, '既定の文字の大きさ・色');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('文字の大きさの select にフォーカスがある状態で Delete を押しても選択中の吹き出しが消えない', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      await selectTool(page, 'callout');
+      await clickOnCanvas(page, { x: 300, y: 300 });
+      await waitForTextEditorVisible(page);
+      await page.fill('.annotator-text-editor', 'テスト');
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      let st = await getDebugState(page);
+      assert.equal(st.shapes.length, 1, '前提条件が崩れています: 吹き出しが作成されていません');
+
+      await page.focus('.annotator-font-size');
+      await page.keyboard.press('Delete');
+
+      st = await getDebugState(page);
+      assert.equal(st.shapes.length, 1, 'select にフォーカスがある状態で Delete を押すと吹き出しが消えてしまいました');
+
+      printConsoleErrors(consoleErrors, 'select フォーカス中の Delete');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
 }
 
 // ---------- エントリポイント ----------

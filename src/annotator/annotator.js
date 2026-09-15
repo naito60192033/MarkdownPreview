@@ -46,6 +46,12 @@
 // (pngmeta.js)。v1(1枚の画像のみ・mdOR チャンク)を開いた場合は model.js の
 // normalizeLoadedModel() で { images: [1枚], shapes, scale } に変換してから読み込む。
 //
+// 【吹き出しの文字の大きさ・色】
+// ツールバーの「文字」グループで吹き出し(type 'callout')の fontSize・textColor を
+// 変更できる(選択肢は FONT_SIZES / TEXT_COLORS)。吹き出しを選択中はその吹き出しに、
+// それ以外(未選択・吹き出し以外の図形を選択中)は次に作る吹き出しの既定値に適用する
+// (色・線の太さと同じ考え方)。文字色は吹き出し全体が対象で、一部だけ変えることはできない。
+//
 // 図形の描画(見た目)は shapes.js の buildShapeSvg() にまとめてあり、エディタの
 // ライブ表示と出力(PNG 焼き込み)の両方でこの関数だけを使う(描画ロジックの二重化を避ける)。
 // PNG チャンクの読み書きは pngmeta.js に任せる(DOM 非依存)。
@@ -80,6 +86,13 @@ const SCALE_PRESETS = [1, 0.75, 0.5];
 const DEFAULT_COLOR = '#e53935';
 const DEFAULT_WIDTH = 4;
 const DEFAULT_CALLOUT_WIDTH = 2;
+// 吹き出し(callout)の文字の大きさ・色。TEXT_COLORS のキー(色コード)と表示名の対応は
+// TEXT_COLOR_NAMES に持つ(title 属性・ボタンの説明に使う)。
+const FONT_SIZES = [12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64];
+const TEXT_COLORS = ['#222222', '#e53935', '#fb8c00', '#1e88e5', '#43a047'];
+const TEXT_COLOR_NAMES = { '#222222': '黒', '#e53935': '赤', '#fb8c00': 'オレンジ', '#1e88e5': '青', '#43a047': '緑' };
+const DEFAULT_FONT_SIZE = 24;
+const DEFAULT_TEXT_COLOR = '#222222';
 const ATTACH_TOLERANCE_SCREEN_PX = 10;
 const HANDLE_SCREEN_PX = 8;
 const MIN_DRAW_SIZE_IMAGE_PX = 3;
@@ -294,6 +307,8 @@ function createInstance(initial, title, resolve) {
     activeTool: 'select',
     currentColor: DEFAULT_COLOR,
     currentStrokeWidth: DEFAULT_WIDTH,
+    currentFontSize: DEFAULT_FONT_SIZE,
+    currentTextColor: DEFAULT_TEXT_COLOR,
     selectedShapeId: null,
     selectedImageId: null, // 画像が2枚以上のときだけ選択ツールで選べる(selectedShapeIdとは排他)
     editingShapeId: null,
@@ -343,6 +358,7 @@ function buildDom(title) {
   toolbar.appendChild(buildImageGroup());
   toolbar.appendChild(buildColorGroup());
   toolbar.appendChild(buildWidthGroup());
+  toolbar.appendChild(buildTextGroup());
   toolbar.appendChild(buildScaleGroup());
   toolbar.appendChild(buildHistoryGroup());
   toolbar.appendChild(buildZoomGroup());
@@ -410,6 +426,8 @@ function buildDom(title) {
     toolButtons: Array.from(toolbar.querySelectorAll('[data-tool]')),
     colorButtons: Array.from(toolbar.querySelectorAll('[data-color]')),
     widthButtons: Array.from(toolbar.querySelectorAll('[data-width]')),
+    fontSizeSelect: toolbar.querySelector('.annotator-font-size'),
+    textColorButtons: Array.from(toolbar.querySelectorAll('[data-text-color]')),
     scaleButtons: Array.from(toolbar.querySelectorAll('[data-scale]')),
     scaleCustomInput: toolbar.querySelector('.annotator-scale-custom'),
     outputSizeLabel: toolbar.querySelector('.annotator-output-size'),
@@ -520,6 +538,42 @@ function buildWidthGroup() {
     btn.dataset.width = String(w);
     btn.setAttribute('aria-pressed', 'false');
     btn.textContent = String(w);
+    group.appendChild(btn);
+  }
+  return group;
+}
+
+// 吹き出しの文字の大きさ・色。選択中の吹き出し(未選択時は次に作る吹き出しの既定)に適用する。
+function buildTextGroup() {
+  const group = document.createElement('div');
+  group.className = 'annotator-tool-group';
+  group.setAttribute('aria-label', '文字');
+
+  const label = document.createElement('span');
+  label.className = 'annotator-text-group-label';
+  label.textContent = '文字';
+  group.appendChild(label);
+
+  const select = document.createElement('select');
+  select.className = 'annotator-font-size';
+  select.title = '文字の大きさ';
+  for (const size of FONT_SIZES) {
+    const opt = document.createElement('option');
+    opt.value = String(size);
+    opt.textContent = `${size}px`;
+    select.appendChild(opt);
+  }
+  group.appendChild(select);
+
+  for (const color of TEXT_COLORS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'annotator-text-color-btn';
+    btn.dataset.textColor = color;
+    btn.setAttribute('aria-pressed', 'false');
+    btn.style.color = color;
+    btn.title = `文字の色: ${TEXT_COLOR_NAMES[color] || color}`;
+    btn.textContent = 'A';
     group.appendChild(btn);
   }
   return group;
@@ -1192,6 +1246,17 @@ function updateToolbar(inst, boundsArg) {
     btn.setAttribute('aria-pressed', String(Number(btn.dataset.width) === effectiveWidth));
   }
 
+  // 文字の大きさ・色は選択中が吹き出しのときだけその値、それ以外は次に作る吹き出しの既定値
+  const selectedCallout = selected && selected.type === 'callout' ? selected : null;
+  const effectiveFontSize = selectedCallout ? selectedCallout.fontSize : st.currentFontSize;
+  const effectiveTextColor = selectedCallout ? selectedCallout.textColor : st.currentTextColor;
+  if (document.activeElement !== dom.fontSizeSelect) {
+    dom.fontSizeSelect.value = String(effectiveFontSize);
+  }
+  for (const btn of dom.textColorButtons) {
+    btn.setAttribute('aria-pressed', String(btn.dataset.textColor === effectiveTextColor));
+  }
+
   for (const btn of dom.scaleButtons) {
     btn.setAttribute('aria-pressed', String(Number(btn.dataset.scale) === st.scale));
   }
@@ -1311,8 +1376,8 @@ function newCallout(st, tailX, tailY, boxX, boxY) {
     stroke: st.currentColor,
     strokeWidth: DEFAULT_CALLOUT_WIDTH,
     fill: '#ffffff',
-    textColor: '#222222',
-    fontSize: 24,
+    textColor: st.currentTextColor,
+    fontSize: st.currentFontSize,
   };
 }
 
@@ -1348,6 +1413,15 @@ function wireEvents(inst) {
   for (const btn of dom.widthButtons) {
     btn.addEventListener('click', () => {
       applyWidthChoice(inst, Number(btn.dataset.width));
+    });
+  }
+  dom.fontSizeSelect.addEventListener('change', () => {
+    applyFontSizeChoice(inst, Number(dom.fontSizeSelect.value));
+    inst.root.focus(); // select にフォーカスが残ったままだと以降のキー操作(Delete等)が効かないため
+  });
+  for (const btn of dom.textColorButtons) {
+    btn.addEventListener('click', () => {
+      applyTextColorChoice(inst, btn.dataset.textColor);
     });
   }
   for (const btn of dom.scaleButtons) {
@@ -1480,10 +1554,42 @@ function applyWidthChoice(inst, width) {
   render(inst);
 }
 
+// 文字の大きさ・色は吹き出し(callout)だけが持つ値のため、選択中の図形が吹き出しの
+// ときだけその図形に適用する(rect・arrow を選択中は色・線の太さと違い対象外)。
+function applyFontSizeChoice(inst, fontSize) {
+  const st = inst.state;
+  if (st.selectedImageId) return; // 画像の選択中は何もしない
+  const shape = st.selectedShapeId ? st.shapes.find((s) => s.id === st.selectedShapeId) : null;
+  if (shape && shape.type === 'callout') {
+    if (shape.fontSize !== fontSize) {
+      shape.fontSize = fontSize;
+      pushHistory(inst);
+    }
+  } else {
+    st.currentFontSize = fontSize;
+  }
+  render(inst);
+}
+
+function applyTextColorChoice(inst, textColor) {
+  const st = inst.state;
+  if (st.selectedImageId) return; // 画像の選択中は何もしない
+  const shape = st.selectedShapeId ? st.shapes.find((s) => s.id === st.selectedShapeId) : null;
+  if (shape && shape.type === 'callout') {
+    if (shape.textColor !== textColor) {
+      shape.textColor = textColor;
+      pushHistory(inst);
+    }
+  } else {
+    st.currentTextColor = textColor;
+  }
+  render(inst);
+}
+
 function onKeyDown(inst, e) {
   if (!document.body.contains(inst.dom.root)) return; // 既に閉じている
   const active = document.activeElement;
-  const isTyping = active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT');
+  const isTyping = active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT' || active.tagName === 'SELECT');
 
   if (e.key === 'Escape') {
     if (inst.state.editingShapeId) {
