@@ -111,6 +111,17 @@
 - [x] テスト(renderDocument で改行・アラート・attrs・```mark を確認)、README、dist。npm test すべて成功
 - [x] 目視確認(ユーザー): プレビューと HTML 出力で 1 回の改行・アラート・リスト・画像 2 行
 
+## 追加要望(2026-09-15): 貼り付けの改善と表の整形
+方針の詳細: tasks/plan-2026-09-15-paste.md(feature/paste、worktree: ../MarkdownPreview-paste)
+- [ ] デモページ(案 A の選択メニュー・保存中の表示・表での貼り付け・表の整形・クリップボードの中身の表示)— dev/paste-demo/
+- [ ] ユーザーがデモを実機で確認(Excel のセル・Excel の画像)→ 本体への組み込み方を決める
+- [ ] md への画像の貼り付け: 保存中の表示、保存中の貼り付けを受け付けない、ファイル切り替え時は挿入しない — src/paste.js
+- [ ] 画像とテキストの両方がある貼り付けの選択(案 A)と、表(Markdown)での貼り付け — src/paste.js、src/paste-ui.js
+- [ ] 表の整形(Alt+Shift+F) — src/md-table.js
+- [ ] 注釈エディタ: Excel の画像の Ctrl+V(kind === 'file' の項目から選ぶ)、ツールチップ(elbow のマージ後)
+- [ ] テスト(単体・E2E)、README、dist
+- [ ] ユーザーの目視確認後に dev へマージ
+
 ## 将来やりたいこと(バックログ)
 - [ ] プロジェクト(ワークスペース)ごとの favicon 設定と、favicon を作る機能
   - ねらい: 複数のプロジェクトをタブで開いたときに見分けやすくする
