@@ -7,7 +7,8 @@
 //
 // 幾何計算部分(normalizeRect・intersectRectFromCenter・computeArrowEndpoints・
 // findAttachTarget・computeOutputSize・computeCalloutBox・getShapeVisualBounds・
-// imageVisibleRect・imageFullRect・resizeImageFromCorner・unionRect・computeOutputBounds)は DOM に依存せず、
+// imageVisibleRect・imageFullRect・resizeImageFromCorner・unionRect・computeOutputBounds・
+// nearestSide・sidePoint・facingSide・routeElbow・computeElbowRoute)は DOM に依存せず、
 // テキスト幅の測定関数(measureFn)を外から差し替えられるようにしてあるので、
 // tests/annotator-shapes.test.js から node:test で直接検証できる。
 // SVG 要素を実際に作る buildShapeSvg() だけは document を必要とする(ブラウザ専用)。
@@ -16,6 +17,18 @@
 // 座標系で、v1 の「元画像ピクセル座標」と同じ意味)。画像の表示矩形(切り抜き後)は
 // imageVisibleRect()、出力範囲(すべての画像 + 図形を囲む最小矩形)は
 // computeOutputBounds() で求める。
+//
+// カギ線矢印(Excel の「カギ線コネクタ」)は type: 'arrow' のまま routing: 'elbow' を
+// 持つ図形(routing が無ければ従来どおりの直線の矢印)。水平・垂直の線分だけで
+// つなぐための経路計算を routeElbow()(疎な格子上のダイクストラ。DOM 非依存)が行い、
+// computeElbowRoute() が図形の接続情報(from/to の attach・side)から
+// routeElbow() の入力(端点・向き・障害物)を組み立てる。ELBOW_STUB は辺から
+// まっすぐ出す長さ、ELBOW_BEND_PENALTY は経路が1回曲がるごとのコスト。
+// nearestSide()/sidePoint()/facingSide() は辺(top/right/bottom/left)に関する
+// 補助関数で、facingSide() は吹き出しのしっぽの辺選びとも共用している。
+// computeArrowEndpoints()・getShapeVisualBounds()・buildShapeSvg() は
+// shape.routing === 'elbow' のときだけ内部で分岐してカギ線に対応する
+// (直線の矢印の挙動・出力は変えない)。
 
 export const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -167,15 +180,29 @@ export function getShapeVisualBounds(shape, shapesById = {}, measureFn = measure
     return { x: r.x - half, y: r.y - half, w: r.w + half * 2, h: r.h + half * 2 };
   }
   if (shape.type === 'arrow') {
-    const { from, to } = computeArrowEndpoints(shape, shapesById, measureFn);
-    const angle = Math.atan2(to.y - from.y, to.x - from.x);
+    // カギ線は経路の全折れ点を、直線は両端の2点だけを使う(矢じりの向きは
+    // 最後の線分で決める)。これで直線側の計算・出力は完全に元のまま
+    let points;
+    let angle;
+    if (shape.routing === 'elbow') {
+      const route = computeElbowRoute(shape, shapesById, measureFn);
+      points = route.points;
+      const last = points[points.length - 1];
+      const prev = points[points.length - 2] || points[0];
+      angle = Math.atan2(last.y - prev.y, last.x - prev.x);
+    } else {
+      const { from, to } = computeArrowEndpoints(shape, shapesById, measureFn);
+      points = [from, to];
+      angle = Math.atan2(to.y - from.y, to.x - from.x);
+    }
+    const to = points[points.length - 1];
     const headVertices = arrowheadVertices(to.x, to.y, angle, arrowHeadSize(shape.strokeWidth));
-    const points = [from, to, ...headVertices];
+    const allPoints = [...points, ...headVertices];
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
-    for (const p of points) {
+    for (const p of allPoints) {
       minX = Math.min(minX, p.x - half);
       minY = Math.min(minY, p.y - half);
       maxX = Math.max(maxX, p.x + half);
@@ -244,6 +271,11 @@ export function intersectRectFromCenter(rect, target) {
  * 線分と図形の外周との交点、接続が無ければ生の座標をそのまま使う。
  */
 export function computeArrowEndpoints(shape, shapesById = {}, measureFn = measureTextWidth) {
+  if (shape.routing === 'elbow') {
+    // カギ線は経路(routeElbow の結果)の先頭・末尾を両端とする
+    const { points } = computeElbowRoute(shape, shapesById, measureFn);
+    return { from: points[0], to: points[points.length - 1] };
+  }
   const resolveAnchor = (endpoint) => {
     const target = endpoint.attach ? shapesById[endpoint.attach] : null;
     if (target) {
@@ -299,14 +331,434 @@ function clamp(v, lo, hi) {
   return Math.min(Math.max(v, lo), hi);
 }
 
-// tail(しっぽの先端)に最も近い辺を選ぶ(box の縦横比を考慮して正規化してから比較する)
-function pickTailEdge(box, tail) {
+// ---------- カギ線(elbow)矢印の経路計算 ----------
+// routing: 'elbow' の矢印(Excel の「カギ線コネクタ」)のための、DOM に依存しない
+// 純粋な幾何計算。水平・垂直の線分だけで両端をつなぐ経路を、疎な格子上の
+// ダイクストラで探す(candidateの数は多くても十数×十数点なので軽い)。
+
+/** 辺からまっすぐ出す長さ(キャンバスpx)。つないだ枠の辺の中点から、この距離だけ
+ * 外向きに直進してから曲がる(Excel のカギ線コネクタと同じ見た目にするため) */
+export const ELBOW_STUB = 16;
+
+/** 経路が1回曲がるごとに加える仮想の距離(px)。ELBOW_STUB(16px)の3倍程度にして
+ * あり、「短いが曲がる経路」より「多少長いが曲がらない経路」を優先させるのに十分な
+ * 値になっている(向かい合う辺・後ろ向きの辺のテストで、余計な曲がりが増えない
+ * ことを確認している) */
+export const ELBOW_BEND_PENALTY = 48;
+
+const OPPOSITE_DIR = { top: 'bottom', bottom: 'top', left: 'right', right: 'left' };
+
+// 点から線分 a→b までの最短距離
+function distanceToSegment(a, b, point) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(point.x - a.x, point.y - a.y);
+  const t = clamp(((point.x - a.x) * dx + (point.y - a.y) * dy) / lenSq, 0, 1);
+  return Math.hypot(point.x - (a.x + dx * t), point.y - (a.y + dy * t));
+}
+
+/** box の4辺(top/right/bottom/left)を線分として、point に最も近い辺を返す。
+ * 同距離なら top, right, bottom, left の順で先に定義した方を選ぶ */
+export function nearestSide(box, point) {
+  const tl = { x: box.x, y: box.y };
+  const tr = { x: box.x + box.w, y: box.y };
+  const br = { x: box.x + box.w, y: box.y + box.h };
+  const bl = { x: box.x, y: box.y + box.h };
+  const sides = [
+    ['top', tl, tr],
+    ['right', tr, br],
+    ['bottom', bl, br],
+    ['left', tl, bl],
+  ];
+  let best = 'top';
+  let bestDist = Infinity;
+  for (const [name, a, b] of sides) {
+    const d = distanceToSegment(a, b, point);
+    if (d < bestDist) {
+      bestDist = d;
+      best = name;
+    }
+  }
+  return best;
+}
+
+/** box の指定した辺('top'|'right'|'bottom'|'left')の中点 */
+export function sidePoint(box, side) {
   const cx = box.x + box.w / 2;
   const cy = box.y + box.h / 2;
-  const nx = (tail.x - cx) / (box.w / 2 || 1);
-  const ny = (tail.y - cy) / (box.h / 2 || 1);
+  if (side === 'top') return { x: cx, y: box.y };
+  if (side === 'bottom') return { x: cx, y: box.y + box.h };
+  if (side === 'left') return { x: box.x, y: cy };
+  return { x: box.x + box.w, y: cy }; // 'right'
+}
+
+/**
+ * box の縦横比で正規化した座標系で、point の方向に一番近い辺を返す
+ * ('top'|'right'|'bottom'|'left')。カギ線でつないだ端の side が未指定のときの
+ * 自動選択と、吹き出しのしっぽの辺選び(buildCalloutPath)の両方で使う
+ */
+export function facingSide(box, point) {
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  const nx = (point.x - cx) / (box.w / 2 || 1);
+  const ny = (point.y - cy) / (box.h / 2 || 1);
   if (Math.abs(nx) > Math.abs(ny)) return nx > 0 ? 'right' : 'left';
   return ny > 0 ? 'bottom' : 'top';
+}
+
+// rect を margin だけ四方に広げた矩形
+function expandRect(rect, margin) {
+  return { x: rect.x - margin, y: rect.y - margin, w: rect.w + margin * 2, h: rect.h + margin * 2 };
+}
+
+// 点 (x,y) が rect の内側(境界は含まない)にあるか
+function pointInsideRect(rect, x, y) {
+  return x > rect.x && x < rect.x + rect.w && y > rect.y && y < rect.y + rect.h;
+}
+
+// 水平または垂直な線分 a→b が rect の内側を通るか(境界に触れるだけ・角で接するだけなら許可)
+function axisSegmentCrossesRect(a, b, rect) {
+  if (a.x === b.x) {
+    if (a.x <= rect.x || a.x >= rect.x + rect.w) return false;
+    const lo = Math.min(a.y, b.y);
+    const hi = Math.max(a.y, b.y);
+    return hi > rect.y && lo < rect.y + rect.h;
+  }
+  if (a.y === b.y) {
+    if (a.y <= rect.y || a.y >= rect.y + rect.h) return false;
+    const lo = Math.min(a.x, b.x);
+    const hi = Math.max(a.x, b.x);
+    return hi > rect.x && lo < rect.x + rect.w;
+  }
+  return false; // 斜めの線分は想定しない
+}
+
+// dir 方向へ dist だけ進めた点(dir は外向きの辺の名前 = 移動方向として共用する)
+function stubPoint(pt, dir, dist) {
+  if (dir === 'top') return { x: pt.x, y: pt.y - dist };
+  if (dir === 'bottom') return { x: pt.x, y: pt.y + dist };
+  if (dir === 'left') return { x: pt.x - dist, y: pt.y };
+  return { x: pt.x + dist, y: pt.y }; // 'right'
+}
+
+// a→b の移動方向('top'|'right'|'bottom'|'left')。水平・垂直以外は null
+function travelDirOf(a, b) {
+  if (a.x === b.x && a.y !== b.y) return b.y > a.y ? 'bottom' : 'top';
+  if (a.y === b.y && a.x !== b.x) return b.x > a.x ? 'right' : 'left';
+  return null;
+}
+
+// 重複点・一直線上(水平/垂直が連続する)途中点を取り除く
+function simplifyPoints(points) {
+  const pts = [];
+  for (const p of points) {
+    const last = pts[pts.length - 1];
+    if (last && last.x === p.x && last.y === p.y) continue;
+    pts.push({ x: p.x, y: p.y });
+  }
+  let i = 1;
+  while (i < pts.length - 1) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const c = pts[i + 1];
+    if ((a.y === b.y && b.y === c.y) || (a.x === b.x && b.x === c.x)) {
+      pts.splice(i, 1);
+    } else {
+      i++;
+    }
+  }
+  return pts;
+}
+
+/**
+ * S・E を結ぶ「横→縦→横」または「縦→横→縦」の経路を作る(両端とも向きの制約が
+ * 無いときの経路そのもの、および接続経路が見つからないときのフォールバックの
+ * 中央部分に使う)。dx か dy が 0 なら1本の直線になる(axis は null)
+ */
+function buildSimpleZ(S, E, mid) {
+  const dx = E.x - S.x;
+  const dy = E.y - S.y;
+  if (dx === 0 || dy === 0) {
+    return { points: [{ x: S.x, y: S.y }, { x: E.x, y: E.y }], axis: null };
+  }
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    const midX = S.x + dx * mid;
+    return {
+      points: [{ x: S.x, y: S.y }, { x: midX, y: S.y }, { x: midX, y: E.y }, { x: E.x, y: E.y }],
+      axis: 'x',
+    };
+  }
+  const midY = S.y + dy * mid;
+  return {
+    points: [{ x: S.x, y: S.y }, { x: S.x, y: midY }, { x: E.x, y: midY }, { x: E.x, y: E.y }],
+    axis: 'y',
+  };
+}
+
+/**
+ * 簡約後の経路が「平行で同じ向きの2本の線分に挟まれた、それに垂直な1本の線分」
+ * (= Z字。ちょうど4点)のとき、その中央の線分を mid の位置に置き直し、
+ * { axis, lo, hi, index } を返す(axis は中央の線分が動く軸、lo/hi は動かせる範囲、
+ * index は中央の線分の始点の points 内の添字 = 常に1)。置き直すと障害物の内側を
+ * 通ってしまう場合は points はそのまま(置き直さない)にして、範囲の情報だけ返す。
+ * Z字でなければ null(points も変えない)
+ */
+function computeMidSegment(points, start, end, S, E, P, Q, mid, blockRects) {
+  if (points.length !== 4) return null;
+  const [p0, p1, p2, p3] = points;
+  const s1 = { dx: p1.x - p0.x, dy: p1.y - p0.y };
+  const s2 = { dx: p2.x - p1.x, dy: p2.y - p1.y };
+  const s3 = { dx: p3.x - p2.x, dy: p3.y - p2.y };
+
+  let axis; // 中央の線分(s2)の位置を表す軸('x' = 縦の線がx位置で動く、'y' = 横の線がy位置で動く)
+  if (s2.dx === 0 && s2.dy !== 0) axis = 'x';
+  else if (s2.dy === 0 && s2.dx !== 0) axis = 'y';
+  else return null;
+
+  const ok = axis === 'x'
+    ? s1.dy === 0 && s3.dy === 0 && s1.dx !== 0 && s3.dx !== 0 && Math.sign(s1.dx) === Math.sign(s3.dx)
+    : s1.dx === 0 && s3.dx === 0 && s1.dy !== 0 && s3.dy !== 0 && Math.sign(s1.dy) === Math.sign(s3.dy);
+  if (!ok) return null;
+
+  const lo = start.dir ? P[axis] : S[axis];
+  const hi = end.dir ? Q[axis] : E[axis];
+  const target = lo + (hi - lo) * mid;
+
+  const np1 = axis === 'x' ? { x: target, y: p1.y } : { x: p1.x, y: target };
+  const np2 = axis === 'x' ? { x: target, y: p2.y } : { x: p2.x, y: target };
+  // 前後の線分の判定は S→P・Q→E の強制区間(自分がつながっている枠のすぐそば)を
+  // 除外する。S・E は接続先の枠の辺の上にあり、その枠自身の障害物判定の内側に
+  // 入ってしまうため(P・Q は ELBOW_STUB 分離れているので判定の対象外になる)
+  const checkStart = start.dir ? P : p0;
+  const checkEnd = end.dir ? Q : p3;
+  const crosses = blockRects.some(
+    (r) => axisSegmentCrossesRect(checkStart, np1, r) || axisSegmentCrossesRect(np1, np2, r) || axisSegmentCrossesRect(np2, checkEnd, r)
+  );
+  if (!crosses) {
+    points[1].x = np1.x;
+    points[1].y = np1.y;
+    points[2].x = np2.x;
+    points[2].y = np2.y;
+  }
+  return { axis, lo, hi, index: 1 };
+}
+
+/**
+ * カギ線の経路を求める(水平・垂直の線分だけ。先頭 = 始点、末尾 = 終点)。
+ * start / end: { x, y, dir }。dir はつないだ辺の外向き('top' 等)、つながっていない
+ * 端は null。obstacles はつないだ枠の矩形(元の大きさ。避けて通る)。mid は
+ * 中央の線の位置(0〜1)。opts.stub / opts.bendPenalty でテスト用に既定値を上書きできる。
+ * 戻り値: { points, midSegment }(midSegment は Z字のときだけ非null。中央の線の
+ * ハンドル用の情報)
+ */
+export function routeElbow(start, end, obstacles = [], mid = 0.5, opts = {}) {
+  const stub = opts.stub ?? ELBOW_STUB;
+  const bendPenalty = opts.bendPenalty ?? ELBOW_BEND_PENALTY;
+  const S = { x: start.x, y: start.y };
+  const E = { x: end.x, y: end.y };
+
+  // 両端とも向きの制約が無ければ、障害物を考えずにシンプルな Z字(または直線)にする
+  if (!start.dir && !end.dir) {
+    const { points, axis } = buildSimpleZ(S, E, mid);
+    const midSegment = axis ? { axis, lo: S[axis], hi: E[axis], index: 1 } : null;
+    return { points, midSegment };
+  }
+
+  const P = start.dir ? stubPoint(S, start.dir, stub) : S;
+  const Q = end.dir ? stubPoint(E, end.dir, stub) : E;
+
+  // 障害物を通行禁止の判定用に少しだけ広げる(候補座標の生成に使う ELBOW_STUB とは別)
+  const blockRects = obstacles.map((o) => expandRect(o, stub / 2));
+
+  // ---- 候補座標(疎な格子)を集める ----
+  const xsSet = new Set([S.x, E.x, P.x, Q.x, (P.x + Q.x) / 2]);
+  const ysSet = new Set([S.y, E.y, P.y, Q.y, (P.y + Q.y) / 2]);
+  for (const o of obstacles) {
+    xsSet.add(o.x - stub);
+    xsSet.add(o.x + o.w + stub);
+    ysSet.add(o.y - stub);
+    ysSet.add(o.y + o.h + stub);
+  }
+  const xs = [...xsSet];
+  const ys = [...ysSet];
+
+  // ---- ノード生成(S, E, P, Q は常にノード。それ以外は広げた障害物の内側でない点だけ) ----
+  const nodeIndexByKey = new Map();
+  const nodes = [];
+  function addNode(x, y) {
+    const key = `${x},${y}`;
+    let idx = nodeIndexByKey.get(key);
+    if (idx === undefined) {
+      idx = nodes.length;
+      nodes.push({ x, y });
+      nodeIndexByKey.set(key, idx);
+    }
+    return idx;
+  }
+  for (const x of xs) {
+    for (const y of ys) {
+      if (!blockRects.some((r) => pointInsideRect(r, x, y))) addNode(x, y);
+    }
+  }
+  const sIdx = addNode(S.x, S.y);
+  const eIdx = addNode(E.x, E.y);
+  const pIdx = addNode(P.x, P.y);
+  const qIdx = addNode(Q.x, Q.y);
+
+  // ---- 辺生成: 同じ x / 同じ y の上で隣り合うノードどうしを結ぶ(障害物を横切るものは除く)。
+  // つないだ端(S・E)は辺からの強制直進(S→P・Q→E)以外の辺を持たない
+  const adj = nodes.map(() => []);
+  function addEdge(iA, iB) {
+    const a = nodes[iA];
+    const b = nodes[iB];
+    const dirAB = travelDirOf(a, b);
+    if (!dirAB) return;
+    const cost = Math.hypot(b.x - a.x, b.y - a.y);
+    adj[iA].push({ to: iB, dir: dirAB, cost });
+    adj[iB].push({ to: iA, dir: OPPOSITE_DIR[dirAB], cost });
+  }
+  const excludeFromMesh = new Set();
+  if (start.dir) excludeFromMesh.add(sIdx);
+  if (end.dir) excludeFromMesh.add(eIdx);
+
+  const byX = new Map();
+  const byY = new Map();
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    if (!byX.has(n.x)) byX.set(n.x, []);
+    byX.get(n.x).push(i);
+    if (!byY.has(n.y)) byY.set(n.y, []);
+    byY.get(n.y).push(i);
+  }
+  for (const list of byX.values()) {
+    list.sort((i, j) => nodes[i].y - nodes[j].y);
+    for (let k = 0; k < list.length - 1; k++) {
+      const iA = list[k];
+      const iB = list[k + 1];
+      if (excludeFromMesh.has(iA) || excludeFromMesh.has(iB)) continue;
+      if (blockRects.some((r) => axisSegmentCrossesRect(nodes[iA], nodes[iB], r))) continue;
+      addEdge(iA, iB);
+    }
+  }
+  for (const list of byY.values()) {
+    list.sort((i, j) => nodes[i].x - nodes[j].x);
+    for (let k = 0; k < list.length - 1; k++) {
+      const iA = list[k];
+      const iB = list[k + 1];
+      if (excludeFromMesh.has(iA) || excludeFromMesh.has(iB)) continue;
+      if (blockRects.some((r) => axisSegmentCrossesRect(nodes[iA], nodes[iB], r))) continue;
+      addEdge(iA, iB);
+    }
+  }
+
+  // 強制区間(障害物チェックの対象外): S→P、Q→E
+  if (start.dir) {
+    adj[sIdx].push({ to: pIdx, dir: start.dir, cost: Math.hypot(P.x - S.x, P.y - S.y) });
+  }
+  if (end.dir) {
+    adj[qIdx].push({ to: eIdx, dir: OPPOSITE_DIR[end.dir], cost: Math.hypot(E.x - Q.x, E.y - Q.y) });
+  }
+
+  // ---- ダイクストラ: 状態 = (ノード, 到着方向)。逆走(180度)は禁止、
+  // 方向が変わるたびに bendPenalty を加える ----
+  const DIRS = ['top', 'right', 'bottom', 'left'];
+  const dist = new Map();
+  const prev = new Map();
+  const stateKey = (node, dir) => `${node}|${dir || 'none'}`;
+
+  const startKey = stateKey(sIdx, null);
+  dist.set(startKey, 0);
+  const queue = [{ node: sIdx, dir: null, cost: 0 }];
+  const settled = new Set();
+
+  while (queue.length) {
+    queue.sort((a, b) => a.cost - b.cost);
+    const cur = queue.shift();
+    const key = stateKey(cur.node, cur.dir);
+    if (settled.has(key)) continue;
+    settled.add(key);
+
+    for (const edge of adj[cur.node]) {
+      if (cur.dir && edge.dir === OPPOSITE_DIR[cur.dir]) continue; // 逆走禁止
+      const bend = cur.dir && edge.dir !== cur.dir ? bendPenalty : 0;
+      const newCost = cur.cost + edge.cost + bend;
+      const newKey = stateKey(edge.to, edge.dir);
+      if (newCost < (dist.get(newKey) ?? Infinity)) {
+        dist.set(newKey, newCost);
+        prev.set(newKey, { node: cur.node, dir: cur.dir });
+        queue.push({ node: edge.to, dir: edge.dir, cost: newCost });
+      }
+    }
+  }
+
+  let bestDir = null;
+  let bestCost = Infinity;
+  for (const dir of [null, ...DIRS]) {
+    const c = dist.get(stateKey(eIdx, dir));
+    if (c !== undefined && c < bestCost) {
+      bestCost = c;
+      bestDir = dir;
+    }
+  }
+
+  let rawPoints;
+  if (bestCost === Infinity) {
+    // ---- フォールバック: 障害物を無視した S→P→(中央)→Q→E の Z字。必ず何か返す ----
+    const core = buildSimpleZ(P, Q, mid).points;
+    rawPoints = [];
+    if (start.dir) rawPoints.push(S);
+    rawPoints.push(...core);
+    if (end.dir) rawPoints.push(E);
+  } else {
+    const chain = [];
+    let k = stateKey(eIdx, bestDir);
+    for (;;) {
+      const nodeIdx = Number(k.split('|')[0]);
+      chain.push(nodeIdx);
+      const p = prev.get(k);
+      if (!p) break;
+      k = stateKey(p.node, p.dir);
+    }
+    chain.reverse();
+    rawPoints = chain.map((i) => ({ x: nodes[i].x, y: nodes[i].y }));
+  }
+
+  const points = simplifyPoints(rawPoints);
+  const midSegment = computeMidSegment(points, start, end, S, E, P, Q, mid, blockRects);
+  return { points, midSegment };
+}
+
+/**
+ * shape(routing: 'elbow' の矢印)から routeElbow() の入力を組み立てて経路を求める。
+ * つないだ端は sidePoint(box, side || facingSide(box, 相手の端の位置)) を使い、
+ * dir はその辺、障害物はつないだ枠の外周(getShapeOutlineBox)。相手の端の位置は、
+ * 相手もつながっていればその枠の中心、なければ生座標
+ */
+export function computeElbowRoute(shape, shapesById = {}, measureFn = measureTextWidth) {
+  const mid = shape.mid ?? 0.5;
+  const obstacles = [];
+
+  function otherPosition(endpoint) {
+    const target = endpoint.attach ? shapesById[endpoint.attach] : null;
+    if (!target) return { x: endpoint.x, y: endpoint.y };
+    const box = getShapeOutlineBox(target, measureFn);
+    return { x: box.x + box.w / 2, y: box.y + box.h / 2 };
+  }
+
+  function resolveEnd(endpoint, otherEndpoint) {
+    const target = endpoint.attach ? shapesById[endpoint.attach] : null;
+    if (!target) return { x: endpoint.x, y: endpoint.y, dir: null };
+    const box = getShapeOutlineBox(target, measureFn);
+    obstacles.push(box);
+    const side = endpoint.side || facingSide(box, otherPosition(otherEndpoint));
+    const pt = sidePoint(box, side);
+    return { x: pt.x, y: pt.y, dir: side };
+  }
+
+  const start = resolveEnd(shape.from, shape.to);
+  const end = resolveEnd(shape.to, shape.from);
+  return routeElbow(start, end, obstacles, mid);
 }
 
 /**
@@ -321,7 +773,7 @@ export function buildCalloutPath(box, tail, cornerRadius) {
   const x2 = x + w;
   const y2 = y + h;
   const r = Math.max(0, Math.min(cornerRadius, w / 2, h / 2));
-  const edge = tail ? pickTailEdge(box, tail) : null;
+  const edge = tail ? facingSide(box, tail) : null;
   const half = Math.max(6, Math.round(box.fontSize * 0.3));
 
   // from → to の直線区間。isEdge が true ならしっぽの突起を挿入する
@@ -420,6 +872,34 @@ export function buildShapeSvg(doc, shape, shapesById = {}, opts = {}) {
       'stroke-width': shape.strokeWidth,
     });
     g.appendChild(rectEl);
+  } else if (shape.type === 'arrow' && shape.routing === 'elbow') {
+    // カギ線: 折れ点をつないだ <polyline>(直線の矢印と同じく、矢じりの分だけ
+    // 最後の線分を手前で止める。矢じりの向きは最後の線分で決める)
+    const route = computeElbowRoute(shape, shapesById, measureFn);
+    const pts = route.points;
+    const headSize = arrowHeadSize(shape.strokeWidth);
+    const last = pts[pts.length - 1];
+    const prevPt = pts[pts.length - 2] || pts[0];
+    const angle = Math.atan2(last.y - prevPt.y, last.x - prevPt.x);
+    const lineEnd = {
+      x: last.x - Math.cos(angle) * headSize * 0.4,
+      y: last.y - Math.sin(angle) * headSize * 0.4,
+    };
+    const drawPoints = [...pts.slice(0, -1), lineEnd];
+    const polyline = doc.createElementNS(SVG_NS, 'polyline');
+    setAttrs(polyline, {
+      points: drawPoints.map((p) => `${p.x},${p.y}`).join(' '),
+      fill: 'none',
+      stroke: shape.stroke,
+      'stroke-width': shape.strokeWidth,
+      'stroke-linejoin': 'round',
+      'stroke-linecap': 'round',
+    });
+    g.appendChild(polyline);
+    const head = doc.createElementNS(SVG_NS, 'polygon');
+    setAttrs(head, { points: arrowheadPoints(last.x, last.y, angle, headSize), fill: shape.stroke });
+    g.appendChild(head);
+    g.setAttribute('data-routing', 'elbow');
   } else if (shape.type === 'arrow') {
     const { from, to } = computeArrowEndpoints(shape, shapesById, measureFn);
     const headSize = arrowHeadSize(shape.strokeWidth);

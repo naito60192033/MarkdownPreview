@@ -46,6 +46,29 @@
 // (pngmeta.js)。v1(1枚の画像のみ・mdOR チャンク)を開いた場合は model.js の
 // normalizeLoadedModel() で { images: [1枚], shapes, scale } に変換してから読み込む。
 //
+// 【吹き出しの文字の大きさ・色】
+// ツールバーの「文字」グループで吹き出し(type 'callout')の fontSize・textColor を
+// 変更できる(選択肢は FONT_SIZES / TEXT_COLORS)。吹き出しを選択中はその吹き出しに、
+// それ以外(未選択・吹き出し以外の図形を選択中)は次に作る吹き出しの既定値に適用する
+// (色・線の太さと同じ考え方)。文字色は吹き出し全体が対象で、一部だけ変えることはできない。
+//
+// 【カギ線矢印(elbow)】
+// ツール 'elbow'(キー L)は矢印(A)と同じドラッグ操作で、shapes.js の routing: 'elbow'
+// を持つ矢印を作る(startDrawArrow に { elbow: true } を渡すだけで、直線の矢印と描画
+// フローを共通化している)。接続先の枠が見つかったとき、どの辺につながるか
+// (from/to.side)は shapes.js の nearestSide() で「離した位置に一番近い辺」を選ぶ
+// (直線の矢印は side を持たない = 今までと同じデータ形式のまま)。
+// 【接続のヒント表示】矢印・カギ線を描いている間・端点ハンドル(arrow-from/arrow-to)の
+// ドラッグ中・矢印・カギ線ツールでのマウス移動(hover)中、その点で findAttachTarget()
+// が返す枠を inst.connectHint = { shapeId, side } | null に持ち、selectionLayer に
+// 枠の外周(annotator-connect-target)を描く。カギ線のとき(side が非null)はさらに
+// 4辺の中点に丸(annotator-connect-point)を描き、つながる予定の辺だけ塗りつぶす
+// (annotator-connect-point--active)。エディタ専用の装飾で出力には含めない。
+// 【中央の線のハンドル】選択中のカギ線が「横→縦→横」等の Z字(shapes.js の
+// computeElbowRoute() が返す midSegment が非null)のときだけ、中央の線分の中点に
+// data-handle="elbow-mid" のハンドルを出し、ドラッグで shape.mid(両端の間の割合)を
+// 変更できる(Excel の黄色いハンドルと同じ考え方)。
+//
 // 図形の描画(見た目)は shapes.js の buildShapeSvg() にまとめてあり、エディタの
 // ライブ表示と出力(PNG 焼き込み)の両方でこの関数だけを使う(描画ロジックの二重化を避ける)。
 // PNG チャンクの読み書きは pngmeta.js に任せる(DOM 非依存)。
@@ -61,7 +84,10 @@ import {
   buildShapeSvg,
   getShapeOutlineBox,
   computeArrowEndpoints,
+  computeElbowRoute,
   findAttachTarget,
+  nearestSide,
+  sidePoint,
   computeOutputSize,
   computeOutputBounds,
   imageVisibleRect,
@@ -80,8 +106,16 @@ const SCALE_PRESETS = [1, 0.75, 0.5];
 const DEFAULT_COLOR = '#e53935';
 const DEFAULT_WIDTH = 4;
 const DEFAULT_CALLOUT_WIDTH = 2;
+// 吹き出し(callout)の文字の大きさ・色。TEXT_COLORS のキー(色コード)と表示名の対応は
+// TEXT_COLOR_NAMES に持つ(title 属性・ボタンの説明に使う)。
+const FONT_SIZES = [12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64];
+const TEXT_COLORS = ['#222222', '#e53935', '#fb8c00', '#1e88e5', '#43a047'];
+const TEXT_COLOR_NAMES = { '#222222': '黒', '#e53935': '赤', '#fb8c00': 'オレンジ', '#1e88e5': '青', '#43a047': '緑' };
+const DEFAULT_FONT_SIZE = 24;
+const DEFAULT_TEXT_COLOR = '#222222';
 const ATTACH_TOLERANCE_SCREEN_PX = 10;
 const HANDLE_SCREEN_PX = 8;
+const CONNECT_POINT_SCREEN_PX = 5; // 接続ヒントの4辺の丸の半径(画面px)
 const MIN_DRAW_SIZE_IMAGE_PX = 3;
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 8;
@@ -294,8 +328,11 @@ function createInstance(initial, title, resolve) {
     activeTool: 'select',
     currentColor: DEFAULT_COLOR,
     currentStrokeWidth: DEFAULT_WIDTH,
+    currentFontSize: DEFAULT_FONT_SIZE,
+    currentTextColor: DEFAULT_TEXT_COLOR,
     selectedShapeId: null,
     selectedImageId: null, // 画像が2枚以上のときだけ選択ツールで選べる(selectedShapeIdとは排他)
+    connectHint: null, // 矢印・カギ線の接続先ヒント { shapeId, side } | null(エディタ専用。出力には含めない)
     editingShapeId: null,
     editingOriginalText: null, // openTextEditor で開いた時点の文字列(commitPendingTextEdit の変更判定用)
     cropTargetId: null, // 2枚以上のときに切り抜きツールで明示的に選んだ画像(ツール切替で解除)
@@ -311,7 +348,7 @@ function createInstance(initial, title, resolve) {
   };
 
   const dom = buildDom(title);
-  const inst = { root: dom.root, state: st, dom, imageElements: new Map(), cropDraft: null };
+  const inst = { root: dom.root, state: st, dom, imageElements: new Map(), cropDraft: null, isDragging: false };
   wireEvents(inst);
 
   st.initialSnapshotJson = null; // init() 内で最初の render 後に確定させる
@@ -343,6 +380,7 @@ function buildDom(title) {
   toolbar.appendChild(buildImageGroup());
   toolbar.appendChild(buildColorGroup());
   toolbar.appendChild(buildWidthGroup());
+  toolbar.appendChild(buildTextGroup());
   toolbar.appendChild(buildScaleGroup());
   toolbar.appendChild(buildHistoryGroup());
   toolbar.appendChild(buildZoomGroup());
@@ -410,6 +448,8 @@ function buildDom(title) {
     toolButtons: Array.from(toolbar.querySelectorAll('[data-tool]')),
     colorButtons: Array.from(toolbar.querySelectorAll('[data-color]')),
     widthButtons: Array.from(toolbar.querySelectorAll('[data-width]')),
+    fontSizeSelect: toolbar.querySelector('.annotator-font-size'),
+    textColorButtons: Array.from(toolbar.querySelectorAll('[data-text-color]')),
     scaleButtons: Array.from(toolbar.querySelectorAll('[data-scale]')),
     scaleCustomInput: toolbar.querySelector('.annotator-scale-custom'),
     outputSizeLabel: toolbar.querySelector('.annotator-output-size'),
@@ -438,6 +478,7 @@ function buildToolGroup() {
     ['select', '選択 (V)'],
     ['rect', '赤枠 (R)'],
     ['arrow', '矢印 (A)'],
+    ['elbow', 'カギ線 (L)'],
     ['callout', '吹き出し (T)'],
     ['crop', '切り抜き (C)'],
   ];
@@ -520,6 +561,42 @@ function buildWidthGroup() {
     btn.dataset.width = String(w);
     btn.setAttribute('aria-pressed', 'false');
     btn.textContent = String(w);
+    group.appendChild(btn);
+  }
+  return group;
+}
+
+// 吹き出しの文字の大きさ・色。選択中の吹き出し(未選択時は次に作る吹き出しの既定)に適用する。
+function buildTextGroup() {
+  const group = document.createElement('div');
+  group.className = 'annotator-tool-group';
+  group.setAttribute('aria-label', '文字');
+
+  const label = document.createElement('span');
+  label.className = 'annotator-text-group-label';
+  label.textContent = '文字';
+  group.appendChild(label);
+
+  const select = document.createElement('select');
+  select.className = 'annotator-font-size';
+  select.title = '文字の大きさ';
+  for (const size of FONT_SIZES) {
+    const opt = document.createElement('option');
+    opt.value = String(size);
+    opt.textContent = `${size}px`;
+    select.appendChild(opt);
+  }
+  group.appendChild(select);
+
+  for (const color of TEXT_COLORS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'annotator-text-color-btn';
+    btn.dataset.textColor = color;
+    btn.setAttribute('aria-pressed', 'false');
+    btn.style.color = color;
+    btn.title = `文字の色: ${TEXT_COLOR_NAMES[color] || color}`;
+    btn.textContent = 'A';
     group.appendChild(btn);
   }
   return group;
@@ -830,12 +907,15 @@ function detachArrowsPointingTo(st, shapeId) {
   const map = shapesById(st);
   for (const s of st.shapes) {
     if (s.type !== 'arrow') continue;
+    // computeArrowEndpoints はカギ線でも経路(routeElbow)の先頭・末尾を返すので、
+    // 削除される枠がまだ map に存在するこの時点で呼ぶことで「今の描画位置」が取れる
     const { from, to } = computeArrowEndpoints(s, map);
+    const isElbow = s.routing === 'elbow';
     if (s.from.attach === shapeId) {
-      s.from = { x: from.x, y: from.y, attach: null };
+      s.from = isElbow ? { x: from.x, y: from.y, attach: null, side: null } : { x: from.x, y: from.y, attach: null };
     }
     if (s.to.attach === shapeId) {
-      s.to = { x: to.x, y: to.y, attach: null };
+      s.to = isElbow ? { x: to.x, y: to.y, attach: null, side: null } : { x: to.x, y: to.y, attach: null };
     }
   }
 }
@@ -972,6 +1052,7 @@ function render(inst) {
   renderCropLayer(inst);
 
   clearChildren(selectionLayer);
+  renderConnectHint(inst);
   renderSelectionLayer(inst);
 
   updateToolbar(inst, bounds);
@@ -1033,6 +1114,20 @@ function buildHitArea(shape, map) {
     g.setAttribute('class', 'annotator-hit-area');
     g.setAttribute('data-shape-id', shape.id);
     return g;
+  }
+  if (shape.type === 'arrow' && shape.routing === 'elbow') {
+    // カギ線: 経路(折れ点)をつないだ透明な太い <polyline>。fill を持たないので
+    // CSS の annotator-hit-area[data-routing="elbow"](pointer-events: stroke)で
+    // 折れ点の内側(暗黙の塗り領域)がクリックに反応しないようにする。
+    const { points } = computeElbowRoute(shape, map, measureTextWidth);
+    const polyline = svgEl('polyline', {
+      points: points.map((p) => `${p.x},${p.y}`).join(' '),
+      'stroke-width': Math.max(20, (shape.strokeWidth || 4) + 16),
+    });
+    polyline.setAttribute('class', 'annotator-hit-area');
+    polyline.setAttribute('data-shape-id', shape.id);
+    polyline.setAttribute('data-routing', 'elbow');
+    return polyline;
   }
   if (shape.type === 'arrow') {
     const { from, to } = computeArrowEndpoints(shape, map, measureTextWidth);
@@ -1170,7 +1265,95 @@ function renderSelectionLayer(inst) {
       handle.setAttribute('data-handle', 'arrow-' + name);
       selectionLayer.appendChild(handle);
     }
+    if (shape.routing === 'elbow') {
+      // Z字(横→縦→横 等)のときだけ、中央の線分の中点に黄色いハンドルを出す
+      const route = computeElbowRoute(shape, map, measureTextWidth);
+      const seg = route.midSegment;
+      if (seg) {
+        const p0 = route.points[seg.index];
+        const p1 = route.points[seg.index + 1];
+        const midPt = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
+        const handle = svgEl('circle', { cx: midPt.x, cy: midPt.y, r: hp / 2 });
+        handle.setAttribute('class', 'annotator-handle annotator-handle-mid');
+        handle.setAttribute('data-handle', 'elbow-mid');
+        selectionLayer.appendChild(handle);
+      }
+    }
   }
+}
+
+// 矢印・カギ線ツールでの描画中/端点ドラッグ中/hover 中の接続ヒント
+// (inst.state.connectHint)を selectionLayer に描く。エディタ専用の装飾で
+// buildShapeSvg() を通らないため出力(PNG焼き込み)には含まれない。
+function renderConnectHint(inst) {
+  const st = inst.state;
+  const { selectionLayer } = inst.dom;
+  const hint = st.connectHint;
+  if (!hint) return;
+  const target = st.shapes.find((s) => s.id === hint.shapeId);
+  if (!target) return;
+  const box = getShapeOutlineBox(target, measureTextWidth);
+  const outline = svgEl('rect', { x: box.x, y: box.y, width: box.w, height: box.h });
+  outline.setAttribute('class', 'annotator-connect-target');
+  selectionLayer.appendChild(outline);
+
+  if (hint.side) {
+    // カギ線のときだけ(直線の矢印では side を求めないため null): 4辺の中点に丸を
+    // 出し、離した位置に一番近い辺(nearestSide)の丸だけ塗りつぶす
+    const r = CONNECT_POINT_SCREEN_PX / st.zoom;
+    for (const side of ['top', 'right', 'bottom', 'left']) {
+      const p = sidePoint(box, side);
+      const dot = svgEl('circle', { cx: p.x, cy: p.y, r });
+      const isActive = side === hint.side;
+      dot.setAttribute('class', 'annotator-connect-point' + (isActive ? ' annotator-connect-point--active' : ''));
+      dot.setAttribute('data-side', side);
+      selectionLayer.appendChild(dot);
+    }
+  }
+}
+
+// 対象図形が見つかっていれば nearestSide() で「point に一番近い辺」を返す(カギ線用)。
+// 対象が無い/isElbow が false なら null(直線の矢印は side を持たせないため)。
+function sideForAttach(st, attachId, point, isElbow) {
+  if (!attachId || !isElbow) return null;
+  const target = st.shapes.find((s) => s.id === attachId);
+  if (!target) return null;
+  return nearestSide(getShapeOutlineBox(target, measureTextWidth), point);
+}
+
+// point で離したときの矢印の端点({ x, y, attach }。カギ線は side も持つ)。
+// ドラッグ中の見た目(draft・端点ハンドル)も離したときと同じ接続で描くために、
+// move / up の両方からこれを呼ぶ。otherAttachId(もう一方の端がつながっている枠)には
+// つながない(同じ枠に両端をつなぐと、直線は長さ 0、カギ線は枠の周りを回るだけになるため)。
+function endpointAt(inst, point, isElbow, otherAttachId = null) {
+  const st = inst.state;
+  const tolerance = ATTACH_TOLERANCE_SCREEN_PX / st.zoom;
+  const candidates = otherAttachId ? st.shapes.filter((s) => s.id !== otherAttachId) : st.shapes;
+  const attach = findAttachTarget(point, candidates, tolerance, measureTextWidth);
+  if (!isElbow) return { x: point.x, y: point.y, attach };
+  return { x: point.x, y: point.y, attach, side: sideForAttach(st, attach, point, true) };
+}
+
+// 端点(endpointAt の戻り値)から接続ヒント({ shapeId, side } | null)を作る
+function hintOfEndpoint(ep) {
+  return ep.attach ? { shapeId: ep.attach, side: ep.side ?? null } : null;
+}
+
+// point における接続ヒント(hover 用)
+function computeConnectHint(inst, point, isElbow) {
+  return hintOfEndpoint(endpointAt(inst, point, isElbow));
+}
+
+// st.connectHint を更新する。変わったときだけ true を返す(呼び出し側が render するか
+// どうかの判断に使う。ドラッグ中の move コールバックは既に毎回 render するので戻り値を
+// 見なくてよいが、hover(onCanvasMouseMove)は変化したときだけ render したいため使う)
+function setConnectHint(inst, next) {
+  const st = inst.state;
+  const cur = st.connectHint;
+  const same = (!cur && !next) || (cur && next && cur.shapeId === next.shapeId && cur.side === next.side);
+  if (same) return false;
+  st.connectHint = next;
+  return true;
 }
 
 // ---------- ツールバー表示の更新 ----------
@@ -1190,6 +1373,17 @@ function updateToolbar(inst, boundsArg) {
   }
   for (const btn of dom.widthButtons) {
     btn.setAttribute('aria-pressed', String(Number(btn.dataset.width) === effectiveWidth));
+  }
+
+  // 文字の大きさ・色は選択中が吹き出しのときだけその値、それ以外は次に作る吹き出しの既定値
+  const selectedCallout = selected && selected.type === 'callout' ? selected : null;
+  const effectiveFontSize = selectedCallout ? selectedCallout.fontSize : st.currentFontSize;
+  const effectiveTextColor = selectedCallout ? selectedCallout.textColor : st.currentTextColor;
+  if (document.activeElement !== dom.fontSizeSelect) {
+    dom.fontSizeSelect.value = String(effectiveFontSize);
+  }
+  for (const btn of dom.textColorButtons) {
+    btn.setAttribute('aria-pressed', String(btn.dataset.textColor === effectiveTextColor));
   }
 
   for (const btn of dom.scaleButtons) {
@@ -1289,8 +1483,10 @@ function newRect(st, x, y) {
   return { id: genShapeId(st), type: 'rect', x, y, w: 0, h: 0, stroke: st.currentColor, strokeWidth: st.currentStrokeWidth };
 }
 
-function newArrow(st, x, y) {
-  return {
+// opts.elbow: true ならカギ線(routing: 'elbow', mid: 0.5)にする。直線の矢印は
+// 今までと同じデータ形式のまま(routing・mid・from/to.side を持たせない)。
+function newArrow(st, x, y, opts = {}) {
+  const shape = {
     id: genShapeId(st),
     type: 'arrow',
     from: { x, y, attach: null },
@@ -1298,6 +1494,11 @@ function newArrow(st, x, y) {
     stroke: st.currentColor,
     strokeWidth: st.currentStrokeWidth,
   };
+  if (opts.elbow) {
+    shape.routing = 'elbow';
+    shape.mid = 0.5;
+  }
+  return shape;
 }
 
 function newCallout(st, tailX, tailY, boxX, boxY) {
@@ -1311,8 +1512,8 @@ function newCallout(st, tailX, tailY, boxX, boxY) {
     stroke: st.currentColor,
     strokeWidth: DEFAULT_CALLOUT_WIDTH,
     fill: '#ffffff',
-    textColor: '#222222',
-    fontSize: 24,
+    textColor: st.currentTextColor,
+    fontSize: st.currentFontSize,
   };
 }
 
@@ -1331,6 +1532,7 @@ function setActiveTool(inst, tool) {
   st.selectedImageId = null;
   st.cropTargetId = tool === 'crop' && previousSelectedImageId ? previousSelectedImageId : null;
   inst.cropDraft = null;
+  st.connectHint = null; // ツール切替では接続ヒントを消す
   render(inst);
 }
 
@@ -1348,6 +1550,15 @@ function wireEvents(inst) {
   for (const btn of dom.widthButtons) {
     btn.addEventListener('click', () => {
       applyWidthChoice(inst, Number(btn.dataset.width));
+    });
+  }
+  dom.fontSizeSelect.addEventListener('change', () => {
+    applyFontSizeChoice(inst, Number(dom.fontSizeSelect.value));
+    inst.root.focus(); // select にフォーカスが残ったままだと以降のキー操作(Delete等)が効かないため
+  });
+  for (const btn of dom.textColorButtons) {
+    btn.addEventListener('click', () => {
+      applyTextColorChoice(inst, btn.dataset.textColor);
     });
   }
   for (const btn of dom.scaleButtons) {
@@ -1416,6 +1627,14 @@ function wireEvents(inst) {
   // onCanvasMouseDown のコメント参照)。
   dom.svg.addEventListener('mousedown', (e) => onCanvasMouseDown(inst, e));
   dom.svg.addEventListener('wheel', (e) => onWheel(inst, e), { passive: false });
+
+  // 矢印・カギ線ツールでボタンを押さずにマウスを動かしている間(hover)の接続ヒント。
+  // ドラッグ中(inst.isDragging)は各ドラッグ処理側が既に毎回 render しつつヒントを
+  // 更新するので、ここでは何もしない。mouseleave でヒントを消す。
+  dom.svg.addEventListener('mousemove', (e) => onCanvasMouseMove(inst, e));
+  dom.svg.addEventListener('mouseleave', () => {
+    if (setConnectHint(inst, null)) render(inst);
+  });
 
   // ドロップ: overlay 全体で dragover/drop を preventDefault し、ブラウザが
   // ファイルを開いてしまうのを防ぐ。画像ファイルならドロップ位置(キャンバス座標)に追加する。
@@ -1486,10 +1705,42 @@ function applyWidthChoice(inst, width) {
   render(inst);
 }
 
+// 文字の大きさ・色は吹き出し(callout)だけが持つ値のため、選択中の図形が吹き出しの
+// ときだけその図形に適用する(rect・arrow を選択中は色・線の太さと違い対象外)。
+function applyFontSizeChoice(inst, fontSize) {
+  const st = inst.state;
+  if (st.selectedImageId) return; // 画像の選択中は何もしない
+  const shape = st.selectedShapeId ? st.shapes.find((s) => s.id === st.selectedShapeId) : null;
+  if (shape && shape.type === 'callout') {
+    if (shape.fontSize !== fontSize) {
+      shape.fontSize = fontSize;
+      pushHistory(inst);
+    }
+  } else {
+    st.currentFontSize = fontSize;
+  }
+  render(inst);
+}
+
+function applyTextColorChoice(inst, textColor) {
+  const st = inst.state;
+  if (st.selectedImageId) return; // 画像の選択中は何もしない
+  const shape = st.selectedShapeId ? st.shapes.find((s) => s.id === st.selectedShapeId) : null;
+  if (shape && shape.type === 'callout') {
+    if (shape.textColor !== textColor) {
+      shape.textColor = textColor;
+      pushHistory(inst);
+    }
+  } else {
+    st.currentTextColor = textColor;
+  }
+  render(inst);
+}
+
 function onKeyDown(inst, e) {
   if (!document.body.contains(inst.dom.root)) return; // 既に閉じている
   const active = document.activeElement;
-  const isTyping = active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT');
+  const isTyping = active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT' || active.tagName === 'SELECT');
 
   if (e.key === 'Escape') {
     if (inst.state.editingShapeId) {
@@ -1532,11 +1783,26 @@ function onKeyDown(inst, e) {
     }
     return;
   }
-  const toolKeys = { v: 'select', r: 'rect', a: 'arrow', t: 'callout', c: 'crop' };
+  const toolKeys = { v: 'select', r: 'rect', a: 'arrow', l: 'elbow', t: 'callout', c: 'crop' };
   const tool = toolKeys[e.key.toLowerCase()];
   if (tool) {
     setActiveTool(inst, tool);
   }
+}
+
+// 矢印・カギ線ツールで、ボタンを押さずにマウスを動かしている(hover)間の接続ヒント更新。
+// ドラッグ中は各ドラッグ処理側(startDrawArrow 等)が既に render 込みでヒントを
+// 更新するため、ここでは何もしない(inst.isDragging で判定する)。
+function onCanvasMouseMove(inst, e) {
+  const st = inst.state;
+  if (inst.isDragging) return;
+  if (st.activeTool !== 'arrow' && st.activeTool !== 'elbow') {
+    if (setConnectHint(inst, null)) render(inst);
+    return;
+  }
+  const pt = clientToCanvasPoint(inst, e.clientX, e.clientY);
+  const hint = computeConnectHint(inst, pt, st.activeTool === 'elbow');
+  if (setConnectHint(inst, hint)) render(inst);
 }
 
 function onCanvasMouseDown(inst, e) {
@@ -1612,6 +1878,10 @@ function onCanvasMouseDown(inst, e) {
     startDrawArrow(inst, pt);
     return;
   }
+  if (st.activeTool === 'elbow') {
+    startDrawArrow(inst, pt, { elbow: true });
+    return;
+  }
   if (st.activeTool === 'callout') {
     startDrawCallout(inst, pt);
     return;
@@ -1650,11 +1920,16 @@ function onCanvasMouseDown(inst, e) {
 }
 
 function withWindowDragListeners(inst, onMove, onUp) {
+  // isDragging は「矢印・カギ線ツールでのマウス移動(hover)」の接続ヒント更新
+  // (onCanvasMouseMove)が、ドラッグ中は各ドラッグ処理側の呼び出しに任せて
+  // 二重に動かないようにするためのフラグ(inst 固有・履歴には入れない)。
+  inst.isDragging = true;
   const move = (e) => onMove(clientToCanvasPoint(inst, e.clientX, e.clientY), e);
   const up = (e) => {
     window.removeEventListener('mousemove', move);
     window.removeEventListener('mouseup', up);
     onUp(clientToCanvasPoint(inst, e.clientX, e.clientY), e);
+    inst.isDragging = false;
   };
   window.addEventListener('mousemove', move);
   window.addEventListener('mouseup', up);
@@ -1793,18 +2068,43 @@ function startHandleDrag(inst, handleName, startPt) {
 
   if (handleName.startsWith('arrow-') && shape.type === 'arrow') {
     const which = handleName === 'arrow-from' ? 'from' : 'to';
+    const isElbow = shape.routing === 'elbow';
+    const otherAttachId = shape[which === 'from' ? 'to' : 'from'].attach;
     withWindowDragListeners(
       inst,
       (pt) => {
-        shape[which] = { x: pt.x, y: pt.y, attach: null };
+        // 離したときと同じ接続で描く(startDrawArrow と同じ)
+        shape[which] = endpointAt(inst, pt, isElbow, otherAttachId);
+        setConnectHint(inst, hintOfEndpoint(shape[which]));
         render(inst);
       },
       (pt) => {
-        const others = st.shapes.filter((s) => s.id !== shape.id);
-        const tolerance = ATTACH_TOLERANCE_SCREEN_PX / st.zoom;
-        const attachId = findAttachTarget(pt, others, tolerance, measureTextWidth);
-        shape[which] = { x: pt.x, y: pt.y, attach: attachId };
+        shape[which] = endpointAt(inst, pt, isElbow, otherAttachId);
+        st.connectHint = null;
         pushHistory(inst);
+        render(inst);
+      }
+    );
+    return;
+  }
+
+  if (handleName === 'elbow-mid' && shape.type === 'arrow' && shape.routing === 'elbow') {
+    // 中央の線分の可動範囲(lo/hi)はドラッグ開始時に1度だけ求める(仕様どおり)
+    const map = shapesById(st);
+    const route = computeElbowRoute(shape, map, measureTextWidth);
+    const seg = route.midSegment;
+    if (!seg || seg.hi === seg.lo) return; // Z字でない/動かせる範囲が無いときは何もしない
+    const { axis, lo, hi } = seg;
+    const startMid = shape.mid ?? 0.5;
+    withWindowDragListeners(
+      inst,
+      (pt) => {
+        shape.mid = clampNum((pt[axis] - lo) / (hi - lo), 0, 1);
+        render(inst);
+      },
+      (pt) => {
+        shape.mid = clampNum((pt[axis] - lo) / (hi - lo), 0, 1);
+        if (shape.mid !== startMid) pushHistory(inst); // 値が変わったときだけ履歴を積む
         render(inst);
       }
     );
@@ -1893,28 +2193,35 @@ function startDrawRect(inst, startPt) {
   );
 }
 
-function startDrawArrow(inst, startPt) {
+// opts.elbow: true ならカギ線として描く(直線の矢印と同じドラッグ操作を共通化する)。
+// 接続先が見つかった端は、側(side)を「離した/押した位置に一番近い辺」(nearestSide)
+// にする(直線の矢印は今までどおり side を持たせない)。
+function startDrawArrow(inst, startPt, opts = {}) {
   const st = inst.state;
+  const isElbow = !!opts.elbow;
   const tolerance = ATTACH_TOLERANCE_SCREEN_PX / st.zoom;
   const startAttach = findAttachTarget(startPt, st.shapes, tolerance, measureTextWidth);
-  const draft = newArrow(st, startPt.x, startPt.y);
+  const draft = newArrow(st, startPt.x, startPt.y, { elbow: isElbow });
   draft.from.attach = startAttach;
+  if (isElbow) draft.from.side = sideForAttach(st, startAttach, startPt, true);
   st.draftShape = draft;
   withWindowDragListeners(
     inst,
     (pt) => {
-      draft.to = { x: pt.x, y: pt.y, attach: null };
+      // 離したときと同じ接続で描く(つながる予定の枠があれば、その辺に入る形で見せる)
+      draft.to = endpointAt(inst, pt, isElbow, draft.from.attach);
+      setConnectHint(inst, hintOfEndpoint(draft.to));
       render(inst);
     },
     (pt) => {
       st.draftShape = null;
+      st.connectHint = null;
       const dist = Math.hypot(pt.x - startPt.x, pt.y - startPt.y);
       if (dist < MIN_DRAW_SIZE_IMAGE_PX) {
         render(inst);
         return;
       }
-      const endAttach = findAttachTarget(pt, st.shapes, tolerance, measureTextWidth);
-      draft.to = { x: pt.x, y: pt.y, attach: endAttach };
+      draft.to = endpointAt(inst, pt, isElbow, draft.from.attach);
       st.shapes.push(draft);
       st.selectedShapeId = draft.id;
       st.activeTool = 'select';
