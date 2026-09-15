@@ -7,9 +7,13 @@
 //  - エディタ → プレビュー: エディタの「一番上に見えている行(小数付き)」を
 //    lineMap で展開後の行に変換し、data-line を持つプレビュー要素のうち
 //    直前・直後のものを見つけて線形補間でスクロール位置を決める。
+//    ただし、エディタの残りのスクロール量が 1 画面分を切ったら、その位置から
+//    プレビューの最下部へ徐々に寄せる(エディタが最下部なら必ずプレビューも
+//    最下部にする)。行の対応だけだと、一番上に見えている行より下に画像などで
+//    縦に長い内容があると、エディタが最下部でもプレビューが最下部まで届かない。
 //  - プレビュー → エディタ: 逆方向。プレビューの scrollTop から直前・直後の
 //    data-line 要素を見つけて展開後の行(小数)を求め、lineMap の逆変換で
-//    エディタの行に直す。
+//    エディタの行に直す。こちらは最下部への寄せは行わない。
 //
 // 互いに呼び合って発振しないよう、プログラムでスクロールさせた直後は
 // そちら側からのイベントを一時的に無視する(guardSide)。
@@ -108,7 +112,18 @@ export function createScrollSync({ editor, getPreviewRoot, getLineMap }) {
     const afterTop = topOf(after.el, root.scrollRoot);
     const t =
       after.line === before.line ? 0 : Math.max(0, Math.min(1, (expandedLine - before.line) / (after.line - before.line)));
-    const target = beforeTop + (afterTop - beforeTop) * t;
+    let target = beforeTop + (afterTop - beforeTop) * t;
+
+    // エディタの残りのスクロール量が 1 画面分を切ったら、プレビューの最下部へ徐々に寄せる。
+    const scrollDOM = editor.scrollDOM;
+    const editorMax = scrollDOM.scrollHeight - scrollDOM.clientHeight;
+    const remain = editorMax - scrollDOM.scrollTop;
+    const span = Math.min(editorMax, scrollDOM.clientHeight);
+    if (span > 0 && remain < span) {
+      const t2 = Math.max(0, Math.min(1, 1 - remain / span));
+      const previewMax = root.scrollRoot.scrollHeight - root.scrollRoot.clientHeight;
+      target = target + (previewMax - target) * t2;
+    }
 
     withGuard('preview', () => {
       root.scrollRoot.scrollTop = Math.max(0, target);
