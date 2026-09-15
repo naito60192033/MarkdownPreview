@@ -36,9 +36,15 @@ const mdHighlightStyle = HighlightStyle.define([
 ]);
 
 /**
- * @param {{ parent: HTMLElement, doc?: string, onChange?: (text: string) => void, onCursorActivity?: () => void }} opts
+ * @param {{
+ *   parent: HTMLElement,
+ *   doc?: string,
+ *   onChange?: (text: string) => void,
+ *   onCursorActivity?: () => void,
+ *   extensions?: import('@codemirror/state').Extension[],
+ * }} opts
  */
-export function createEditor({ parent, doc = '', onChange, onCursorActivity } = {}) {
+export function createEditor({ parent, doc = '', onChange, onCursorActivity, extensions = [] } = {}) {
   const updateListener = EditorView.updateListener.of((update) => {
     if (update.docChanged && typeof onChange === 'function') {
       onChange(update.state.doc.toString());
@@ -57,6 +63,7 @@ export function createEditor({ parent, doc = '', onChange, onCursorActivity } = 
       syntaxHighlighting(mdHighlightStyle),
       keymap.of([indentWithTab]),
       updateListener,
+      ...extensions,
     ],
   });
 

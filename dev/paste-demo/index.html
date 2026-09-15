@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>貼り付けの動作デモ</title>
+<style>
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    padding: 12px 16px 24px;
+    font-family: "Meiryo", "Yu Gothic UI", sans-serif;
+    font-size: 13px;
+    color: #222;
+    background: #fafafa;
+  }
+  h1 {
+    font-size: 17px;
+    margin: 0 0 6px;
+  }
+  h2 {
+    font-size: 13px;
+    margin: 18px 0 6px;
+  }
+  #intro {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 8px 14px;
+    margin-bottom: 10px;
+  }
+  #intro ol {
+    margin: 6px 0 0;
+    padding-left: 20px;
+  }
+  #intro li {
+    margin: 2px 0;
+  }
+  #intro .note {
+    color: #a05a00;
+    margin-top: 8px;
+  }
+
+  #settingsRow {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 8px 14px;
+    margin-bottom: 10px;
+  }
+  #settingsRow label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  #settingsRow button {
+    font: inherit;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+
+  #mainArea {
+    display: flex;
+    gap: 10px;
+    height: 360px;
+    margin-bottom: 8px;
+  }
+  #editorHost,
+  #previewHost {
+    flex: 1 1 50%;
+    min-width: 0;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    background: #fff;
+    overflow: auto;
+  }
+  #editorHost .cm-editor {
+    height: 100%;
+  }
+  #previewHost {
+    padding: 10px 14px;
+    line-height: 1.6;
+  }
+  #previewHost table {
+    border-collapse: collapse;
+    margin: 8px 0;
+  }
+  #previewHost th,
+  #previewHost td {
+    border: 1px solid #999;
+    padding: 4px 10px;
+  }
+  #previewHost img {
+    max-width: 100%;
+  }
+
+  #statusBar {
+    min-height: 20px;
+    padding: 4px 6px;
+    color: #444;
+    text-align: right;
+  }
+  #statusBar.error {
+    color: #b3261e;
+    font-weight: 600;
+  }
+
+  #clipboardPanel,
+  #annotatorLikeSection {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 8px 14px;
+    margin-bottom: 10px;
+  }
+  #clipboardPanel table,
+  #annotatorLikeSection table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 6px;
+  }
+  #clipboardPanel th,
+  #clipboardPanel td {
+    border: 1px solid #ddd;
+    padding: 3px 6px;
+    text-align: left;
+    font-size: 12px;
+    word-break: break-all;
+  }
+  #clipboardMeta {
+    color: #555;
+  }
+  #clipboardEmpty {
+    color: #888;
+  }
+
+  #annotatorLikeArea {
+    margin-top: 6px;
+    border: 2px dashed #aaa;
+    border-radius: 6px;
+    padding: 16px;
+    background: #fcfcfc;
+    color: #666;
+    cursor: text;
+  }
+  #annotatorLikeArea:focus {
+    outline: 2px solid #1e88e5;
+    outline-offset: 2px;
+  }
+  #annotatorLikeResult {
+    margin-top: 8px;
+    font-size: 12px;
+  }
+  #annotatorLikeResult div {
+    margin: 2px 0;
+  }
+  #annotatorLikeThumb {
+    max-width: 120px;
+    max-height: 90px;
+    display: block;
+    margin-top: 6px;
+    border: 1px solid #ccc;
+  }
+</style>
+</head>
+<body>
+  <h1>貼り付けの動作デモ(案 A: 画像とテキストの両方があるときに選ぶ)</h1>
+  <div id="intro">
+    <div>試し方:</div>
+    <ol>
+      <li>Excel でセルを選んで Ctrl+C → 左のエディタで Ctrl+V → メニューから選ぶ</li>
+      <li>Ctrl+Shift+V はメニューを出さずにテキストで貼り付ける</li>
+      <li>スクリーンショットなど画像だけのときはメニューなしで画像として貼り付く</li>
+      <li>画像の保存中にもう一度貼り付けても受け付けない</li>
+      <li>Alt+Shift+F か「表を整形」ボタンで表の列を揃える</li>
+      <li>Excel の画像をコピーして下の「注釈エディタと同じ条件で試す」枠をクリック → Ctrl+V</li>
+    </ol>
+    <div class="note">※ これはデモです。貼り付けた画像はブラウザのメモリ上に保持するだけで、ファイルには保存しません。</div>
+  </div>
+
+  <div id="settingsRow">
+    <label>
+      画像とテキストの両方があるとき:
+      <select id="pasteModeSelect">
+        <option value="choice" selected>毎回選ぶ(案 A)</option>
+        <option value="image">常に画像(今までと同じ)</option>
+        <option value="text">常にテキスト</option>
+      </select>
+    </label>
+    <label>
+      画像の保存にかかる時間(疑似):
+      <select id="saveDelaySelect">
+        <option value="300">0.3 秒</option>
+        <option value="1500" selected>1.5 秒</option>
+        <option value="3000">3 秒</option>
+      </select>
+    </label>
+    <button type="button" id="formatTablesBtn">表を整形 (Alt+Shift+F)</button>
+  </div>
+
+  <div id="mainArea">
+    <div id="editorHost"></div>
+    <div id="previewHost"></div>
+  </div>
+
+  <div id="statusBar"></div>
+
+  <div id="clipboardPanel">
+    <h2>クリップボードの中身(最後の貼り付け)</h2>
+    <div id="clipboardEmpty">まだ貼り付けは行われていません。</div>
+    <div id="clipboardMeta" style="display: none"></div>
+    <table id="clipboardTable" style="display: none">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>kind</th>
+          <th>type</th>
+          <th>内容</th>
+        </tr>
+      </thead>
+      <tbody id="clipboardTableBody"></tbody>
+    </table>
+  </div>
+
+  <div id="annotatorLikeSection">
+    <h2>注釈エディタと同じ条件で試す</h2>
+    <div id="annotatorLikeArea" tabindex="0">ここをクリックしてフォーカスし、Ctrl+V で貼り付けてください(編集はできません)。</div>
+    <div id="annotatorLikeResult">
+      <div id="annotatorLikeCurrent">今の注釈エディタの処理: (まだ貼り付けていません)</div>
+      <div id="annotatorLikeFixed">修正後の処理: (まだ貼り付けていません)</div>
+      <img id="annotatorLikeThumb" style="display: none" alt="貼り付けた画像のプレビュー" />
+    </div>
+  </div>
+
+<!--@inline-js-->
+</body>
+</html>

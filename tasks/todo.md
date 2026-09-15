@@ -121,6 +121,20 @@
 - [x] テスト(単体・E2E)、README、dist。npm test すべて成功(単体 228 / アプリ E2E 73 / 注釈 E2E 41)
 - [x] ユーザーの目視確認(2026-09-15: 問題なし)後に dev へマージ
 
+## 追加要望(2026-09-15): 貼り付けの改善と表の整形
+方針の詳細: tasks/plan-2026-09-15-paste.md(feature/paste)
+- [x] デモページ(案 A の選択メニュー・保存中の表示・表での貼り付け・表の整形・クリップボードの中身の表示)— dev/paste-demo/
+- [x] ユーザーがデモを実機で確認 → 案 A(毎回メニュー)、表の整形はボタン + Alt+Shift+F(自動整形なし)
+  - Excel の画像: 実機で確認済み(空の string:image/svg+xml が先、file:image/png が後)
+- [x] md への画像の貼り付け: 保存中の表示、保存中の貼り付けを受け付けない、ファイル切り替え時は挿入しない — src/paste.js
+  (純粋なロジックは src/paste-save.js に分離。paste.js が CSS を import するようになり node --test で読めないため)
+- [x] 画像とテキストの両方がある貼り付けの選択(案 A)と、表(Markdown)での貼り付け — src/paste.js、src/paste-ui.js
+- [x] 表の整形(ツールバーの「表を整形」、Alt+Shift+F) — src/md-table.js、src/app.js
+- [x] 注釈エディタ: Excel の画像の Ctrl+V(kind === 'file' の項目から選ぶ)、ツールチップ。E2E(修正前は失敗を確認)
+- [x] テスト(単体 230・E2E 79・注釈 E2E 28 すべて成功)、README、dist
+- [x] dev(elbow 入り)を取り込んで npm test すべて成功(単体 246 / アプリ E2E 80 / 注釈 E2E 42)
+- [x] ユーザーの目視確認(2026-09-15: 問題なし)後に dev へマージ
+
 ## 将来やりたいこと(バックログ)
 - [ ] プロジェクト(ワークスペース)ごとの favicon 設定と、favicon を作る機能
   - ねらい: 複数のプロジェクトをタブで開いたときに見分けやすくする

@@ -1,0 +1,91 @@
+/* src/paste-ui.css
+ *
+ * 貼り付け関連の UI(保存中プレースホルダー・貼り付け方法の選択メニュー)のスタイル。
+ * paste-ui.js から <style id="mdp-paste-ui-style"> として1度だけ挿入される
+ * (esbuild の text ローダーで文字列として取り込む前提。build.mjs / 各種
+ * dev/build-*.mjs で loader: { '.css': 'text' } の指定が必要)。
+ */
+
+/* ---------- 保存中プレースホルダー(CodeMirror のウィジェット) ---------- */
+.mdp-saving-placeholder {
+  display: inline-block;
+  padding: 0 6px;
+  margin: 0 1px;
+  border-radius: 4px;
+  background: #e2e2e2;
+  color: #555;
+  font-size: 0.9em;
+  white-space: nowrap;
+  animation: mdp-saving-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes mdp-saving-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---------- 貼り付け方法の選択メニュー ---------- */
+.mdp-paste-menu {
+  position: fixed;
+  z-index: 100000;
+  min-width: 220px;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+  font-family: "Meiryo", "Yu Gothic UI", sans-serif;
+  font-size: 13px;
+  color: #222;
+  padding: 4px 0;
+  user-select: none;
+}
+
+.mdp-paste-menu-heading {
+  padding: 4px 12px 6px;
+  color: #777;
+  font-size: 11px;
+}
+
+.mdp-paste-menu-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.mdp-paste-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.mdp-paste-menu-item:focus {
+  outline: none;
+  background: #e8f0fe;
+}
+
+.mdp-paste-menu-key {
+  color: #888;
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+
+.mdp-paste-menu-footer {
+  margin-top: 4px;
+  padding: 6px 12px 2px;
+  border-top: 1px solid #eee;
+  color: #999;
+  font-size: 11px;
+}
