@@ -165,6 +165,7 @@ function cacheEls() {
     settingHeadingNumbers: document.getElementById('settingHeadingNumbers'),
     settingHeadingNumberDepth: document.getElementById('settingHeadingNumberDepth'),
     settingHeadingIndent: document.getElementById('settingHeadingIndent'),
+    settingSideToc: document.getElementById('settingSideToc'),
     settingAlertTitleNote: document.getElementById('settingAlertTitleNote'),
     settingAlertTitleTip: document.getElementById('settingAlertTitleTip'),
     settingAlertTitleImportant: document.getElementById('settingAlertTitleImportant'),
@@ -741,6 +742,15 @@ async function loadCssAndWatch() {
   );
 }
 
+// ---------- 見出し収集(@import 展開込み)の共通ヘルパー ----------
+// collectHeadingsFor に渡す readText コールバック。保存直前のソース書き込み型 TOC
+// 更新(applySourceTocUpdate)と、HTML 出力時の目次除外 id 収集(collectIgnoredHeadingIds)
+// の両方から使う。
+async function readImportedText(relPath) {
+  const r = await readTextByPath(state.root, relPath);
+  return r ? r.text : null;
+}
+
 // ---------- 保存直前のソース書き込み型 TOC 更新 ----------
 // 展開後のテキストから見出しを集め、updateTocBlocks() で `<!-- @import "[TOC]" -->`
 // ブロックを再生成する(MPE と同じ動作)。変わった場合だけエディタの内容を
@@ -752,10 +762,7 @@ async function applySourceTocUpdate(text) {
     headings = await collectHeadingsFor(text, {
       path: state.currentPath,
       alertTitles: state.settings.alertTitles,
-      readText: async (relPath) => {
-        const r = await readTextByPath(state.root, relPath);
-        return r ? r.text : null;
-      },
+      readText: readImportedText,
     });
   } catch {
     return text;
@@ -834,15 +841,36 @@ function closeExportMenu() {
   els.exportMenu.style.display = 'none';
 }
 
+// サイドバー目次から除外する見出し(`{ignore=true}`)の id を集める。
+// 見出しの収集(@import 展開込み)に失敗しても出力自体は続けたいので、
+// 失敗時は空集合を返す(目次からは何も除外しなくなるだけ)。
+async function collectIgnoredHeadingIds(text) {
+  try {
+    const headings = await collectHeadingsFor(text, {
+      path: state.currentPath,
+      alertTitles: state.settings.alertTitles,
+      readText: readImportedText,
+    });
+    return new Set(headings.filter((h) => h.ignore).map((h) => h.id));
+  } catch {
+    return new Set();
+  }
+}
+
 async function doExport(kind) {
   closeExportMenu();
   if (!state.root || !state.currentPath) return;
   await scheduleRender(true); // 最新の内容で出力する
+  // 設定でオンのときだけサイドバーの目次を付ける(出力時の設定を読むだけで、
+  // 設定変更時の再描画などは不要)。
+  const sideToc =
+    state.settings.sideToc !== false ? { ignoredIds: await collectIgnoredHeadingIds(editor.getText()) } : null;
   const args = {
     root: state.root,
     mdPath: state.currentPath,
     doc: preview.getDocument(),
     wrapperEl: preview.getWrapperElement(),
+    sideToc,
   };
   try {
     if (kind === 'normal') {
@@ -1154,6 +1182,7 @@ async function setup() {
     headingNumbersInput: els.settingHeadingNumbers,
     headingNumberDepthInput: els.settingHeadingNumberDepth,
     headingIndentInput: els.settingHeadingIndent,
+    sideTocInput: els.settingSideToc,
     alertTitleInputs: {
       note: els.settingAlertTitleNote,
       tip: els.settingAlertTitleTip,

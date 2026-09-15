@@ -10,32 +10,49 @@
 //   `<md名>.standalone.html` を同じフォルダに書く。読めなかった画像は元の
 //   相対パスのまま残す(呼び出し側で件数を状態表示に出す)
 //
-// 出力構造: <!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
-// <meta name="viewport" ...><title>(最初の h1、無ければファイル名)</title>
-// <style>標準 CSS(base.css。設定でオフなら空) + alerts.css + outline.css +
-// markbox.css + style.css</style></head>
-// <body><div class="crossnote markdown-preview">本文</div></body></html>
+// 出力構造(sideToc を渡さない、または h2〜h6 が無い場合):
+//   <!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
+//   <meta name="viewport" ...><title>(最初の h1、無ければファイル名)</title>
+//   <style>標準 CSS(base.css。設定でオフなら空) + alerts.css + outline.css +
+//   markbox.css + style.css</style></head>
+//   <body><div class="crossnote markdown-preview">本文</div></body></html>
+//
+// sideToc({ ignoredIds }。src/app.js が設定 sideToc と collectHeadingsFor の
+// 結果から組み立てて渡す)を渡し、かつ本文に h2〜h6(id あり・ignoredIds に無い
+// もの)が 1 つ以上あるときは、本文を次のように包み、サイドバーの目次(Qiita 風。
+// 画面右側に固定表示。「今読んでいる見出し」の強調は CSS の :target-current だけで
+// 行い JavaScript は使わない)を付ける。sidetoc.css は style.css より前に追加する
+// (style.css で上書きできるように)。
+//   <body><div class="mdp-layout">
+//     <div class="crossnote markdown-preview">本文</div>
+//     <nav class="mdp-sidetoc" aria-label="目次">
+//       <div class="mdp-sidetoc-title">目次</div><ul>…</ul>
+//     </nav>
+//   </div></body></html>
 //
 // 書き込みは writeByPath(root, path, html, {})(競合チェックなし。常に上書き)。
 
 import { dirname, basename, joinPath, urlToPath, isExternalUrl } from './fs/paths.js';
 import { getFileHandleByPath, writeByPath } from './fs/workspace.js';
+import { renderSideTocHtml } from './render/toc.js';
+import sidetocCss from './theme/sidetoc.css';
+
+const SIDE_TOC_SELECTOR = 'h2, h3, h4, h5, h6';
 
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // base.css(標準 CSS。オフなら空文字) → alerts.css → outline.css → markbox.css →
-// style.css の順(preview.js の <style> 要素の並びと同じ)。
-function buildCss(doc) {
-  const ids = [
-    'mdpreview-base-style',
-    'mdpreview-alerts-style',
-    'mdpreview-outline-style',
-    'mdpreview-markbox-style',
-    'mdpreview-user-style',
-  ];
-  return ids.map((id) => (doc.getElementById(id) ? doc.getElementById(id).textContent || '' : '')).join('\n');
+// (あれば)sidetoc.css → style.css の順(preview.js の <style> 要素の並びと同じ
+// 部分に、サイドバー目次用の CSS を style.css の直前に差し込む)。
+function buildCss(doc, extraCss) {
+  const ids = ['mdpreview-base-style', 'mdpreview-alerts-style', 'mdpreview-outline-style', 'mdpreview-markbox-style'];
+  const parts = ids.map((id) => (doc.getElementById(id) ? doc.getElementById(id).textContent || '' : ''));
+  if (extraCss) parts.push(extraCss);
+  const userStyleEl = doc.getElementById('mdpreview-user-style');
+  parts.push(userStyleEl ? userStyleEl.textContent || '' : '');
+  return parts.join('\n');
 }
 
 function pickTitle(wrapperEl, mdPath) {
@@ -99,6 +116,64 @@ async function inlineImages(clone, { root, mdDir }) {
   return failedCount;
 }
 
+// 見出し要素のクローンから、サイドバー目次のラベル用 HTML を組み立てる。
+// - 脚注参照(sup.footnote-ref)は目次には不要なので取り除く
+// - 連番の span(.mdp-heading-number。src/render/outline.js が見出しの先頭の
+//   子として挿入したもの)があれば、そのまま同じ class で先頭に出す
+// - 残りのテキスト(textContent を trim)はエスケープして続ける
+function buildSideTocLabelHtml(headingEl) {
+  const work = headingEl.cloneNode(true);
+  for (const el of work.querySelectorAll('sup.footnote-ref')) el.remove();
+
+  let numberHtml = '';
+  const first = work.firstElementChild;
+  if (first && first.classList.contains('mdp-heading-number')) {
+    numberHtml = `<span class="mdp-heading-number">${escapeHtml(first.textContent)}</span>`;
+    first.remove();
+  }
+  return numberHtml + escapeHtml(work.textContent.trim());
+}
+
+// クローン内の h2〜h6 を文書順に走査し、renderSideTocHtml に渡す項目一覧を作る。
+// id が空、または ignoredIds に含まれる見出し(`{ignore=true}`)は除外する。
+function collectSideTocItems(clone, ignoredIds) {
+  const items = [];
+  for (const headingEl of clone.querySelectorAll(SIDE_TOC_SELECTOR)) {
+    const id = headingEl.id;
+    if (!id || (ignoredIds && ignoredIds.has(id))) continue;
+    items.push({
+      level: Number(headingEl.tagName.slice(1)),
+      id,
+      labelHtml: buildSideTocLabelHtml(headingEl),
+    });
+  }
+  return items;
+}
+
+// sideToc が指定され、かつ本文に対象の見出しが 1 つ以上あるときだけ、
+// `.mdp-layout` で本文と `<nav class="mdp-sidetoc">` を包んだ body HTML を作る。
+// それ以外はクローンの outerHTML をそのまま返す(レイアウト用の要素も付けない)。
+function buildExportBody(doc, clone, sideToc) {
+  const items = sideToc ? collectSideTocItems(clone, sideToc.ignoredIds) : [];
+  if (!items.length) return { bodyHtml: clone.outerHTML, sideTocCss: '' };
+
+  const nav = doc.createElement('nav');
+  nav.className = 'mdp-sidetoc';
+  nav.setAttribute('aria-label', '目次');
+  const title = doc.createElement('div');
+  title.className = 'mdp-sidetoc-title';
+  title.textContent = '目次';
+  nav.appendChild(title);
+  nav.insertAdjacentHTML('beforeend', renderSideTocHtml(items));
+
+  const layout = doc.createElement('div');
+  layout.className = 'mdp-layout';
+  layout.appendChild(clone);
+  layout.appendChild(nav);
+
+  return { bodyHtml: layout.outerHTML, sideTocCss: sidetocCss };
+}
+
 function composeHtml({ title, css, bodyHtml }) {
   return (
     '<!DOCTYPE html>\n' +
@@ -124,13 +199,17 @@ function outputPath(mdPath, suffix) {
 
 /**
  * 通常出力: `<md名>.html` を md と同じフォルダに書く(画像は相対パスのまま参照)。
- * @param {{ root: any, mdPath: string, doc: Document, wrapperEl: HTMLElement }} args
+ * @param {{ root: any, mdPath: string, doc: Document, wrapperEl: HTMLElement,
+ *           sideToc?: { ignoredIds: Set<string> } | null }} args
+ *   sideToc: 指定すればサイドバーの目次を付ける(null なら付けない)。
+ *   ignoredIds は `{ignore=true}` が付いた見出しの id の集合。
  * @returns {Promise<{ path: string }>}
  */
-export async function exportNormal({ root, mdPath, doc, wrapperEl }) {
+export async function exportNormal({ root, mdPath, doc, wrapperEl, sideToc = null }) {
   const clone = buildBodyClone(wrapperEl);
   revertImageSrcToRelative(clone);
-  const html = composeHtml({ title: pickTitle(wrapperEl, mdPath), css: buildCss(doc), bodyHtml: clone.outerHTML });
+  const { bodyHtml, sideTocCss } = buildExportBody(doc, clone, sideToc);
+  const html = composeHtml({ title: pickTitle(wrapperEl, mdPath), css: buildCss(doc, sideTocCss), bodyHtml });
 
   const path = outputPath(mdPath, '.html');
   await writeByPath(root, path, html, {});
@@ -140,13 +219,15 @@ export async function exportNormal({ root, mdPath, doc, wrapperEl }) {
 /**
  * 1ファイル出力: 画像を base64 の data URI で埋め込み、`<md名>.standalone.html` を
  * 同じフォルダに書く。
- * @param {{ root: any, mdPath: string, doc: Document, wrapperEl: HTMLElement }} args
+ * @param {{ root: any, mdPath: string, doc: Document, wrapperEl: HTMLElement,
+ *           sideToc?: { ignoredIds: Set<string> } | null }} args
  * @returns {Promise<{ path: string, failedImageCount: number }>}
  */
-export async function exportStandalone({ root, mdPath, doc, wrapperEl }) {
+export async function exportStandalone({ root, mdPath, doc, wrapperEl, sideToc = null }) {
   const clone = buildBodyClone(wrapperEl);
   const failedImageCount = await inlineImages(clone, { root, mdDir: dirname(mdPath) });
-  const html = composeHtml({ title: pickTitle(wrapperEl, mdPath), css: buildCss(doc), bodyHtml: clone.outerHTML });
+  const { bodyHtml, sideTocCss } = buildExportBody(doc, clone, sideToc);
+  const html = composeHtml({ title: pickTitle(wrapperEl, mdPath), css: buildCss(doc, sideTocCss), bodyHtml });
 
   const path = outputPath(mdPath, '.standalone.html');
   await writeByPath(root, path, html, {});

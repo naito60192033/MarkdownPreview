@@ -1,0 +1,152 @@
+/* src/theme/sidetoc.css
+ *
+ * HTML 出力(通常 / 1ファイルとも)専用の、画面右側に固定表示するサイドバー目次
+ * (Qiita 風)。設定「HTML 出力にサイドバーの目次を付ける」(既定オン)がオンで、
+ * h2〜h6 の見出しが 1 つ以上あるときだけ src/export.js が本文と一緒に組み立てる。
+ * アプリ内のプレビュー(iframe)には出さない。
+ *
+ * ---- 出力 HTML の構造 ----
+ *   <body>
+ *     <div class="mdp-layout">
+ *       <div class="crossnote markdown-preview">本文</div>
+ *       <nav class="mdp-sidetoc" aria-label="目次">
+ *         <div class="mdp-sidetoc-title">目次</div>
+ *         <ul>…</ul>
+ *       </nav>
+ *     </div>
+ *   </body>
+ *
+ * `.mdp-layout` を本文 | 目次の 2 列 grid にし、中央寄せする。本文側の最大幅は
+ * base.css の `--mdp-content-width` を尊重する(本文の見た目自体は base.css の
+ * `width: calc(100% - 24px); max-width; margin: 0 auto 24px` がそのまま効くので、
+ * ここでは列幅の指定に留める)。
+ *
+ * 目次は `.crossnote.markdown-preview` の外側にあり、その要素に定義された
+ * `--mdp-*` 変数を継承できない。そのため `.mdp-layout` に同じ既定色の変数を
+ * 定義し、style.css で `.mdp-layout { ... }` を上書きすれば見た目を変えられる
+ * ようにしている。
+ *
+ * ---- CSS 変数(`.mdp-layout` に定義) ----
+ *   --mdp-sidetoc-width       目次の幅(既定 280px)
+ *   --mdp-sidetoc-text        目次の文字色
+ *   --mdp-sidetoc-accent      強調(今読んでいる見出し)の文字色・左線の色
+ *   --mdp-sidetoc-accent-soft 強調している項目の背景
+ *   --mdp-sidetoc-bg          目次のカードの背景
+ *   --mdp-sidetoc-border      目次のカードの枠線
+ *
+ * 「今読んでいる見出しの強調」は JavaScript を使わず、CSS の
+ * `scroll-target-group: auto`(目次を包む `.mdp-sidetoc` に指定)+
+ * `:target-current` 疑似クラス(Chrome/Edge 140 以降)で行う。対応していない
+ * ブラウザでは強調が出ないだけで、目次の表示とクリックでの移動は問題なく動く。
+ *
+ * alerts.css / outline.css と同じく、標準 CSS(base.css)を「使う」をオフにしても
+ * 常に適用される。
+ */
+
+.mdp-layout {
+  --mdp-sidetoc-width: 280px;
+  --mdp-sidetoc-text: #1f2933;
+  --mdp-sidetoc-accent: #1f4e79;
+  --mdp-sidetoc-accent-soft: #eef3f8;
+  --mdp-sidetoc-bg: #ffffff;
+  --mdp-sidetoc-border: #dde1e6;
+
+  display: grid;
+  grid-template-columns: minmax(0, var(--mdp-content-width, 1200px)) var(--mdp-sidetoc-width);
+  justify-content: center;
+  align-items: start;
+  column-gap: 24px;
+  /* 画面幅が足りず列が縮むときも、目次のカードが画面の右端に貼り付かないようにする
+   * (本文の紙は base.css の width: calc(100% - 24px) で左に 12px 空く。それと揃える) */
+  padding-right: 12px;
+}
+
+.mdp-sidetoc {
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  /* 目次内のリンクをグループ化し、:target-current(下記)で「今読んでいる見出し」を
+   * 判定できるようにする(JavaScript 不使用でのスクロール連動)。 */
+  scroll-target-group: auto;
+
+  margin: 12px 0 24px;
+  padding: 16px;
+  box-sizing: border-box;
+  background-color: var(--mdp-sidetoc-bg);
+  border: 1px solid var(--mdp-sidetoc-border);
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  color: var(--mdp-sidetoc-text);
+  font-family: "Meiryo", "メイリオ", "BIZ UDPGothic", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    "Yu Gothic Medium", sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.mdp-sidetoc-title {
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--mdp-sidetoc-text);
+}
+
+.mdp-sidetoc ul {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+/* 入れ子になるたびに少し字下げする */
+.mdp-sidetoc ul ul {
+  padding-left: 1em;
+}
+
+.mdp-sidetoc li {
+  margin: 0;
+}
+
+.mdp-sidetoc a {
+  display: block;
+  padding: 3px 8px 3px 6px;
+  border-left: 2px solid transparent;
+  color: var(--mdp-sidetoc-text);
+  text-decoration: none;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.mdp-sidetoc a:hover {
+  text-decoration: underline;
+}
+
+/* 今読んでいる見出しの強調(Chrome/Edge 140 以降。上記 scroll-target-group とセット)。 */
+.mdp-sidetoc a:target-current {
+  font-weight: 700;
+  color: var(--mdp-sidetoc-accent);
+  background-color: var(--mdp-sidetoc-accent-soft);
+  border-left-color: var(--mdp-sidetoc-accent);
+}
+
+/* 画面が狭いとき(目次と本文を並べると窮屈になる幅)は目次を消し、レイアウトも
+ * 通常の 1 列に戻す。 */
+@media (max-width: 999px) {
+  .mdp-layout {
+    display: block;
+    padding-right: 0;
+  }
+  .mdp-sidetoc {
+    display: none;
+  }
+}
+
+/* 印刷・PDF 保存でも目次は出さない(紙面は本文だけで完結させる)。 */
+@media print {
+  .mdp-layout {
+    display: block;
+    padding-right: 0;
+  }
+  .mdp-sidetoc {
+    display: none;
+  }
+}

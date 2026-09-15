@@ -99,6 +99,12 @@ function makeSolidPng(width, height, [r, g, b]) {
   return Buffer.from(serializeChunks(chunks));
 }
 
+// サイドバー目次のテスト用に、指定した段落数のダミー本文を作る(実際にスクロール
+// できる分量を確保するため)。
+function fillerParagraphs(n) {
+  return Array.from({ length: n }, (_, i) => `本文の行 ${i + 1} です。`).join('\n\n');
+}
+
 // ---------- CLI 引数 ----------
 const ARGV = process.argv.slice(2);
 function argValue(flag) {
@@ -2475,6 +2481,290 @@ async function runTests(browser) {
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
       await fs.rm(emptyDir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n22b) HTML 出力: サイドバーの目次');
+  await test('通常出力: サイドバーの目次が h2〜h6(ignore を除く)の文書順・見出し番号と一致し、script 要素が無い', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = [
+        '# タイトル',
+        '',
+        fillerParagraphs(5),
+        '',
+        '## 概要',
+        '',
+        fillerParagraphs(40),
+        '',
+        '### 詳細',
+        '',
+        fillerParagraphs(40),
+        '',
+        '#### 深掘り',
+        '',
+        fillerParagraphs(40),
+        '',
+        '### 除外見出し {ignore=true}',
+        '',
+        fillerParagraphs(10),
+        '',
+        '##### 五段目',
+        '',
+        fillerParagraphs(40),
+        '',
+        '###### 六段目',
+        '',
+        fillerParagraphs(40),
+        '',
+      ].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingHeadingNumbers', true);
+        await page.click('#settingsCloseBtn');
+        await waitFor(
+          async () =>
+            !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdp-heading-number')))
+        );
+
+        await page.evaluate(() => window.__mdpreview.exportNormal());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
+      });
+
+      const context = await browser.newContext();
+      const page2 = await context.newPage();
+      const consoleErrors2 = [];
+      attachDebugLogging(page2, consoleErrors2);
+      try {
+        await page2.goto('file://' + path.join(dir, 'doc.html'));
+
+        const data = await page2.evaluate(() => {
+          const headings = Array.from(
+            document.querySelectorAll(
+              '.crossnote.markdown-preview h2, .crossnote.markdown-preview h3, .crossnote.markdown-preview h4, ' +
+                '.crossnote.markdown-preview h5, .crossnote.markdown-preview h6'
+            )
+          );
+          const tocLinks = Array.from(document.querySelectorAll('.mdp-sidetoc a'));
+          const numberOf = (el) => {
+            const span = el.querySelector('.mdp-heading-number');
+            return span ? span.textContent : null;
+          };
+          return {
+            headingIds: headings.map((h) => h.id),
+            headingTexts: headings.map((h) => h.textContent.trim()),
+            tocHrefs: tocLinks.map((a) => a.getAttribute('href')),
+            tocNumbers: tocLinks.map(numberOf),
+            navAriaLabel: document.querySelector('.mdp-sidetoc') && document.querySelector('.mdp-sidetoc').getAttribute('aria-label'),
+            titleText: document.querySelector('.mdp-sidetoc-title') && document.querySelector('.mdp-sidetoc-title').textContent,
+            scriptCount: document.querySelectorAll('script').length,
+          };
+        });
+
+        // 見出しの連番をオンにしているため textContent には番号("1-2." 等)が
+        // 前置される。末尾一致で判定する。
+        const expectedIds = data.headingIds.filter((_, i) => !data.headingTexts[i].endsWith('除外見出し'));
+        assert.deepEqual(data.tocHrefs, expectedIds.map((id) => '#' + id), '目次のリンクが見出しの id・文書順と一致しません');
+        assert.deepEqual(
+          data.tocNumbers,
+          ['1.', '1-1.', '1-1-1.', '1-2-1-1.', '1-2-1-1-1.'],
+          `目次の連番が見出しの連番と一致しません: ${JSON.stringify(data.tocNumbers)}`
+        );
+        assert.equal(data.navAriaLabel, '目次', 'nav の aria-label が想定と違います');
+        assert.equal(data.titleText, '目次', '目次の見出し文字が想定と違います');
+        assert.equal(data.scriptCount, 0, 'script 要素が含まれています');
+
+        printConsoleErrors(consoleErrors2, 'HTML 出力(通常)のサイドバー目次');
+        assert.equal(consoleErrors2.length, 0, 'コンソールエラーが発生しました');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('幅 1400px でスクロールすると、画面上端付近の見出しの目次リンクが a:target-current になる(h3 以下・h2 とも)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = [
+        '# タイトル',
+        '',
+        fillerParagraphs(5),
+        '',
+        '## 概要',
+        '',
+        fillerParagraphs(40),
+        '',
+        '### 詳細',
+        '',
+        fillerParagraphs(60),
+        '',
+        '## まとめ',
+        '',
+        fillerParagraphs(40),
+        '',
+      ].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.evaluate(() => window.__mdpreview.exportNormal());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
+      });
+
+      const context = await browser.newContext();
+      const page2 = await context.newPage();
+      const consoleErrors2 = [];
+      attachDebugLogging(page2, consoleErrors2);
+      try {
+        await page2.setViewportSize({ width: 1400, height: 800 });
+        await page2.goto('file://' + path.join(dir, 'doc.html'));
+
+        const detailId = await page2.evaluate(() => {
+          const h3 = Array.from(document.querySelectorAll('h3')).find((h) => h.textContent.trim() === '詳細');
+          return h3 ? h3.id : null;
+        });
+        assert.ok(detailId, '「詳細」(h3)の見出しが見つかりませんでした');
+        await page2.evaluate((id) => document.getElementById(id).scrollIntoView({ block: 'start' }), detailId);
+        await waitFor(
+          async () =>
+            (await page2.evaluate(() => {
+              const a = document.querySelector('.mdp-sidetoc a:target-current');
+              return a ? a.getAttribute('href') : null;
+            })) === '#' + detailId,
+          { message: '深い見出し(h3)へスクロールしても目次が強調されませんでした' }
+        );
+
+        await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+        await page2.screenshot({ path: path.join(SCREENSHOT_DIR, 'export-sidetoc.png') });
+
+        const overviewId = await page2.evaluate(() => {
+          const h2 = Array.from(document.querySelectorAll('h2')).find((h) => h.textContent.trim() === '概要');
+          return h2 ? h2.id : null;
+        });
+        assert.ok(overviewId, '「概要」(h2)の見出しが見つかりませんでした');
+        await page2.evaluate((id) => document.getElementById(id).scrollIntoView({ block: 'start' }), overviewId);
+        await waitFor(
+          async () =>
+            (await page2.evaluate(() => {
+              const a = document.querySelector('.mdp-sidetoc a:target-current');
+              return a ? a.getAttribute('href') : null;
+            })) === '#' + overviewId,
+          { message: 'h2 の見出しへスクロールしても目次が強調されませんでした' }
+        );
+
+        printConsoleErrors(consoleErrors2, 'サイドバー目次のスクロール強調');
+        assert.equal(consoleErrors2.length, 0, 'コンソールエラーが発生しました');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('幅 800px では .mdp-sidetoc の computed display が none になる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = ['# タイトル', '', '## 概要', '', '本文です。', ''].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.evaluate(() => window.__mdpreview.exportNormal());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
+      });
+
+      const context = await browser.newContext();
+      const page2 = await context.newPage();
+      try {
+        await page2.setViewportSize({ width: 800, height: 800 });
+        await page2.goto('file://' + path.join(dir, 'doc.html'));
+        const display = await page2.evaluate(() => getComputedStyle(document.querySelector('.mdp-sidetoc')).display);
+        assert.equal(display, 'none', '幅 800px で目次が非表示になっていません');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('1ファイル出力にも目次が付く', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = ['# タイトル', '', '## 概要', '', '本文です。', ''].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.evaluate(() => window.__mdpreview.exportStandalone());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.standalone.html')), {
+          message: 'doc.standalone.html が出力されませんでした',
+        });
+      });
+
+      const context = await browser.newContext();
+      const page2 = await context.newPage();
+      try {
+        await page2.goto('file://' + path.join(dir, 'doc.standalone.html'));
+        const hrefs = await page2.evaluate(() =>
+          Array.from(document.querySelectorAll('.mdp-sidetoc a')).map((a) => a.getAttribute('href'))
+        );
+        assert.equal(hrefs.length, 1, '1ファイル出力の目次の項目数が想定と違います');
+        assert.equal(hrefs[0], '#概要', '1ファイル出力の目次の href が想定と違います');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('設定でオフにすると出力に目次が付かない(.mdp-sidetoc も .mdp-layout も無い)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = ['# タイトル', '', '## 概要', '', '本文です。', ''].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingSideToc', false);
+        await page.click('#settingsCloseBtn');
+        await page.evaluate(() => window.__mdpreview.exportNormal());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
+      });
+
+      const html = await fs.readFile(path.join(dir, 'doc.html'), 'utf8');
+      assert.equal(html.includes('mdp-sidetoc'), false, 'sideToc をオフにしたのに mdp-sidetoc が出力に含まれています');
+      assert.equal(html.includes('mdp-layout'), false, 'sideToc をオフにしたのに mdp-layout が出力に含まれています');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('h2〜h6 が無い文書には目次(レイアウト用の要素も)付かない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = '# タイトルだけ\n\n本文です。\n';
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.evaluate(() => window.__mdpreview.exportNormal());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
+      });
+
+      const html = await fs.readFile(path.join(dir, 'doc.html'), 'utf8');
+      assert.equal(html.includes('mdp-sidetoc'), false, '見出しが無いのに mdp-sidetoc が出力に含まれています');
+      assert.equal(html.includes('mdp-layout'), false, '見出しが無いのに mdp-layout が出力に含まれています');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
     }
   });
 
