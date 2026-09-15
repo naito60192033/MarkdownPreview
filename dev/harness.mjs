@@ -3149,6 +3149,50 @@ async function runTests(browser) {
     }
   });
 
+  await test('末尾付近に縦に長い画像があっても、エディタを最下部までスクロールするとプレビューも最下部になる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'images'));
+      // 縦 1500px の画像を末尾に置く。エディタでは1行でも、プレビューでは
+      // 「一番上に見えている行」より下にこの画像分の高さが残るため、行の対応
+      // だけではプレビューが最下部まで届かない(修正前は失敗する)。
+      await fs.writeFile(path.join(dir, 'images', 'tall.png'), makeSolidPng(200, 1500, [30, 120, 90]));
+      const paras = Array.from({ length: 40 }, (_, i) => `## 見出し${i}\n\n本文${i} の段落です。\n`).join('');
+      await fs.writeFile(path.join(dir, 'doc.md'), paras + '\n![tall](images/tall.png)\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await sleep(300); // 初回描画の安定待ち
+
+        const scrollable = await page.evaluate(() => {
+          const el = document.querySelector('.cm-scroller');
+          return el.scrollHeight - el.clientHeight;
+        });
+        assert.ok(scrollable > 400, `前提条件が崩れています: エディタが十分スクロールできません(scrollable=${scrollable})`);
+
+        await page.evaluate(() => {
+          const el = document.querySelector('.cm-scroller');
+          el.scrollTop = el.scrollHeight - el.clientHeight;
+        });
+
+        await waitFor(
+          async () => {
+            const { previewTop, previewMax } = await page.evaluate(() => {
+              const se = window.__mdpreview.getPreviewDocument().scrollingElement;
+              return { previewTop: se.scrollTop, previewMax: se.scrollHeight - se.clientHeight };
+            });
+            return Math.abs(previewTop - previewMax) <= 1;
+          },
+          { message: 'エディタを最下部までスクロールしてもプレビューが最下部(±1px)になりませんでした' }
+        );
+
+        printConsoleErrors(consoleErrors, 'スクロール同期(末尾の縦長画像)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   // ---------------------------------------------------------------------
   // 27) ファイル操作一式(新規 md・新規フォルダ・名前の変更・削除)
   //   1. 「＋ md」: 開いている md のフォルダに 0 バイトの md ができ、開かれ、ツリーに出る。

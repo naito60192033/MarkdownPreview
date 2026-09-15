@@ -23,7 +23,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { computeArrowEndpoints } from '../src/annotator/shapes.js';
+import { computeArrowEndpoints, ELBOW_STUB } from '../src/annotator/shapes.js';
 import {
   serializeChunks,
   encodeITxt,
@@ -288,6 +288,72 @@ async function getArrowLine(page, shapeId) {
 
 function assertClose(actual, expected, tolerance, msg) {
   assert.ok(Math.abs(actual - expected) <= tolerance, `${msg}: expected≈${expected}, actual=${actual}`);
+}
+
+// カギ線(elbow)の <polyline> の点を [{x,y}, ...] で読む(shapesLayer 側。矢じりの分だけ
+// 最後の点は手前で止められているが、同じ線分の向き上にあるので水平・垂直の確認には使える)。
+async function getElbowPolylinePoints(page, shapeId) {
+  return page.evaluate((id) => {
+    const g = document.querySelector(`.annotator-shapes-layer [data-shape-id="${id}"]`);
+    const polyline = g.querySelector('polyline');
+    return polyline
+      .getAttribute('points')
+      .trim()
+      .split(/\s+/)
+      .map((pair) => {
+        const [x, y] = pair.split(',').map(Number);
+        return { x, y };
+      });
+  }, shapeId);
+}
+
+// points の隣り合う各点が水平(同y)・垂直(同x)のどちらかでつながっていることを確認する
+function assertAxisAlignedPolyline(points, msgPrefix) {
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    assert.ok(
+      a.x === b.x || a.y === b.y,
+      `${msgPrefix}: 線分${i}が水平・垂直ではありません: ${JSON.stringify(a)} -> ${JSON.stringify(b)}`
+    );
+  }
+}
+
+// カギ線ツールの選択中に出る接続点(.annotator-connect-point)を読む
+async function getConnectPoints(page) {
+  return page.evaluate(() =>
+    Array.from(document.querySelectorAll('.annotator-connect-point')).map((el) => ({
+      side: el.getAttribute('data-side'),
+      active: el.classList.contains('annotator-connect-point--active'),
+    }))
+  );
+}
+
+async function countConnectTargets(page) {
+  return page.evaluate(() => document.querySelectorAll('.annotator-connect-target').length);
+}
+
+// ---------- カギ線テスト用の共通配置 ----------
+// 赤枠A(左上、box: x50,y50,w100,h100)・B(右下、box: x350,y200,w100,h100)。
+// A の右辺中点(150,100)→B の左辺中点(350,250)へ繋ぐと、向かい合う辺どうしの
+// Z字(中央の縦線)になる(tests/annotator-shapes.test.js の「向かい合う辺」テストと同じ配置)。
+const ELBOW_A_DRAG = [{ x: 50, y: 50 }, { x: 150, y: 150 }];
+const ELBOW_B_DRAG = [{ x: 350, y: 200 }, { x: 450, y: 300 }];
+const ELBOW_A_RIGHT = { x: 150, y: 100 };
+const ELBOW_B_LEFT = { x: 350, y: 250 };
+
+// 赤枠A・Bを描いてから、カギ線ツールでAの右辺中点→Bの左辺中点へ1回のドラッグでつなぐ
+async function drawElbowAB(page) {
+  await selectTool(page, 'rect');
+  await dragOnCanvas(page, ELBOW_A_DRAG[0], ELBOW_A_DRAG[1]);
+  await selectTool(page, 'rect');
+  await dragOnCanvas(page, ELBOW_B_DRAG[0], ELBOW_B_DRAG[1]);
+  await selectTool(page, 'elbow');
+  await dragOnCanvas(page, ELBOW_A_RIGHT, ELBOW_B_LEFT);
+}
+
+function findRectByX(shapes, x) {
+  return shapes.find((s) => s.type === 'rect' && s.x === x);
 }
 
 // ---------- PNG バイト列を Node 側で直接組み立てる(v1 形式の読み込みテスト用) ----------
@@ -1380,6 +1446,470 @@ async function runTests(browser) {
       assert.equal(st.selectedImageId, null, '図形が優先され画像は選択されないはずです');
 
       printConsoleErrors(consoleErrors, '図形と画像の当たり判定の優先順位');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n28) 吹き出しの文字の大きさ・色');
+  await test('選択中の吹き出しの大きさ・色をツールバーで変えると反映され、Ctrl+Z で色が元に戻る', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      await selectTool(page, 'callout');
+      await clickOnCanvas(page, { x: 300, y: 300 });
+      await waitForTextEditorVisible(page);
+      await page.fill('.annotator-text-editor', 'テスト文言');
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      const st0 = await getDebugState(page);
+      const callout = st0.shapes.find((s) => s.type === 'callout');
+      assert.ok(callout, '吹き出しが作成されていません');
+      assert.equal(st0.selectedShapeId, callout.id, '作成した吹き出しが選択された状態のはずです');
+
+      const getBox = () =>
+        page.evaluate((id) => {
+          const path = document.querySelector(`.annotator-shapes-layer [data-shape-id="${id}"] path`);
+          const b = path.getBBox();
+          return { w: b.width, h: b.height };
+        }, callout.id);
+      const getTextFill = () =>
+        page.evaluate((id) => {
+          const t = document.querySelector(`.annotator-shapes-layer [data-shape-id="${id}"] text`);
+          return t.getAttribute('fill');
+        }, callout.id);
+
+      const boxBefore = await getBox();
+
+      await page.selectOption('.annotator-font-size', '48');
+      let st = await getDebugState(page);
+      let updated = st.shapes.find((s) => s.id === callout.id);
+      assert.equal(updated.fontSize, 48, '文字の大きさが反映されていません');
+
+      const boxAfter = await getBox();
+      assert.ok(
+        boxAfter.w > boxBefore.w && boxAfter.h > boxBefore.h,
+        `文字の大きさを変えても枠が大きくなっていません: before=${JSON.stringify(boxBefore)}, after=${JSON.stringify(boxAfter)}`
+      );
+
+      await page.click('.annotator-text-color-btn[data-text-color="#1e88e5"]');
+      st = await getDebugState(page);
+      updated = st.shapes.find((s) => s.id === callout.id);
+      assert.equal(updated.textColor, '#1e88e5', '文字の色が反映されていません');
+      assert.equal(await getTextFill(), '#1e88e5', 'SVG の text の fill が変わっていません');
+
+      await page.keyboard.press('Control+Z');
+      st = await getDebugState(page);
+      updated = st.shapes.find((s) => s.id === callout.id);
+      assert.equal(updated.textColor, '#222222', 'Ctrl+Z で文字の色が元に戻っていません');
+
+      printConsoleErrors(consoleErrors, '吹き出しの文字の大きさ・色');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('吹き出しの文字の大きさ・色を保存して開き直しても復元される', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      await selectTool(page, 'callout');
+      await clickOnCanvas(page, { x: 300, y: 300 });
+      await waitForTextEditorVisible(page);
+      await page.fill('.annotator-text-editor', 'テスト');
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      await page.selectOption('.annotator-font-size', '40');
+      await page.click('.annotator-text-color-btn[data-text-color="#43a047"]');
+
+      let st = await getDebugState(page);
+      let callout = st.shapes.find((s) => s.type === 'callout');
+      assert.equal(callout.fontSize, 40);
+      assert.equal(callout.textColor, '#43a047');
+
+      await saveAndWaitClosed(page);
+      await reopenLastResult(page);
+
+      st = await getDebugState(page);
+      callout = st.shapes.find((s) => s.type === 'callout');
+      assert.ok(callout, '再読み込み後に吹き出しが見つかりません');
+      assert.equal(callout.fontSize, 40, '再読み込み後の fontSize が復元されていません');
+      assert.equal(callout.textColor, '#43a047', '再読み込み後の textColor が復元されていません');
+
+      printConsoleErrors(consoleErrors, '吹き出しの文字の大きさ・色の保存往復');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('何も選んでいない状態で大きさ・色を変えると、次に作る吹き出しがその値になる', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      await selectTool(page, 'select'); // 前提: 何も選択していない状態
+      await page.selectOption('.annotator-font-size', '16');
+      await page.click('.annotator-text-color-btn[data-text-color="#e53935"]');
+
+      await selectTool(page, 'callout');
+      await clickOnCanvas(page, { x: 300, y: 300 });
+      await waitForTextEditorVisible(page);
+      await page.keyboard.press('Escape'); // テキストは空のまま確定
+      await waitForTextEditorHidden(page);
+
+      const st = await getDebugState(page);
+      const callout = st.shapes.find((s) => s.type === 'callout');
+      assert.ok(callout, '吹き出しが作成されていません');
+      assert.equal(callout.fontSize, 16, '既定の文字の大きさが新しい吹き出しに反映されていません');
+      assert.equal(callout.textColor, '#e53935', '既定の文字色が新しい吹き出しに反映されていません');
+
+      printConsoleErrors(consoleErrors, '既定の文字の大きさ・色');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('文字の大きさの select にフォーカスがある状態で Delete を押しても選択中の吹き出しが消えない', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+
+      await selectTool(page, 'callout');
+      await clickOnCanvas(page, { x: 300, y: 300 });
+      await waitForTextEditorVisible(page);
+      await page.fill('.annotator-text-editor', 'テスト');
+      await page.keyboard.press('Escape');
+      await waitForTextEditorHidden(page);
+
+      let st = await getDebugState(page);
+      assert.equal(st.shapes.length, 1, '前提条件が崩れています: 吹き出しが作成されていません');
+
+      await page.focus('.annotator-font-size');
+      await page.keyboard.press('Delete');
+
+      st = await getDebugState(page);
+      assert.equal(st.shapes.length, 1, 'select にフォーカスがある状態で Delete を押すと吹き出しが消えてしまいました');
+
+      printConsoleErrors(consoleErrors, 'select フォーカス中の Delete');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  console.log('\n29) カギ線矢印');
+  await test('L キーでツールが elbow になる', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+      await page.keyboard.press('l');
+      const st = await getDebugState(page);
+      assert.equal(st.activeTool, 'elbow', 'L キーでツールが elbow になっていません');
+
+      printConsoleErrors(consoleErrors, 'Lキーでのツール切替');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('赤枠Aの右辺→赤枠Bの左辺へカギ線を描くと、ドラッグ中に接続点が表示され、attach/side/polylineが正しくなる', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+      await selectTool(page, 'rect');
+      await dragOnCanvas(page, ELBOW_A_DRAG[0], ELBOW_A_DRAG[1]);
+      await selectTool(page, 'rect');
+      await dragOnCanvas(page, ELBOW_B_DRAG[0], ELBOW_B_DRAG[1]);
+
+      let st = await getDebugState(page);
+      const rectA = findRectByX(st.shapes, 50);
+      const rectB = findRectByX(st.shapes, 350);
+      assert.ok(rectA && rectB, '前提の赤枠2つが見つかりません');
+
+      await selectTool(page, 'elbow');
+      const c1 = await imgToClient(page, ELBOW_A_RIGHT.x, ELBOW_A_RIGHT.y);
+      const c2 = await imgToClient(page, ELBOW_B_LEFT.x, ELBOW_B_LEFT.y);
+      await page.mouse.move(c1.x, c1.y);
+      await page.mouse.down();
+      await page.mouse.move(c2.x, c2.y, { steps: 5 }); // まだ up していない(ドラッグ中)
+
+      // ドラッグ中: つながる予定の枠(B)に接続点が4つ、活性(--active)が1つ、side='left'
+      const points = await getConnectPoints(page);
+      assert.equal(points.length, 4, `接続点が4つのはずです: ${JSON.stringify(points)}`);
+      const activePoints = points.filter((p) => p.active);
+      assert.equal(activePoints.length, 1, `活性の接続点は1つのはずです: ${JSON.stringify(points)}`);
+      assert.equal(activePoints[0].side, 'left', `活性の接続点のsideはleftのはずです: ${JSON.stringify(points)}`);
+
+      // ドラッグ中の見た目も離したときと同じ接続: B の左辺に左から水平に入り、末尾が左辺の中点
+      const draftPoints = await page.evaluate(() => {
+        const poly = document.querySelector('.annotator-shapes-layer g[data-routing="elbow"] polyline');
+        return poly
+          .getAttribute('points')
+          .trim()
+          .split(/\s+/)
+          .map((pair) => {
+            const [x, y] = pair.split(',').map(Number);
+            return { x, y };
+          });
+      });
+      const dLast = draftPoints[draftPoints.length - 1];
+      const dPrev = draftPoints[draftPoints.length - 2];
+      assert.equal(dLast.y, dPrev.y, `ドラッグ中の最後の線分が水平ではありません: ${JSON.stringify(draftPoints)}`);
+      assert.ok(dLast.x > dPrev.x, `ドラッグ中の最後の線分が左から入っていません: ${JSON.stringify(draftPoints)}`);
+      assertClose(dLast.y, ELBOW_B_LEFT.y, 1, 'ドラッグ中の末尾yが B の左辺の中点ではありません');
+
+      await page.mouse.up();
+
+      st = await getDebugState(page);
+      assert.equal(st.shapes.length, 3, '図形が3つ(rect,rect,arrow)になっていません');
+      const arrow = st.shapes.find((s) => s.type === 'arrow');
+      assert.ok(arrow, 'カギ線が作成されていません');
+      assert.equal(arrow.routing, 'elbow');
+      assert.equal(arrow.from.attach, rectA.id, 'カギ線の始点がAに接続していません');
+      assert.equal(arrow.from.side, 'right', '始点のsideがrightではありません');
+      assert.equal(arrow.to.attach, rectB.id, 'カギ線の終点がBに接続していません');
+      assert.equal(arrow.to.side, 'left', '終点のsideがleftではありません');
+
+      const polyPoints = await getElbowPolylinePoints(page, arrow.id);
+      assertClose(polyPoints[0].x, ELBOW_A_RIGHT.x, 1, '折れ線の先頭x');
+      assertClose(polyPoints[0].y, ELBOW_A_RIGHT.y, 1, '折れ線の先頭y');
+      assertAxisAlignedPolyline(polyPoints, '折れ線');
+
+      printConsoleErrors(consoleErrors, 'カギ線の接続と接続ヒント');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('選択ツールで枠Bを動かすと、カギ線の経路の末尾が新しい左辺の中点に追従する', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+      await drawElbowAB(page);
+
+      let st = await getDebugState(page);
+      const arrow = st.shapes.find((s) => s.type === 'arrow');
+      const rectB = findRectByX(st.shapes, 350);
+      assert.ok(arrow && rectB, '前提の図形が見つかりません');
+
+      await selectTool(page, 'select');
+      // rectBの中心(400,250)を(500,350)へ移動する(x,yともに+100)
+      await dragOnCanvas(page, { x: 400, y: 250 }, { x: 500, y: 350 });
+
+      st = await getDebugState(page);
+      const movedB = st.shapes.find((s) => s.id === rectB.id);
+      assertClose(movedB.x, 450, 1, 'Bの移動後のxが想定とずれています');
+      assertClose(movedB.y, 300, 1, 'Bの移動後のyが想定とずれています');
+
+      const shapesMap = Object.fromEntries(st.shapes.map((s) => [s.id, s]));
+      const movedArrow = st.shapes.find((s) => s.id === arrow.id);
+      const { to } = computeArrowEndpoints(movedArrow, shapesMap, () => 0);
+      assertClose(to.x, movedB.x, 1, 'カギ線の終点xがBの新しい左辺の中点に追従していません');
+      assertClose(to.y, movedB.y + movedB.h / 2, 1, 'カギ線の終点yがBの新しい左辺の中点に追従していません');
+
+      printConsoleErrors(consoleErrors, 'カギ線の追従');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('選択中のカギ線に elbow-mid ハンドルがあり、ドラッグで mid が変わる。Ctrl+Z で 0.5 に戻る', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+      await drawElbowAB(page);
+
+      let st = await getDebugState(page);
+      const arrow = st.shapes.find((s) => s.type === 'arrow');
+      assert.ok(arrow, '前提のカギ線が見つかりません');
+      assert.equal(st.selectedShapeId, arrow.id, '作成直後はカギ線が選択された状態のはずです');
+      assert.equal(arrow.mid, 0.5, '既定のmidは0.5のはずです');
+
+      const handle = await page.evaluate(() => {
+        const el = document.querySelector('[data-handle="elbow-mid"]');
+        return el ? { cx: Number(el.getAttribute('cx')), cy: Number(el.getAttribute('cy')) } : null;
+      });
+      assert.ok(handle, 'elbow-mid ハンドルが見つかりません');
+
+      const targetX = 300;
+      await dragOnCanvas(page, { x: handle.cx, y: handle.cy }, { x: targetX, y: handle.cy });
+
+      st = await getDebugState(page);
+      const updated = st.shapes.find((s) => s.id === arrow.id);
+      const lo = ELBOW_A_RIGHT.x + ELBOW_STUB;
+      const hi = ELBOW_B_LEFT.x - ELBOW_STUB;
+      const expectedMid = (targetX - lo) / (hi - lo);
+      assertClose(updated.mid, expectedMid, 0.02, 'ドラッグ後のmidが期待値と異なります');
+      assert.notEqual(updated.mid, 0.5, 'ドラッグでmidが変わっているはずです');
+
+      await page.keyboard.press('Control+Z');
+      st = await getDebugState(page);
+      const reverted = st.shapes.find((s) => s.id === arrow.id);
+      assertClose(reverted.mid, 0.5, 0.001, 'Ctrl+Zでmidが0.5に戻っていません');
+
+      printConsoleErrors(consoleErrors, 'カギ線の中央ハンドル');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('端点ハンドル(arrow-to)を枠Bの上辺付近へドラッグすると side が top になる', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+      await drawElbowAB(page);
+
+      let st = await getDebugState(page);
+      const arrow = st.shapes.find((s) => s.type === 'arrow');
+      const rectB = findRectByX(st.shapes, 350);
+      assert.ok(arrow && rectB, '前提の図形が見つかりません');
+
+      // arrow-to ハンドルは現在Bの左辺中点(350,250)にある。Bの上辺中点へドラッグする
+      await dragOnCanvas(page, ELBOW_B_LEFT, { x: rectB.x + rectB.w / 2, y: rectB.y });
+
+      st = await getDebugState(page);
+      const updated = st.shapes.find((s) => s.id === arrow.id);
+      assert.equal(updated.to.attach, rectB.id, '終点は依然Bに接続しているはずです');
+      assert.equal(updated.to.side, 'top', '終点のsideがtopになっていません');
+
+      printConsoleErrors(consoleErrors, 'カギ線の端点の付け替え');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('保存→開き直しで routing/side/mid が復元され、出力PNGの折れ線上の画素が線の色になる', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600, fillColor: '#f0f0f0' });
+      await drawElbowAB(page);
+
+      // 中央の縦線の位置をずらしてから保存する(既定値のままでも復元されるが、
+      // 変更した値がちゃんと保存されることも合わせて確認する)
+      const handle = await page.evaluate(() => {
+        const el = document.querySelector('[data-handle="elbow-mid"]');
+        return { cx: Number(el.getAttribute('cx')), cy: Number(el.getAttribute('cy')) };
+      });
+      const targetX = 300;
+      await dragOnCanvas(page, { x: handle.cx, y: handle.cy }, { x: targetX, y: handle.cy });
+
+      let st = await getDebugState(page);
+      const arrow = st.shapes.find((s) => s.type === 'arrow');
+      const midAfterDrag = arrow.mid;
+      const bounds = st.outputBounds;
+
+      await saveAndWaitClosed(page);
+      await reopenLastResult(page);
+
+      st = await getDebugState(page);
+      const reopened = st.shapes.find((s) => s.type === 'arrow');
+      assert.ok(reopened, '再読み込み後にカギ線が見つかりません');
+      assert.equal(reopened.routing, 'elbow', '再読み込み後もrouting=elbowのはずです');
+      assert.equal(reopened.from.side, 'right', '再読み込み後の始点sideが復元されていません');
+      assert.equal(reopened.to.side, 'left', '再読み込み後の終点sideが復元されていません');
+      assertClose(reopened.mid, midAfterDrag, 0.001, '再読み込み後のmidが復元されていません');
+
+      // 中央の縦線上の点(targetX, 中間のy)の画素が線の色(既定色 #e53935)のはず
+      const sampleY = (ELBOW_A_RIGHT.y + ELBOW_B_LEFT.y) / 2;
+      const outX = Math.round(targetX - bounds.x);
+      const outY = Math.round(sampleY - bounds.y);
+      const px = await page.evaluate((pt) => window.__annotator.getLastResultPixel(pt.x, pt.y), { x: outX, y: outY });
+      assert.ok(px[0] > 150 && px[0] - px[1] > 40 && px[0] - px[2] > 40, `折れ線上の画素が線の色ではありません: ${px}`);
+
+      printConsoleErrors(consoleErrors, 'カギ線の保存・復元');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('枠Bを削除すると、カギ線のtoはattach null・side nullになり、位置は削除前の末尾のまま', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+      await drawElbowAB(page);
+
+      let st = await getDebugState(page);
+      const arrow = st.shapes.find((s) => s.type === 'arrow');
+      const rectB = findRectByX(st.shapes, 350);
+      const shapesMap = Object.fromEntries(st.shapes.map((s) => [s.id, s]));
+      const before = computeArrowEndpoints(arrow, shapesMap, () => 0);
+
+      await selectTool(page, 'select');
+      await clickOnCanvas(page, { x: rectB.x + 30, y: rectB.y + 30 }); // Bの内側(線から離れた点)をクリックして選択
+      st = await getDebugState(page);
+      assert.equal(st.selectedShapeId, rectB.id, '枠Bが選択されていません');
+
+      await page.keyboard.press('Delete');
+      st = await getDebugState(page);
+      assert.equal(st.shapes.length, 2, 'Bの削除後は図形が2つ(rectA, arrow)のはずです');
+      const updated = st.shapes.find((s) => s.id === arrow.id);
+      assert.equal(updated.to.attach, null, '削除後は終点のattachがnullのはずです');
+      assert.equal(updated.to.side, null, '削除後は終点のsideがnullのはずです');
+      assertClose(updated.to.x, before.to.x, 1, '削除後の終点xが削除前の位置と異なります');
+      assertClose(updated.to.y, before.to.y, 1, '削除後の終点yが削除前の位置と異なります');
+
+      printConsoleErrors(consoleErrors, '接続先の削除');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('両端とも接続していないカギ線を横長にドラッグすると横→縦→横になる', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+      await selectTool(page, 'elbow');
+      await dragOnCanvas(page, { x: 100, y: 100 }, { x: 400, y: 160 });
+
+      const st = await getDebugState(page);
+      const arrow = st.shapes.find((s) => s.type === 'arrow');
+      assert.ok(arrow, 'カギ線が作成されていません');
+      assert.equal(arrow.routing, 'elbow');
+      assert.equal(arrow.from.attach, null);
+      assert.equal(arrow.from.side, null, '未接続の端はsideもnullのはずです');
+      assert.equal(arrow.to.attach, null);
+      assert.equal(arrow.to.side, null);
+
+      const points = await getElbowPolylinePoints(page, arrow.id);
+      assert.equal(points.length, 4, '横→縦→横の4点のはずです');
+      assertClose(points[0].y, points[1].y, 1, '1本目は水平のはずです');
+      assertClose(points[1].x, points[2].x, 1, '2本目は垂直のはずです');
+      assertClose(points[2].y, points[3].y, 1, '3本目は水平のはずです');
+      assertAxisAlignedPolyline(points, '未接続のカギ線');
+
+      printConsoleErrors(consoleErrors, '未接続のカギ線');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('直線の矢印ツールでのドラッグ中は接続先の枠が強調されるが、接続点(4つの丸)は出ない', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+      await selectTool(page, 'rect');
+      await dragOnCanvas(page, ELBOW_A_DRAG[0], ELBOW_A_DRAG[1]);
+
+      await selectTool(page, 'arrow');
+      const c1 = await imgToClient(page, 20, 20);
+      const c2 = await imgToClient(page, ELBOW_A_RIGHT.x, ELBOW_A_RIGHT.y);
+      await page.mouse.move(c1.x, c1.y);
+      await page.mouse.down();
+      await page.mouse.move(c2.x, c2.y, { steps: 5 });
+
+      const targetCount = await countConnectTargets(page);
+      const points = await getConnectPoints(page);
+      assert.equal(targetCount, 1, '接続先の枠の強調が1つ出るはずです');
+      assert.equal(points.length, 0, '直線の矢印では接続点(丸)は出ないはずです');
+
+      await page.mouse.up();
+
+      printConsoleErrors(consoleErrors, '直線の矢印の接続ヒント');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
+  await test('カギ線の折れ線の内側(角の内側で線から離れた点)をクリックしても選択されない', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+      await selectTool(page, 'elbow');
+      await dragOnCanvas(page, { x: 100, y: 100 }, { x: 400, y: 160 }); // 横→縦→横。中央の縦線はx=250
+
+      let st = await getDebugState(page);
+      assert.equal(st.shapes.length, 1, '前提のカギ線が作成されていません');
+
+      await selectTool(page, 'select');
+      await clickOnCanvas(page, { x: 600, y: 400 }); // 空白をクリックして選択解除
+      st = await getDebugState(page);
+      assert.equal(st.selectedShapeId, null);
+
+      // (235,120) は折れ線(y=100の横線・x=250の縦線・y=160の横線)の実際の線からは
+      // 十分離れているが、<polyline> を(fill を持たないことを無視して)暗黙に閉じた
+      // 領域(先頭(100,100)と末尾(400,160)を直線で結んだ領域)としては内側に入る点
+      // (annotator.css の pointer-events: stroke が無いと実際にここが誤って
+      // クリックに反応することを確認済み)
+      await clickOnCanvas(page, { x: 235, y: 120 });
+      st = await getDebugState(page);
+      assert.equal(st.selectedShapeId, null, '折れ線の内側をクリックしても選択されないはずです');
+
+      printConsoleErrors(consoleErrors, 'カギ線の内側クリック');
       assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
     });
   });
