@@ -23,6 +23,10 @@
 // パスへ無駄な読み込みが走らないようにする処理(data-src への退避)は、
 // markdown-it の外側(HTML 出力にも同じ変換を使い回すため)src/ui/preview.js の
 // render() が `<template>` 要素を使って一括で行う。
+//
+// breaks: true により、段落の中で 1 回だけ改行した箇所も `<br>` として出力する
+// (MPE の breakOnSingleNewLine の既定と同じ挙動。設定項目は作らず常に有効)。
+// 段落そのものを分けたいときは従来どおり空行を挟む。
 
 import MarkdownIt from 'markdown-it';
 import taskLists from 'markdown-it-task-lists';
@@ -52,7 +56,7 @@ export function createMarkdown({ plugins = [] } = {}) {
   const md = new MarkdownIt({
     html: true,
     linkify: true,
-    breaks: false,
+    breaks: true,
     highlight: highlightCode,
   });
 

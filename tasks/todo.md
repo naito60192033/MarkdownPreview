@@ -105,6 +105,12 @@
 - [x] テスト(単体・E2E セクション 27)、README、dist
 - [x] Windows 実機での確認: 全パターン問題なし。ファイルの名前の変更は move() で行われる(「名前を変更しました」)
 
+## 追加要望(2026-09-14): md 上の 1 回の改行をプレビューでも改行にする
+方針の詳細: tasks/plan-2026-09-14-breaks.md(feature/breaks)
+- [x] markdown-it を `breaks: true` に(常に有効。MPE の breakOnSingleNewLine の既定と同じ) — src/render/markdown.js
+- [x] テスト(renderDocument で改行・アラート・attrs・```mark を確認)、README、dist。npm test すべて成功
+- [x] 目視確認(ユーザー): プレビューと HTML 出力で 1 回の改行・アラート・リスト・画像 2 行
+
 ## 将来やりたいこと(バックログ)
 - [ ] プロジェクト(ワークスペース)ごとの favicon 設定と、favicon を作る機能
   - ねらい: 複数のプロジェクトをタブで開いたときに見分けやすくする
