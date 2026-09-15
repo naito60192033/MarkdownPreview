@@ -139,7 +139,7 @@
         <input type="checkbox" id="settingSideToc" />
         HTML 出力にサイドバーの目次を付ける
       </label>
-      <p>出力した HTML の画面右側に、見出し(h2〜h6)の目次を表示します。画面の幅が狭いときと印刷するときは表示しません。</p>
+      <p>出力した HTML の画面左側に、見出し(h2〜h6)の目次を表示します。« で細い帯に畳めます。画面の幅が 1280px 未満のときは畳んだ状態で開き、720px 未満のときと印刷するときは表示しません。</p>
       <h3 class="settings-subheading">アラートのタイトル</h3>
       <p>空欄にすると、タイトル文字を出さずアイコンだけを表示します。</p>
       <div class="settings-row settings-row-alert">
@@ -5862,7 +5862,7 @@ html {
 `),P=["",...O,""].join(`
 `);N!==P&&(g=!0),o.push("",...O,""),o.push(s[B]),m=B}else g=!0,o.push("",avn,"",...O,"",ovn)}return g?o.join(n):e}var gvn=`/* src/theme/sidetoc.css
  *
- * HTML \u51FA\u529B(\u901A\u5E38 / 1\u30D5\u30A1\u30A4\u30EB\u3068\u3082)\u5C02\u7528\u306E\u3001\u753B\u9762\u53F3\u5074\u306B\u56FA\u5B9A\u8868\u793A\u3059\u308B\u30B5\u30A4\u30C9\u30D0\u30FC\u76EE\u6B21
+ * HTML \u51FA\u529B(\u901A\u5E38 / 1\u30D5\u30A1\u30A4\u30EB\u3068\u3082)\u5C02\u7528\u306E\u3001\u753B\u9762\u5DE6\u5074\u306B\u56FA\u5B9A\u8868\u793A\u3059\u308B\u30B5\u30A4\u30C9\u30D0\u30FC\u76EE\u6B21
  * (Qiita \u98A8)\u3002\u8A2D\u5B9A\u300CHTML \u51FA\u529B\u306B\u30B5\u30A4\u30C9\u30D0\u30FC\u306E\u76EE\u6B21\u3092\u4ED8\u3051\u308B\u300D(\u65E2\u5B9A\u30AA\u30F3)\u304C\u30AA\u30F3\u3067\u3001
  * h2\u301Ch6 \u306E\u898B\u51FA\u3057\u304C 1 \u3064\u4EE5\u4E0A\u3042\u308B\u3068\u304D\u3060\u3051 src/export.js \u304C\u672C\u6587\u3068\u4E00\u7DD2\u306B\u7D44\u307F\u7ACB\u3066\u308B\u3002
  * \u30A2\u30D7\u30EA\u5185\u306E\u30D7\u30EC\u30D3\u30E5\u30FC(iframe)\u306B\u306F\u51FA\u3055\u306A\u3044\u3002
@@ -5870,18 +5870,36 @@ html {
  * ---- \u51FA\u529B HTML \u306E\u69CB\u9020 ----
  *   <body>
  *     <div class="mdp-layout">
- *       <div class="crossnote markdown-preview">\u672C\u6587</div>
+ *       <input type="checkbox" id="mdp-sidetoc-toggle" class="mdp-sidetoc-toggle">
  *       <nav class="mdp-sidetoc" aria-label="\u76EE\u6B21">
- *         <div class="mdp-sidetoc-title">\u76EE\u6B21</div>
+ *         <div class="mdp-sidetoc-head">
+ *           <span class="mdp-sidetoc-title">\u76EE\u6B21</span>
+ *           <label for="mdp-sidetoc-toggle" class="mdp-sidetoc-close" title="\u76EE\u6B21\u3092\u7573\u3080">\xAB</label>
+ *         </div>
  *         <ul>\u2026</ul>
+ *         <label for="mdp-sidetoc-toggle" class="mdp-sidetoc-strip" title="\u76EE\u6B21\u3092\u958B\u304F">
+ *           <span>\xBB</span><span class="mdp-sidetoc-strip-text">\u76EE\u6B21</span>
+ *         </label>
  *       </nav>
+ *       <div class="crossnote markdown-preview">\u672C\u6587</div>
  *     </div>
  *   </body>
  *
- * \`.mdp-layout\` \u3092\u672C\u6587 | \u76EE\u6B21\u306E 2 \u5217 grid \u306B\u3057\u3001\u4E2D\u592E\u5BC4\u305B\u3059\u308B\u3002\u672C\u6587\u5074\u306E\u6700\u5927\u5E45\u306F
+ * \`.mdp-layout\` \u3092\u76EE\u6B21 | \u672C\u6587\u306E 2 \u5217 grid \u306B\u3057\u3001\u4E2D\u592E\u5BC4\u305B\u3059\u308B\u3002\u672C\u6587\u5074\u306E\u6700\u5927\u5E45\u306F
  * base.css \u306E \`--mdp-content-width\` \u3092\u5C0A\u91CD\u3059\u308B(\u672C\u6587\u306E\u898B\u305F\u76EE\u81EA\u4F53\u306F base.css \u306E
  * \`width: calc(100% - 24px); max-width; margin: 0 auto 24px\` \u304C\u305D\u306E\u307E\u307E\u52B9\u304F\u306E\u3067\u3001
- * \u3053\u3053\u3067\u306F\u5217\u5E45\u306E\u6307\u5B9A\u306B\u7559\u3081\u308B)\u3002
+ * \u3053\u3053\u3067\u306F\u5217\u5E45\u306E\u6307\u5B9A\u306B\u7559\u3081\u308B)\u3002\u76EE\u6B21\u5074\u306E\u5217\u306F \`auto\`(= nav \u81EA\u8EAB\u306E width)\u306B\u3057\u3066
+ * \u3042\u308B\u306E\u3067\u3001nav \u306E width \u3092\u958B\u9589\u3067\u5207\u308A\u66FF\u3048\u308B\u3060\u3051\u3067\u672C\u6587\u5074\u306E\u5217\u304C\u81EA\u52D5\u7684\u306B\u5E83\u304C\u308B
+ * (\`:has()\` \u306F\u4F7F\u308F\u306A\u3044)\u3002
+ *
+ * ---- \u6298\u308A\u305F\u305F\u307F\u306E\u4ED5\u7D44\u307F(JavaScript \u4E0D\u4F7F\u7528) ----
+ * \`.mdp-layout\` \u306E\u5148\u982D\u306B\u8996\u899A\u7684\u306B\u96A0\u3057\u305F\u30C1\u30A7\u30C3\u30AF\u30DC\u30C3\u30AF\u30B9(\`#mdp-sidetoc-toggle\`)\u3092
+ * \u7F6E\u304D\u3001\u898B\u51FA\u3057\u884C\u306E\u300C\xAB\u300D\u30DC\u30BF\u30F3\u3068\u3001\u7573\u3093\u3060\u3068\u304D\u306B\u51FA\u3059\u5E2F(\`.mdp-sidetoc-strip\`)\u306F
+ * \u3069\u3061\u3089\u3082 \`<label for="mdp-sidetoc-toggle">\` \u306B\u3059\u308B(\u30C1\u30A7\u30C3\u30AF\u30DC\u30C3\u30AF\u30B9\u30CF\u30C3\u30AF)\u3002
+ * \u30C1\u30A7\u30C3\u30AF\u306E\u610F\u5473\u306F\u753B\u9762\u5E45\u3067\u53CD\u8EE2\u3055\u305B\u3066\u3044\u308B\u3002
+ *   - \u5E45 1280px \u4EE5\u4E0A: \u65E2\u5B9A\u306F\u958B\u3044\u305F\u72B6\u614B\u3002\u30C1\u30A7\u30C3\u30AF = \u7573\u3080
+ *   - \u5E45 720px\u301C1279px: \u65E2\u5B9A\u306F\u7573\u3093\u3060\u72B6\u614B(\u5E2F)\u3002\u30C1\u30A7\u30C3\u30AF = \u958B\u304F
+ * \u958B\u9589\u306E\u72B6\u614B\u306F\u4FDD\u5B58\u3057\u306A\u3044(\u30DA\u30FC\u30B8\u3092\u958B\u304D\u76F4\u3059\u305F\u3073\u306B\u3001\u305D\u306E\u6642\u70B9\u306E\u753B\u9762\u5E45\u306E\u65E2\u5B9A\u306B\u623B\u308B)\u3002
  *
  * \u76EE\u6B21\u306F \`.crossnote.markdown-preview\` \u306E\u5916\u5074\u306B\u3042\u308A\u3001\u305D\u306E\u8981\u7D20\u306B\u5B9A\u7FA9\u3055\u308C\u305F
  * \`--mdp-*\` \u5909\u6570\u3092\u7D99\u627F\u3067\u304D\u306A\u3044\u3002\u305D\u306E\u305F\u3081 \`.mdp-layout\` \u306B\u540C\u3058\u65E2\u5B9A\u8272\u306E\u5909\u6570\u3092
@@ -5889,12 +5907,13 @@ html {
  * \u3088\u3046\u306B\u3057\u3066\u3044\u308B\u3002
  *
  * ---- CSS \u5909\u6570(\`.mdp-layout\` \u306B\u5B9A\u7FA9) ----
- *   --mdp-sidetoc-width       \u76EE\u6B21\u306E\u5E45(\u65E2\u5B9A 280px)
- *   --mdp-sidetoc-text        \u76EE\u6B21\u306E\u6587\u5B57\u8272
- *   --mdp-sidetoc-accent      \u5F37\u8ABF(\u4ECA\u8AAD\u3093\u3067\u3044\u308B\u898B\u51FA\u3057)\u306E\u6587\u5B57\u8272\u30FB\u5DE6\u7DDA\u306E\u8272
- *   --mdp-sidetoc-accent-soft \u5F37\u8ABF\u3057\u3066\u3044\u308B\u9805\u76EE\u306E\u80CC\u666F
- *   --mdp-sidetoc-bg          \u76EE\u6B21\u306E\u30AB\u30FC\u30C9\u306E\u80CC\u666F
- *   --mdp-sidetoc-border      \u76EE\u6B21\u306E\u30AB\u30FC\u30C9\u306E\u67A0\u7DDA
+ *   --mdp-sidetoc-width           \u958B\u3044\u305F\u76EE\u6B21\u306E\u5E45(\u65E2\u5B9A 280px)
+ *   --mdp-sidetoc-collapsed-width \u7573\u3093\u3060\u3068\u304D\u306E\u5E2F\u306E\u5E45(\u65E2\u5B9A 36px)
+ *   --mdp-sidetoc-text            \u76EE\u6B21\u306E\u6587\u5B57\u8272
+ *   --mdp-sidetoc-accent          \u5F37\u8ABF(\u4ECA\u8AAD\u3093\u3067\u3044\u308B\u898B\u51FA\u3057)\u306E\u6587\u5B57\u8272\u30FB\u5DE6\u7DDA\u306E\u8272
+ *   --mdp-sidetoc-accent-soft     \u5F37\u8ABF\u3057\u3066\u3044\u308B\u9805\u76EE\u306E\u80CC\u666F
+ *   --mdp-sidetoc-bg              \u76EE\u6B21\u306E\u30AB\u30FC\u30C9\u306E\u80CC\u666F
+ *   --mdp-sidetoc-border          \u76EE\u6B21\u306E\u30AB\u30FC\u30C9\u306E\u67A0\u7DDA
  *
  * \u300C\u4ECA\u8AAD\u3093\u3067\u3044\u308B\u898B\u51FA\u3057\u306E\u5F37\u8ABF\u300D\u306F JavaScript \u3092\u4F7F\u308F\u305A\u3001CSS \u306E
  * \`scroll-target-group: auto\`(\u76EE\u6B21\u3092\u5305\u3080 \`.mdp-sidetoc\` \u306B\u6307\u5B9A)+
@@ -5907,6 +5926,7 @@ html {
 
 .mdp-layout {
   --mdp-sidetoc-width: 280px;
+  --mdp-sidetoc-collapsed-width: 36px;
   --mdp-sidetoc-text: #1f2933;
   --mdp-sidetoc-accent: #1f4e79;
   --mdp-sidetoc-accent-soft: #eef3f8;
@@ -5914,20 +5934,41 @@ html {
   --mdp-sidetoc-border: #dde1e6;
 
   display: grid;
-  grid-template-columns: minmax(0, var(--mdp-content-width, 1200px)) var(--mdp-sidetoc-width);
+  grid-template-columns: auto minmax(0, var(--mdp-content-width, 1200px));
   justify-content: center;
   align-items: start;
-  column-gap: 24px;
-  /* \u753B\u9762\u5E45\u304C\u8DB3\u308A\u305A\u5217\u304C\u7E2E\u3080\u3068\u304D\u3082\u3001\u76EE\u6B21\u306E\u30AB\u30FC\u30C9\u304C\u753B\u9762\u306E\u53F3\u7AEF\u306B\u8CBC\u308A\u4ED8\u304B\u306A\u3044\u3088\u3046\u306B\u3059\u308B
-   * (\u672C\u6587\u306E\u7D19\u306F base.css \u306E width: calc(100% - 24px) \u3067\u5DE6\u306B 12px \u7A7A\u304F\u3002\u305D\u308C\u3068\u63C3\u3048\u308B) */
-  padding-right: 12px;
+  column-gap: 12px;
+  /* \u753B\u9762\u5E45\u304C\u8DB3\u308A\u305A\u5217\u304C\u7E2E\u3080\u3068\u304D\u3082\u3001\u76EE\u6B21\u306E\u30AB\u30FC\u30C9\u304C\u753B\u9762\u306E\u5DE6\u7AEF\u306B\u8CBC\u308A\u4ED8\u304B\u306A\u3044\u3088\u3046\u306B\u3059\u308B
+   * (\u672C\u6587\u306E\u7D19\u306F base.css \u306E width: calc(100% - 24px) \u3067\u5DE6\u53F3\u306B 12px \u7A7A\u304F\u3002\u305D\u308C\u3068
+   * \u5408\u308F\u305B\u3066\u3001\u7D19\u3068\u76EE\u6B21\u30AB\u30FC\u30C9\u306E\u898B\u305F\u76EE\u306E\u9593\u9694\u304C 24px \u524D\u5F8C\u306B\u306A\u308B\u3088\u3046\u306B\u3057\u3066\u3044\u308B)\u3002 */
+  padding-left: 12px;
+}
+
+/* \u96A0\u3057\u30C1\u30A7\u30C3\u30AF\u30DC\u30C3\u30AF\u30B9\u3002\u6298\u308A\u305F\u305F\u307F\u306E\u72B6\u614B\u306F\u3053\u308C\u306E checked/unchecked \u3060\u3051\u3067\u6301\u3064\u3002
+ * display: none \u306B\u3059\u308B\u3068\u30AD\u30FC\u30DC\u30FC\u30C9(Tab + Space)\u3067\u64CD\u4F5C\u3067\u304D\u306A\u304F\u306A\u308B\u305F\u3081\u3001
+ * \u753B\u9762\u306B\u306F\u51FA\u3055\u305A\u30B5\u30A4\u30BA\u3092 1px \u306B\u3057\u3066\u96A0\u3059\u3002
+ * position \u306F fixed \u306B\u3059\u308B(absolute \u3060\u3068\u30DA\u30FC\u30B8\u306E\u5148\u982D\u306B\u7F6E\u304B\u308C\u3001\u30B9\u30AF\u30ED\u30FC\u30EB\u3057\u305F\u72B6\u614B\u3067
+ * \xAB/\u5E2F\u3092\u62BC\u3059\u3068\u3001\u30D5\u30A9\u30FC\u30AB\u30B9\u3092\u53D7\u3051\u305F\u30C1\u30A7\u30C3\u30AF\u30DC\u30C3\u30AF\u30B9\u307E\u3067\u30DA\u30FC\u30B8\u304C\u5148\u982D\u3078\u98DB\u3093\u3067\u3057\u307E\u3046)\u3002 */
+.mdp-sidetoc-toggle {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  opacity: 0;
 }
 
 .mdp-sidetoc {
   position: sticky;
   top: 12px;
+  width: var(--mdp-sidetoc-width);
   max-height: calc(100vh - 24px);
   overflow-y: auto;
+  overflow-x: hidden;
   /* \u76EE\u6B21\u5185\u306E\u30EA\u30F3\u30AF\u3092\u30B0\u30EB\u30FC\u30D7\u5316\u3057\u3001:target-current(\u4E0B\u8A18)\u3067\u300C\u4ECA\u8AAD\u3093\u3067\u3044\u308B\u898B\u51FA\u3057\u300D\u3092
    * \u5224\u5B9A\u3067\u304D\u308B\u3088\u3046\u306B\u3059\u308B(JavaScript \u4E0D\u4F7F\u7528\u3067\u306E\u30B9\u30AF\u30ED\u30FC\u30EB\u9023\u52D5)\u3002 */
   scroll-target-group: auto;
@@ -5946,11 +5987,59 @@ html {
   line-height: 1.6;
 }
 
-.mdp-sidetoc-title {
+.mdp-sidetoc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 8px;
+}
+
+.mdp-sidetoc-title {
   font-size: 14px;
   font-weight: 700;
   color: var(--mdp-sidetoc-text);
+}
+
+/* \u898B\u51FA\u3057\u884C\u306E\u300C\xAB\u300D\u7573\u3080\u30DC\u30BF\u30F3\u3002 */
+.mdp-sidetoc-close {
+  display: inline-block;
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 3px;
+  color: var(--mdp-sidetoc-text);
+  font-size: 15px;
+  line-height: 1.4;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mdp-sidetoc-close:hover {
+  background-color: var(--mdp-sidetoc-accent-soft);
+}
+
+/* \u7573\u3093\u3060\u3068\u304D\u3060\u3051\u51FA\u3059\u5E2F(\u65E2\u5B9A\u306F\u975E\u8868\u793A)\u3002\u62BC\u3059\u3068\u958B\u304F\u3002 */
+.mdp-sidetoc-strip {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding-top: 4px;
+  color: var(--mdp-sidetoc-text);
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mdp-sidetoc-strip:hover {
+  color: var(--mdp-sidetoc-accent);
+}
+
+.mdp-sidetoc-strip-text {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: 0.1em;
 }
 
 .mdp-sidetoc ul {
@@ -5990,13 +6079,57 @@ html {
   border-left-color: var(--mdp-sidetoc-accent);
 }
 
-/* \u753B\u9762\u304C\u72ED\u3044\u3068\u304D(\u76EE\u6B21\u3068\u672C\u6587\u3092\u4E26\u3079\u308B\u3068\u7AAE\u5C48\u306B\u306A\u308B\u5E45)\u306F\u76EE\u6B21\u3092\u6D88\u3057\u3001\u30EC\u30A4\u30A2\u30A6\u30C8\u3082
- * \u901A\u5E38\u306E 1 \u5217\u306B\u623B\u3059\u3002 */
-@media (max-width: 999px) {
+/* \u30D5\u30A9\u30FC\u30AB\u30B9\u304C\u96A0\u3057\u30C1\u30A7\u30C3\u30AF\u30DC\u30C3\u30AF\u30B9\u306B\u3042\u308B\u3068\u304D\u3001\u898B\u3048\u3066\u3044\u308B\u30E9\u30D9\u30EB(\xAB/\u5E2F)\u306B
+ * outline \u3092\u51FA\u3059(\u30AD\u30FC\u30DC\u30FC\u30C9\u64CD\u4F5C\u306E\u53EF\u8996\u5316)\u3002 */
+.mdp-sidetoc-toggle:focus-visible ~ .mdp-sidetoc .mdp-sidetoc-close,
+.mdp-sidetoc-toggle:focus-visible ~ .mdp-sidetoc .mdp-sidetoc-strip {
+  outline: 2px solid var(--mdp-sidetoc-accent);
+  outline-offset: 2px;
+}
+
+/* \u7573\u3093\u3060\u3068\u304D\u306E\u898B\u305F\u76EE(\u898B\u51FA\u3057\u884C\u3068\u30EA\u30B9\u30C8\u3092\u96A0\u3057\u3001\u5E2F\u3060\u3051\u3092\u898B\u305B\u308B)\u3002\u30C1\u30A7\u30C3\u30AF\u306E\u610F\u5473\u306F
+ * \u753B\u9762\u5E45\u3067\u53CD\u8EE2\u3059\u308B\u305F\u3081\u3001\u540C\u3058\u898B\u305F\u76EE\u3092 2 \u3064\u306E\u30E1\u30C7\u30A3\u30A2\u30AF\u30A8\u30EA\u306B\u5206\u3051\u3066\u66F8\u3044\u3066\u3044\u308B
+ * (\u91CD\u8907\u306F\u6570\u884C\u306A\u306E\u3067\u8A31\u5BB9\u3059\u308B)\u3002 */
+@media (min-width: 1280px) {
+  /* \u5E45 1280px \u4EE5\u4E0A\u306F\u65E2\u5B9A\u3067\u958B\u3044\u305F\u72B6\u614B\u3002\u30C1\u30A7\u30C3\u30AF = \u7573\u3080\u3002 */
+  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc {
+    width: var(--mdp-sidetoc-collapsed-width, 36px);
+    padding: 12px 0;
+    overflow: hidden;
+  }
+  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc .mdp-sidetoc-head,
+  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc > ul {
+    display: none;
+  }
+  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc .mdp-sidetoc-strip {
+    display: flex;
+  }
+}
+
+@media (min-width: 720px) and (max-width: 1279px) {
+  /* \u5E45 720px\u301C1279px \u306F\u65E2\u5B9A\u3067\u7573\u3093\u3060\u72B6\u614B(\u5E2F)\u3002\u30C1\u30A7\u30C3\u30AF = \u958B\u304F\u3002 */
+  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc {
+    width: var(--mdp-sidetoc-collapsed-width, 36px);
+    padding: 12px 0;
+    overflow: hidden;
+  }
+  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc .mdp-sidetoc-head,
+  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc > ul {
+    display: none;
+  }
+  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc .mdp-sidetoc-strip {
+    display: flex;
+  }
+}
+
+/* \u753B\u9762\u304C\u72ED\u3044\u3068\u304D(\u76EE\u6B21\u3068\u672C\u6587\u3092\u4E26\u3079\u308B\u3068\u7AAE\u5C48\u306B\u306A\u308B\u5E45)\u306F\u76EE\u6B21(\u5E2F\u30FB\u30C1\u30A7\u30C3\u30AF\u30DC\u30C3\u30AF\u30B9\u3082)\u3092
+ * \u6D88\u3057\u3001\u30EC\u30A4\u30A2\u30A6\u30C8\u3082\u901A\u5E38\u306E 1 \u5217\u306B\u623B\u3059\u3002 */
+@media (max-width: 719px) {
   .mdp-layout {
     display: block;
-    padding-right: 0;
+    padding-left: 0;
   }
+  .mdp-sidetoc-toggle,
   .mdp-sidetoc {
     display: none;
   }
@@ -6006,14 +6139,15 @@ html {
 @media print {
   .mdp-layout {
     display: block;
-    padding-right: 0;
+    padding-left: 0;
   }
+  .mdp-sidetoc-toggle,
   .mdp-sidetoc {
     display: none;
   }
 }
 `;var Ils="h2, h3, h4, h5, h6";function Swt(e){return String(e).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}function mvn(e,t){let s=["mdpreview-base-style","mdpreview-alerts-style","mdpreview-outline-style","mdpreview-markbox-style"].map(o=>e.getElementById(o)&&e.getElementById(o).textContent||"");t&&s.push(t);let a=e.getElementById("mdpreview-user-style");return s.push(a&&a.textContent||""),s.join(`
-`)}function yvn(e,t){let n=e.querySelector("h1");return n&&n.textContent.trim()?n.textContent.trim():Xp(t||"").replace(/\.[^.]+$/,"")||"Untitled"}function bvn(e){let t=e.cloneNode(!0);t.removeAttribute("id");for(let n of t.querySelectorAll("script"))n.remove();for(let n of t.querySelectorAll(".mermaid-source"))n.remove();for(let n of t.querySelectorAll("[data-line]"))n.removeAttribute("data-line");return t}function Lls(e){for(let t of e.querySelectorAll("img[data-src]"))t.setAttribute("src",t.getAttribute("data-src")),t.removeAttribute("data-src")}async function Mls(e){let t=await e.arrayBuffer(),n=new Uint8Array(t),s="",a=32768;for(let o=0;o<n.length;o+=a)s+=String.fromCharCode.apply(null,n.subarray(o,o+a));return"data:"+(e.type||"application/octet-stream")+";base64,"+btoa(s)}async function Dls(e,{root:t,mdDir:n}){let s=0;for(let a of e.querySelectorAll("img[data-src]")){let o=a.getAttribute("data-src");if(a.setAttribute("src",o),a.removeAttribute("data-src"),jO(o))continue;let u=Q2(n,bD(o));if(u==null){s++;continue}try{let d=await(await iC(t,u,{create:!1})).getFile();a.setAttribute("src",await Mls(d))}catch{s++}}return s}function Nls(e){let t=e.cloneNode(!0);for(let a of t.querySelectorAll("sup.footnote-ref"))a.remove();let n="",s=t.firstElementChild;return s&&s.classList.contains("mdp-heading-number")&&(n=`<span class="mdp-heading-number">${Swt(s.textContent)}</span>`,s.remove()),n+Swt(t.textContent.trim())}function Pls(e,t){let n=[];for(let s of e.querySelectorAll(Ils)){let a=s.id;!a||t&&t.has(a)||n.push({level:Number(s.tagName.slice(1)),id:a,labelHtml:Nls(s)})}return n}function vvn(e,t,n){let s=n?Pls(t,n.ignoredIds):[];if(!s.length)return{bodyHtml:t.outerHTML,sideTocCss:""};let a=e.createElement("nav");a.className="mdp-sidetoc",a.setAttribute("aria-label","\u76EE\u6B21");let o=e.createElement("div");o.className="mdp-sidetoc-title",o.textContent="\u76EE\u6B21",a.appendChild(o),a.insertAdjacentHTML("beforeend",hvn(s));let u=e.createElement("div");return u.className="mdp-layout",u.appendChild(t),u.appendChild(a),{bodyHtml:u.outerHTML,sideTocCss:gvn}}function wvn({title:e,css:t,bodyHtml:n}){return`<!DOCTYPE html>
+`)}function yvn(e,t){let n=e.querySelector("h1");return n&&n.textContent.trim()?n.textContent.trim():Xp(t||"").replace(/\.[^.]+$/,"")||"Untitled"}function bvn(e){let t=e.cloneNode(!0);t.removeAttribute("id");for(let n of t.querySelectorAll("script"))n.remove();for(let n of t.querySelectorAll(".mermaid-source"))n.remove();for(let n of t.querySelectorAll("[data-line]"))n.removeAttribute("data-line");return t}function Lls(e){for(let t of e.querySelectorAll("img[data-src]"))t.setAttribute("src",t.getAttribute("data-src")),t.removeAttribute("data-src")}async function Mls(e){let t=await e.arrayBuffer(),n=new Uint8Array(t),s="",a=32768;for(let o=0;o<n.length;o+=a)s+=String.fromCharCode.apply(null,n.subarray(o,o+a));return"data:"+(e.type||"application/octet-stream")+";base64,"+btoa(s)}async function Dls(e,{root:t,mdDir:n}){let s=0;for(let a of e.querySelectorAll("img[data-src]")){let o=a.getAttribute("data-src");if(a.setAttribute("src",o),a.removeAttribute("data-src"),jO(o))continue;let u=Q2(n,bD(o));if(u==null){s++;continue}try{let d=await(await iC(t,u,{create:!1})).getFile();a.setAttribute("src",await Mls(d))}catch{s++}}return s}function Nls(e){let t=e.cloneNode(!0);for(let a of t.querySelectorAll("sup.footnote-ref"))a.remove();let n="",s=t.firstElementChild;return s&&s.classList.contains("mdp-heading-number")&&(n=`<span class="mdp-heading-number">${Swt(s.textContent)}</span>`,s.remove()),n+Swt(t.textContent.trim())}function Pls(e,t){let n=[];for(let s of e.querySelectorAll(Ils)){let a=s.id;!a||t&&t.has(a)||n.push({level:Number(s.tagName.slice(1)),id:a,labelHtml:Nls(s)})}return n}function vvn(e,t,n){let s=n?Pls(t,n.ignoredIds):[];if(!s.length)return{bodyHtml:t.outerHTML,sideTocCss:""};let a=e.createElement("input");a.type="checkbox",a.id="mdp-sidetoc-toggle",a.className="mdp-sidetoc-toggle",a.setAttribute("aria-label","\u76EE\u6B21\u306E\u958B\u9589");let o=e.createElement("nav");o.className="mdp-sidetoc",o.setAttribute("aria-label","\u76EE\u6B21");let u=e.createElement("div");u.className="mdp-sidetoc-head";let h=e.createElement("span");h.className="mdp-sidetoc-title",h.textContent="\u76EE\u6B21";let d=e.createElement("label");d.setAttribute("for","mdp-sidetoc-toggle"),d.className="mdp-sidetoc-close",d.title="\u76EE\u6B21\u3092\u7573\u3080",d.textContent="\xAB",u.appendChild(h),u.appendChild(d),o.appendChild(u),o.insertAdjacentHTML("beforeend",hvn(s));let g=e.createElement("label");g.setAttribute("for","mdp-sidetoc-toggle"),g.className="mdp-sidetoc-strip",g.title="\u76EE\u6B21\u3092\u958B\u304F",g.innerHTML='<span>\xBB</span><span class="mdp-sidetoc-strip-text">\u76EE\u6B21</span>',o.appendChild(g);let m=e.createElement("div");return m.className="mdp-layout",m.appendChild(a),m.appendChild(o),m.appendChild(t),{bodyHtml:m.outerHTML,sideTocCss:gvn}}function wvn({title:e,css:t,bodyHtml:n}){return`<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">

@@ -2667,7 +2667,7 @@ async function runTests(browser) {
     }
   });
 
-  await test('幅 800px では .mdp-sidetoc の computed display が none になる', async () => {
+  await test('幅 700px では目次(nav)も帯も表示されない', async () => {
     const dir = await mkTmpDir();
     try {
       const content = ['# タイトル', '', '## 概要', '', '本文です。', ''].join('\n');
@@ -2682,10 +2682,225 @@ async function runTests(browser) {
       const context = await browser.newContext();
       const page2 = await context.newPage();
       try {
-        await page2.setViewportSize({ width: 800, height: 800 });
+        await page2.setViewportSize({ width: 700, height: 800 });
         await page2.goto('file://' + path.join(dir, 'doc.html'));
+        const displays = await page2.evaluate(() => ({
+          nav: getComputedStyle(document.querySelector('.mdp-sidetoc')).display,
+          strip: getComputedStyle(document.querySelector('.mdp-sidetoc-strip')).display,
+          layout: getComputedStyle(document.querySelector('.mdp-layout')).display,
+        }));
+        assert.equal(displays.nav, 'none', '幅 700px で目次(nav)が非表示になっていません');
+        assert.equal(displays.strip, 'none', '幅 700px で帯が非表示になっていません');
+        assert.equal(displays.layout, 'block', '幅 700px でレイアウトが 1 列に戻っていません');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('幅 1400px: 目次は本文の左側にあり既定で開いている。« で畳むと帯になり本文の紙が広がる。帯をクリックすると再び開く', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = ['# タイトル', '', '## 概要', '', fillerParagraphs(5), '', '### 詳細', '', fillerParagraphs(5), ''].join(
+        '\n'
+      );
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.evaluate(() => window.__mdpreview.exportNormal());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
+      });
+
+      const context = await browser.newContext();
+      const page2 = await context.newPage();
+      try {
+        await page2.setViewportSize({ width: 1400, height: 800 });
+        await page2.goto('file://' + path.join(dir, 'doc.html'));
+
+        const measure = () =>
+          page2.evaluate(() => {
+            const nav = document.querySelector('.mdp-sidetoc');
+            const content = document.querySelector('.crossnote.markdown-preview');
+            const ul = nav.querySelector('ul');
+            const strip = nav.querySelector('.mdp-sidetoc-strip');
+            return {
+              navRight: nav.getBoundingClientRect().right,
+              navWidth: nav.getBoundingClientRect().width,
+              contentLeft: content.getBoundingClientRect().left,
+              contentWidth: content.getBoundingClientRect().width,
+              ulDisplay: getComputedStyle(ul).display,
+              stripDisplay: getComputedStyle(strip).display,
+            };
+          });
+
+        const opened = await measure();
+        assert.ok(
+          opened.navRight <= opened.contentLeft,
+          `既定で目次が本文の左側にありません(navRight=${opened.navRight}, contentLeft=${opened.contentLeft})`
+        );
+        assert.ok(
+          opened.navWidth >= 270 && opened.navWidth <= 290,
+          `既定で開いた目次の幅が想定と違います: ${opened.navWidth}`
+        );
+        assert.notEqual(opened.ulDisplay, 'none', '既定でリストが表示されていません');
+        assert.equal(opened.stripDisplay, 'none', '既定で帯が表示されています');
+
+        await page2.click('.mdp-sidetoc-close');
+        const collapsed = await measure();
+        assert.ok(
+          collapsed.navWidth >= 28 && collapsed.navWidth <= 44,
+          `畳んだ目次(帯)の幅が想定と違います: ${collapsed.navWidth}`
+        );
+        assert.equal(collapsed.ulDisplay, 'none', '畳んだのにリストが表示されたままです');
+        assert.notEqual(collapsed.stripDisplay, 'none', '畳んだのに帯が表示されていません');
+        assert.ok(
+          collapsed.contentWidth > opened.contentWidth + 100,
+          `畳んだのに本文の紙の幅が広がっていません(開: ${opened.contentWidth}, 畳: ${collapsed.contentWidth})`
+        );
+
+        await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+        await page2.screenshot({ path: path.join(SCREENSHOT_DIR, 'export-sidetoc-collapsed.png') });
+
+        await page2.click('.mdp-sidetoc-strip');
+        const reopened = await measure();
+        assert.ok(
+          reopened.navWidth >= 270 && reopened.navWidth <= 290,
+          `帯クリックで再び開いた目次の幅が想定と違います: ${reopened.navWidth}`
+        );
+        assert.notEqual(reopened.ulDisplay, 'none', '帯クリックで開いたのにリストが表示されていません');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('幅 1100px: 既定で畳まれている(帯を表示)。帯をクリックすると開く', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = ['# タイトル', '', '## 概要', '', '本文です。', ''].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.evaluate(() => window.__mdpreview.exportNormal());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
+      });
+
+      const context = await browser.newContext();
+      const page2 = await context.newPage();
+      try {
+        await page2.setViewportSize({ width: 1100, height: 800 });
+        await page2.goto('file://' + path.join(dir, 'doc.html'));
+
+        const measure = () =>
+          page2.evaluate(() => {
+            const nav = document.querySelector('.mdp-sidetoc');
+            const ul = nav.querySelector('ul');
+            const strip = nav.querySelector('.mdp-sidetoc-strip');
+            return {
+              navWidth: nav.getBoundingClientRect().width,
+              ulDisplay: getComputedStyle(ul).display,
+              stripDisplay: getComputedStyle(strip).display,
+            };
+          });
+
+        const collapsed = await measure();
+        assert.ok(
+          collapsed.navWidth >= 28 && collapsed.navWidth <= 44,
+          `幅 1100px で既定の目次(帯)の幅が想定と違います: ${collapsed.navWidth}`
+        );
+        assert.equal(collapsed.ulDisplay, 'none', '幅 1100px で既定のリストが表示されたままです');
+        assert.notEqual(collapsed.stripDisplay, 'none', '幅 1100px で既定の帯が表示されていません');
+
+        await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+        await page2.screenshot({ path: path.join(SCREENSHOT_DIR, 'export-sidetoc-1100.png') });
+
+        await page2.click('.mdp-sidetoc-strip');
+        const opened = await measure();
+        assert.ok(
+          opened.navWidth >= 270 && opened.navWidth <= 290,
+          `幅 1100px で帯クリックして開いた目次の幅が想定と違います: ${opened.navWidth}`
+        );
+        assert.notEqual(opened.ulDisplay, 'none', '幅 1100px で帯クリックしてもリストが表示されません');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('スクロールした状態で « / 帯を押しても、ページの位置が先頭へ飛ばない(幅 1400px・1100px)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = ['# タイトル', '', '## 概要', '', fillerParagraphs(40), '', '## まとめ', '', fillerParagraphs(40), ''].join(
+        '\n'
+      );
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.evaluate(() => window.__mdpreview.exportNormal());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
+      });
+
+      const context = await browser.newContext();
+      const page2 = await context.newPage();
+      try {
+        // 幅 1400px は既定で開いているので « → 帯、幅 1100px は既定で畳んでいるので 帯 → « の順に押す。
+        for (const [width, selectors] of [
+          [1400, ['.mdp-sidetoc-close', '.mdp-sidetoc-strip']],
+          [1100, ['.mdp-sidetoc-strip', '.mdp-sidetoc-close']],
+        ]) {
+          await page2.setViewportSize({ width, height: 800 });
+          await page2.goto('file://' + path.join(dir, 'doc.html'));
+          await page2.evaluate(() => window.scrollTo(0, 1500));
+          await waitFor(async () => (await page2.evaluate(() => window.scrollY)) === 1500, {
+            message: `幅 ${width}px で 1500px までスクロールできませんでした`,
+          });
+          for (const sel of selectors) {
+            await page2.click(sel);
+            await page2.waitForTimeout(200);
+            assert.equal(
+              await page2.evaluate(() => window.scrollY),
+              1500,
+              `幅 ${width}px で ${sel} を押したらページの位置が変わりました`
+            );
+          }
+        }
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('印刷では .mdp-sidetoc の computed display が none になる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      const content = ['# タイトル', '', '## 概要', '', '本文です。', ''].join('\n');
+      await fs.writeFile(path.join(dir, 'doc.md'), content, 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.evaluate(() => window.__mdpreview.exportNormal());
+        await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
+      });
+
+      const context = await browser.newContext();
+      const page2 = await context.newPage();
+      try {
+        await page2.setViewportSize({ width: 1400, height: 800 });
+        await page2.goto('file://' + path.join(dir, 'doc.html'));
+        await page2.emulateMedia({ media: 'print' });
         const display = await page2.evaluate(() => getComputedStyle(document.querySelector('.mdp-sidetoc')).display);
-        assert.equal(display, 'none', '幅 800px で目次が非表示になっていません');
+        assert.equal(display, 'none', '印刷時に目次が非表示になっていません');
       } finally {
         await context.close();
       }

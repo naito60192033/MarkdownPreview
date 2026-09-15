@@ -20,14 +20,21 @@
 // sideToc({ ignoredIds }。src/app.js が設定 sideToc と collectHeadingsFor の
 // 結果から組み立てて渡す)を渡し、かつ本文に h2〜h6(id あり・ignoredIds に無い
 // もの)が 1 つ以上あるときは、本文を次のように包み、サイドバーの目次(Qiita 風。
-// 画面右側に固定表示。「今読んでいる見出し」の強調は CSS の :target-current だけで
-// 行い JavaScript は使わない)を付ける。sidetoc.css は style.css より前に追加する
-// (style.css で上書きできるように)。
+// 画面左側に固定表示。「«」ボタンまたは畳んだときの帯をクリックすると開閉する
+// (隠しチェックボックス + CSS だけで実現。JavaScript は使わない)。「今読んでいる
+// 見出し」の強調も CSS の :target-current だけで行う)を付ける。sidetoc.css は
+// style.css より前に追加する(style.css で上書きできるように)。
 //   <body><div class="mdp-layout">
-//     <div class="crossnote markdown-preview">本文</div>
+//     <input type="checkbox" id="mdp-sidetoc-toggle" class="mdp-sidetoc-toggle">
 //     <nav class="mdp-sidetoc" aria-label="目次">
-//       <div class="mdp-sidetoc-title">目次</div><ul>…</ul>
+//       <div class="mdp-sidetoc-head">
+//         <span class="mdp-sidetoc-title">目次</span>
+//         <label for="mdp-sidetoc-toggle" class="mdp-sidetoc-close">«</label>
+//       </div>
+//       <ul>…</ul>
+//       <label for="mdp-sidetoc-toggle" class="mdp-sidetoc-strip">»目次(縦書き)</label>
 //     </nav>
+//     <div class="crossnote markdown-preview">本文</div>
 //   </div></body></html>
 //
 // 書き込みは writeByPath(root, path, html, {})(競合チェックなし。常に上書き)。
@@ -151,25 +158,53 @@ function collectSideTocItems(clone, ignoredIds) {
 }
 
 // sideToc が指定され、かつ本文に対象の見出しが 1 つ以上あるときだけ、
-// `.mdp-layout` で本文と `<nav class="mdp-sidetoc">` を包んだ body HTML を作る。
-// それ以外はクローンの outerHTML をそのまま返す(レイアウト用の要素も付けない)。
+// `.mdp-layout` で本文と `<nav class="mdp-sidetoc">`(折りたたみ用の隠し
+// チェックボックス付き)を包んだ body HTML を作る。それ以外はクローンの
+// outerHTML をそのまま返す(レイアウト用の要素も付けない)。
 function buildExportBody(doc, clone, sideToc) {
   const items = sideToc ? collectSideTocItems(clone, sideToc.ignoredIds) : [];
   if (!items.length) return { bodyHtml: clone.outerHTML, sideTocCss: '' };
 
+  // 開閉の状態を持つだけの隠しチェックボックス(JavaScript 不使用で開閉するため)。
+  const toggle = doc.createElement('input');
+  toggle.type = 'checkbox';
+  toggle.id = 'mdp-sidetoc-toggle';
+  toggle.className = 'mdp-sidetoc-toggle';
+  toggle.setAttribute('aria-label', '目次の開閉');
+
   const nav = doc.createElement('nav');
   nav.className = 'mdp-sidetoc';
   nav.setAttribute('aria-label', '目次');
-  const title = doc.createElement('div');
+
+  const head = doc.createElement('div');
+  head.className = 'mdp-sidetoc-head';
+  const title = doc.createElement('span');
   title.className = 'mdp-sidetoc-title';
   title.textContent = '目次';
-  nav.appendChild(title);
+  const closeLabel = doc.createElement('label');
+  closeLabel.setAttribute('for', 'mdp-sidetoc-toggle');
+  closeLabel.className = 'mdp-sidetoc-close';
+  closeLabel.title = '目次を畳む';
+  closeLabel.textContent = '«';
+  head.appendChild(title);
+  head.appendChild(closeLabel);
+  nav.appendChild(head);
+
   nav.insertAdjacentHTML('beforeend', renderSideTocHtml(items));
+
+  // 畳んだときだけ見える帯。押すと開く。
+  const stripLabel = doc.createElement('label');
+  stripLabel.setAttribute('for', 'mdp-sidetoc-toggle');
+  stripLabel.className = 'mdp-sidetoc-strip';
+  stripLabel.title = '目次を開く';
+  stripLabel.innerHTML = '<span>»</span><span class="mdp-sidetoc-strip-text">目次</span>';
+  nav.appendChild(stripLabel);
 
   const layout = doc.createElement('div');
   layout.className = 'mdp-layout';
-  layout.appendChild(clone);
+  layout.appendChild(toggle);
   layout.appendChild(nav);
+  layout.appendChild(clone);
 
   return { bodyHtml: layout.outerHTML, sideTocCss: sidetocCss };
 }
