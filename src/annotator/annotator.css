@@ -229,7 +229,8 @@
   cursor: crosshair;
 }
 
-.annotator-svg[data-tool="arrow"] {
+.annotator-svg[data-tool="arrow"],
+.annotator-svg[data-tool="elbow"] {
   cursor: crosshair;
 }
 
@@ -244,6 +245,14 @@
   cursor: move;
 }
 
+/* カギ線(elbow)の当たり判定は <polyline>(fill を持たない図形)なので、折れ点で
+   閉じた内側の暗黙の塗り領域までクリックに反応してしまわないよう、線(stroke)だけを
+   判定対象にする */
+.annotator-hit-area[data-routing="elbow"] {
+  fill: none;
+  pointer-events: stroke;
+}
+
 .annotator-handle {
   fill: #fff;
   stroke: #1e88e5;
@@ -256,12 +265,40 @@
   stroke: #7a5200;
 }
 
+/* カギ線の中央の線分を動かすハンドル(Excelの黄色いハンドルと同じ見た目) */
+.annotator-handle-mid {
+  fill: #ffd600;
+  stroke: #8a6d00;
+}
+
 .annotator-selection-outline {
   fill: none;
   stroke: #1e88e5;
   stroke-width: 1.5;
   stroke-dasharray: 4 3;
   pointer-events: none;
+}
+
+/* 矢印・カギ線ツールでの描画中/端点ドラッグ中/hover 中に、つながる予定の枠を
+   強調する接続ヒント(エディタ専用。出力には含まれない) */
+.annotator-connect-target {
+  fill: none;
+  stroke: #1e88e5;
+  stroke-width: 2;
+  stroke-dasharray: 3 3;
+  pointer-events: none;
+}
+
+/* カギ線のときだけ表示する、枠の4辺の中点の丸(つながる予定の辺を強調する) */
+.annotator-connect-point {
+  fill: #fff;
+  stroke: #1e88e5;
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.annotator-connect-point--active {
+  fill: #1e88e5;
 }
 
 .annotator-crop-boundary {
