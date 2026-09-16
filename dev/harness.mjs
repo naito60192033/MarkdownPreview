@@ -21,7 +21,8 @@
 //  10. (セクション26)編集画面の不具合修正の確認: 「エディタのみ」表示でエディタが
 //      #workArea 全幅になりプレビューが隠れる。サイドバー表示中でも境界のドラッグが
 //      サイドバー幅分ずれない。境界をプレビュー側までドラッグでき、サイドバー開閉後も
-//      比率が保たれる。エディタのスクロール・入力でプレビューがずれ続けない
+//      比率が保たれる。エディタのスクロール・入力でプレビューがずれ続けない。
+//      画像のある md に入力しても、画像が消えずプレビューの本文が動かない(ちらつかない)
 //  11. (セクション27)ファイル操作一式(新規 md・新規フォルダ・名前の変更・削除)の確認:
 //      「＋ md」で開いている md のフォルダに 0 バイトの md ができて開かれ、ツリーに出る。
 //      フォルダ付きの入力(sub2/x)で途中のフォルダも作る。同名(大文字小文字違いを含む)・
@@ -4054,6 +4055,111 @@ async function runTests(browser) {
         );
 
         printConsoleErrors(consoleErrors, 'スクロール同期(末尾の縦長画像)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('画像のある md に入力しても、プレビューの画像が消えず本文の位置も動かない(ちらつかない)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'images'));
+      let md = '';
+      for (let i = 0; i < 60; i++) {
+        md += `## 見出し${i}\n\n本文${i} の段落です。いくらか長めの文章を書いておきます。\n\n`;
+        if (i % 6 === 3) {
+          await fs.writeFile(path.join(dir, 'images', `p${i}.png`), makeSolidPng(400, 240, [30 + i, 120, 90]));
+          md += `![p${i}](images/p${i}.png)\n\n`;
+        }
+      }
+      await fs.writeFile(path.join(dir, 'doc.md'), md, 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await sleep(800); // 初回描画と画像の読み込みの完了待ち
+
+        // 前提チェック: プレビューに画像が並んでいて、すべて読み込めていること
+        // (画像が無いと、この検査は何も見ていないことになる)。
+        const imageCount = await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          const imgs = Array.from(doc.querySelectorAll('#mdpreview-root img'));
+          return { total: imgs.length, loaded: imgs.filter((im) => im.complete && im.naturalWidth > 0).length };
+        });
+        assert.ok(imageCount.total >= 8, `前提条件が崩れています: プレビューの画像が少なすぎます(${imageCount.total}枚)`);
+        assert.equal(imageCount.loaded, imageCount.total, '初回描画の時点で読み込めていない画像があります');
+
+        // エディタを中ほどまでスクロールし、見えている行の中ほどにカーソルを置く。
+        await page.evaluate(() => {
+          document.querySelector('.cm-scroller').scrollTop = 1200;
+        });
+        await sleep(500);
+        const box = await page.evaluate(() => {
+          const r = document.querySelector('.cm-scroller').getBoundingClientRect();
+          return { x: r.left + r.width * 0.6, y: r.top + r.height * 0.4 };
+        });
+        await page.mouse.click(box.x, box.y);
+        await page.keyboard.press('End');
+        await sleep(500);
+
+        // 1フレームごとに、(1)読み込めていない画像の数 (2)プレビュー上端に見えている
+        // 見出しの画面位置、を記録する。スクロールしていないのに見出しの位置が変わったら
+        // 「本文が動いた」= ちらつき。カーソルは見えている見出しより下の行にあるため、
+        // 入力で見出しが動くことは本来ない。
+        await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          const se = doc.scrollingElement;
+          const log = (window.__flicker = { frames: 0, blankFrames: 0, jumps: [], stop: false });
+          let prev = null;
+          function tick() {
+            const heading = Array.from(doc.querySelectorAll('h2')).find((el) => el.getBoundingClientRect().top > 0);
+            const imgs = Array.from(doc.querySelectorAll('#mdpreview-root img'));
+            const blank = imgs.filter((im) => !im.getAttribute('src') || !im.complete || im.naturalWidth === 0).length;
+            const cur = {
+              id: heading ? heading.id : null,
+              top: heading ? Math.round(heading.getBoundingClientRect().top) : null,
+              scrollTop: se.scrollTop,
+            };
+            log.frames++;
+            if (blank > 0) log.blankFrames++;
+            if (prev && prev.scrollTop === cur.scrollTop && (prev.id !== cur.id || prev.top !== cur.top)) {
+              log.jumps.push(`${prev.id}@${prev.top} -> ${cur.id}@${cur.top}(読み込めていない画像 ${blank} 枚)`);
+            }
+            prev = cur;
+            if (!log.stop) requestAnimationFrame(tick);
+          }
+          requestAnimationFrame(tick);
+        });
+
+        // 人が打つくらいの速さで入力する(再描画のデバウンス 300ms を何度かまたぐ)。
+        const typed = 'abcdefghij';
+        for (let i = 0; i < typed.length; i++) {
+          await page.keyboard.type(typed[i]);
+          await sleep(i % 3 === 2 ? 450 : 120);
+        }
+        await sleep(800);
+
+        const log = await page.evaluate(() => {
+          window.__flicker.stop = true;
+          return window.__flicker;
+        });
+
+        // 入力が本当にプレビューへ反映されたか(=記録中に再描画が走ったか)を確かめる。
+        const previewText = await getPreviewText(page);
+        assert.ok(previewText.includes(typed), '入力した文字がプレビューに反映されていません(再描画が走っていない疑い)');
+        assert.ok(log.frames > 30, `記録できたフレームが少なすぎます: ${log.frames}`);
+        assert.equal(
+          log.blankFrames,
+          0,
+          `入力中に画像が消えたフレームがあります: ${log.blankFrames}/${log.frames} フレーム`
+        );
+        assert.equal(
+          log.jumps.length,
+          0,
+          `スクロールしていないのにプレビューの本文が動きました(${log.jumps.length}回): ${log.jumps.slice(0, 5).join(' / ')}`
+        );
+
+        printConsoleErrors(consoleErrors, '入力中のちらつき');
         assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
       });
     } finally {
