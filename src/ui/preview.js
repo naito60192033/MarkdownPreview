@@ -216,6 +216,21 @@ export function createPreview({ iframe, onOpenMdLink }) {
     }
   }
 
+  // 描画のたびに本文を丸ごと入れ直すため、画像の src が決まるまで(resolveImages の
+  // ファイル確認を待つ間)画像の高さが 0 になり、その下の本文が上下に動いてちらつく。
+  // 前回までに読んだ画像はキャッシュ済みの blob URL を同期で入れておく(同じ URL の
+  // 画像は読み込み済みなので、差し込んだその場で元の大きさになる)。ファイルが
+  // 変わっていれば、この後の resolveImages が新しい blob URL に差し替える。
+  function applyCachedImageSrc() {
+    for (const img of wrapperEl.querySelectorAll('img[data-src]')) {
+      const raw = img.getAttribute('data-src');
+      if (!raw) continue;
+      const resolved = joinPath(currentMdDir, urlToPath(raw));
+      const cached = resolved == null ? null : imageCache.get(resolved);
+      if (cached) img.src = cached.blobUrl;
+    }
+  }
+
   async function resolveImages(mySeq) {
     if (!currentRoot) return;
     const imgs = Array.from(wrapperEl.querySelectorAll('img[data-src]'));
@@ -232,7 +247,7 @@ export function createPreview({ iframe, onOpenMdLink }) {
         const file = await fh.getFile();
         const cached = imageCache.get(resolved);
         if (cached && cached.lastModified === file.lastModified) {
-          img.src = cached.blobUrl;
+          if (img.getAttribute('src') !== cached.blobUrl) img.src = cached.blobUrl;
           continue;
         }
         const url = URL.createObjectURL(file);
@@ -269,6 +284,7 @@ export function createPreview({ iframe, onOpenMdLink }) {
     moveImageSrcToDataSrc(template.content);
     wrapperEl.innerHTML = '';
     wrapperEl.appendChild(template.content);
+    applyCachedImageSrc();
     // innerHTML を丸ごと入れ直した直後の本文に対して適用する(オフのときの
     // 「外す」処理が要らないのはこのため。src/render/outline.js 参照)。
     applyOutline(wrapperEl, outlineOptions);
