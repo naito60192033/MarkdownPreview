@@ -7,7 +7,7 @@ import footnote from 'markdown-it-footnote';
 import taskLists from 'markdown-it-task-lists';
 import attrs from 'markdown-it-attrs';
 import { headingIdPlugin } from '../src/render/slug.js';
-import { toc, tocPlugin, collectHeadings, updateTocBlocks } from '../src/render/toc.js';
+import { toc, tocPlugin, collectHeadings, updateTocBlocks, renderSideTocHtml } from '../src/render/toc.js';
 
 // アプリ本体と同じ順番でプラグインを登録する。
 function makeMd(tocOptions) {
@@ -158,4 +158,45 @@ test('updateTocBlocks: コードブロック内は無視する', () => {
   const src = '```\n<!-- @import "[TOC]" {} -->\n```\n\ntext\n';
   const out = updateTocBlocks(src, headings);
   assert.equal(out, src);
+});
+
+// ---- renderSideTocHtml(HTML 出力のサイドバー目次) ----------------------------
+
+test('renderSideTocHtml: 入れ子(h2>h3>h4)と、より浅い見出しへ戻る兄弟を組み立てる', () => {
+  const items = [
+    { level: 2, id: 'a', labelHtml: 'A' },
+    { level: 3, id: 'b', labelHtml: 'B' },
+    { level: 4, id: 'c', labelHtml: 'C' },
+    { level: 2, id: 'd', labelHtml: 'D' },
+  ];
+  assert.equal(
+    renderSideTocHtml(items),
+    '<ul><li><a href="#a">A</a><ul><li><a href="#b">B</a><ul><li><a href="#c">C</a></li></ul></li></ul></li>' +
+      '<li><a href="#d">D</a></li></ul>',
+  );
+});
+
+test('renderSideTocHtml: レベルが飛んでいても(h2→h4)そのまま子として扱う', () => {
+  const items = [
+    { level: 2, id: 'a', labelHtml: 'A' },
+    { level: 4, id: 'b', labelHtml: 'B' },
+    { level: 2, id: 'c', labelHtml: 'C' },
+  ];
+  assert.equal(
+    renderSideTocHtml(items),
+    '<ul><li><a href="#a">A</a><ul><li><a href="#b">B</a></li></ul></li><li><a href="#c">C</a></li></ul>',
+  );
+});
+
+test('renderSideTocHtml: href の id は escapeHtmlAttr でエスケープする(labelHtml はそのまま)', () => {
+  const items = [{ level: 2, id: 'a&b<c>"d', labelHtml: '<span class="mdp-heading-number">1.</span>見出し' }];
+  assert.equal(
+    renderSideTocHtml(items),
+    '<ul><li><a href="#a&amp;b&lt;c&gt;&quot;d"><span class="mdp-heading-number">1.</span>見出し</a></li></ul>',
+  );
+});
+
+test('renderSideTocHtml: 空配列なら空文字', () => {
+  assert.equal(renderSideTocHtml([]), '');
+  assert.equal(renderSideTocHtml(), '');
 });

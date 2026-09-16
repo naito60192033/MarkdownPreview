@@ -11,6 +11,8 @@
 // - updateTocBlocks(text, headings): MPE のソース書き込み型 TOC
 //   (`<!-- @import "[TOC]" {...} -->` + `<!-- code_chunk_output -->` ブロック)を
 //   再生成する
+// - renderSideTocHtml(items): HTML 出力のサイドバー目次(src/export.js)用の、
+//   ネストした <ul> を組み立てる純関数(項目の HTML は呼び出し側が用意する)
 
 import { HeadingIdGenerator } from './slug.js';
 
@@ -140,27 +142,47 @@ function addCoreRuleAfter(md, afterName, ruleName, fn) {
   }
 }
 
-// 見出しの配列(親候補より後ろにある、より深いレベルの見出しをすべて子とみなす)
-// からネストした <ul>/<ol> の HTML を組み立てる。
-function renderTocHtml(headings, opt, md) {
-  const tag = opt.ordered ? 'ol' : 'ul';
+// 見出し(またはそれに準じる項目)の配列(親候補より後ろにある、より深いレベルの
+// ものをすべて子とみなす)からネストした <ul>/<ol> の HTML を組み立てる共通処理。
+// 項目 1 つぶんの HTML(<li> の中身)の作り方だけを itemHtmlFor に渡してもらう。
+function buildNestedListHtml(items, tag, itemHtmlFor) {
   const build = (slice) => {
     let html = '';
     let i = 0;
     while (i < slice.length) {
-      const heading = slice[i];
+      const item = slice[i];
       let j = i + 1;
-      while (j < slice.length && slice[j].level > heading.level) j++;
+      while (j < slice.length && slice[j].level > item.level) j++;
       const children = slice.slice(i + 1, j);
-      const label = md.renderInline(sanitizeContent(heading.content.trim()), {});
-      const itemHtml = opt.ignoreLink ? label : `<a href="#${escapeHtmlAttr(heading.id)}">${label}</a>`;
       const inner = children.length ? build(children) : '';
-      html += `<li>${itemHtml}${inner}</li>`;
+      html += `<li>${itemHtmlFor(item)}${inner}</li>`;
       i = j;
     }
     return `<${tag}>${html}</${tag}>`;
   };
-  return build(headings);
+  return build(items);
+}
+
+// 見出しの配列からネストした <ul>/<ol> の HTML を組み立てる([TOC] 用)。
+function renderTocHtml(headings, opt, md) {
+  const tag = opt.ordered ? 'ol' : 'ul';
+  return buildNestedListHtml(headings, tag, (heading) => {
+    const label = md.renderInline(sanitizeContent(heading.content.trim()), {});
+    return opt.ignoreLink ? label : `<a href="#${escapeHtmlAttr(heading.id)}">${label}</a>`;
+  });
+}
+
+/**
+ * HTML 出力のサイドバー目次(src/export.js)用に、ネストした <ul> の HTML を組み立てる。
+ * DOM に依存しない純関数。ラベルの HTML(見出しの連番 span や脚注参照の除去など)は
+ * 呼び出し側が組み立てて渡す(labelHtml。エスケープ済みである前提)。
+ *
+ * @param {{level: number, id: string, labelHtml: string}[]} items 文書順の項目一覧
+ * @returns {string} 空配列なら空文字
+ */
+export function renderSideTocHtml(items) {
+  if (!items || !items.length) return '';
+  return buildNestedListHtml(items, 'ul', (item) => `<a href="#${escapeHtmlAttr(item.id)}">${item.labelHtml}</a>`);
 }
 
 /**

@@ -19,6 +19,9 @@ export const DEFAULT_SETTINGS = {
   headingNumbers: false,
   headingNumberDepth: 6, // 番号を付ける最も深い見出しレベル(2〜6。2 = h2 のみ)
   headingIndent: false,
+  // HTML 出力の画面左側に、見出し(h2〜h6)のサイドバー目次を付けるかどうか
+  // (既定オン。src/export.js。アプリ内のプレビューには出さない)。
+  sideToc: true,
   // アラート(> [!NOTE] 等)のタイトル表記(src/render/alerts.js の既定値と同じ)
   alertTitles: {
     note: 'Note',
