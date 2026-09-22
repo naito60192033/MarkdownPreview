@@ -20,6 +20,7 @@ import { createNotifyBar } from './ui/notify-bar.js';
 import { createStatusBar } from './ui/statusbar.js';
 import { createResizer } from './ui/resizer.js';
 import { createImageEdit } from './ui/image-edit.js';
+import { attachDropZone } from './ui/drop-zone.js';
 import { createWatcher } from './watch.js';
 import { createScrollSync } from './scroll-sync.js';
 import { attachImagePasteAndDrop } from './paste.js';
@@ -47,6 +48,7 @@ import {
 import { rememberRoot, reconnectRoot, checkRootPermission } from './fs/recent-roots.js';
 import { dirname, basename } from './fs/paths.js';
 import { validateEntryName, validateCreatePath, ensureMdExtension } from './fs/names.js';
+import { createSingleFileRoot } from './fs/single-file.js';
 
 const LAST_ROOT_ID_KEY = 'mdpreview.lastRootId';
 const VIEW_MODE_KEY = 'mdpreview.viewMode';
@@ -139,6 +141,9 @@ function cacheEls() {
     exportStandaloneBtn: document.getElementById('exportStandaloneBtn'),
     settingsBtn: document.getElementById('settingsBtn'),
     switchFolderBtn: document.getElementById('switchFolderBtn'),
+
+    dropOverlay: document.getElementById('dropOverlay'),
+    singleFileOpenFolderBtn: document.getElementById('singleFileOpenFolderBtn'),
 
     notifyBar: document.getElementById('notifyBar'),
     notifyBarText: document.getElementById('notifyBarText'),
@@ -369,7 +374,9 @@ async function openFile(path, { updateHash = true } = {}) {
   tree.setActivePath(path);
   syncDirtyUi();
   if (updateHash) setHashFile(path);
-  setLastFile(state.rootId, path);
+  // 単体プレビュー(state.rootId === null)では localStorage に何も残さない
+  // (フォルダを持たないため「最後に開いたファイル」の復元対象にできない)。
+  if (state.rootId != null) setLastFile(state.rootId, path);
   await scheduleRender(true);
   scrollSync.attachPreviewScrollListener();
   return true;
@@ -817,6 +824,14 @@ function markSaved(lastModified, savedLf) {
 }
 
 async function doSave() {
+  // 単体プレビューでは、書き込みの許可をユーザー操作の直後(他の await より前)に
+  // 確認する(Chrome はそうでないと許可ダイアログを出さない)。
+  if (state.root && state.root.isSingleFile) {
+    if (!(await state.root.ensureWritePermission())) {
+      statusbar.setMessage('このファイルへの書き込みが許可されませんでした', { isError: true });
+      return;
+    }
+  }
   if (!state.root || !state.currentPath) return;
   if (state.fileOpBusy) {
     statusbar.setMessage('ファイル操作中です', { isError: true });
@@ -888,6 +903,10 @@ async function collectIgnoredHeadingIds(text) {
 }
 
 async function doExport(kind) {
+  if (state.root && state.root.isSingleFile) {
+    statusbar.setMessage('HTML 出力はフォルダを開いているときだけ使えます', { isError: true });
+    return;
+  }
   closeExportMenu();
   if (!state.root || !state.currentPath) return;
   await scheduleRender(true); // 最新の内容で出力する
@@ -938,6 +957,16 @@ async function doExportStandardCss() {
   }
 }
 
+// ---------- 単体プレビュー(フォルダを開かずに md 1つだけを表示する)の画面状態 ----------
+// #appScreen に single-file クラスを付け外しし、それに連動して HTML 出力(できない)
+// ボタンの disabled・title を切り替える。サイドバー等の表示切替は CSS(#appScreen.single-file
+// セレクタ)側で行う。
+function setSingleFileMode(on) {
+  els.appScreen.classList.toggle('single-file', on);
+  els.exportBtn.disabled = on;
+  els.exportBtn.title = on ? 'HTML 出力はフォルダを開いているときだけ使えます' : 'HTML 出力';
+}
+
 // ---------- ワークスペースの切り替え ----------
 async function activateRoot(handle, rootId) {
   state.root = handle;
@@ -948,6 +977,7 @@ async function activateRoot(handle, rootId) {
     /* noop */
   }
   showAppScreen();
+  setSingleFileMode(false);
   els.workspaceName.textContent = handle.name;
   await tree.setRoot(handle);
   watcher.start();
@@ -960,11 +990,10 @@ async function activateRoot(handle, rootId) {
   }
 }
 
-async function pickFolderFlow() {
-  if (!('showDirectoryPicker' in window)) {
-    throw new Error('このブラウザは File System Access API に対応していません。Google Chrome 122 以降で開いてください。');
-  }
-  const handle = await window.showDirectoryPicker({ mode: 'readwrite', id: 'mdpreview-root' });
+// 権限確認・最近使ったフォルダへの記憶・ワークスペースの有効化までの一連の流れ。
+// フォルダ選択ダイアログ(pickFolderFlow)・ドロップされたフォルダ(openDroppedHandles)の
+// 両方から使う。
+async function openFolderHandle(handle) {
   if (!(await ensurePermission(handle))) {
     throw new Error('書き込み許可が得られませんでした');
   }
@@ -972,10 +1001,61 @@ async function pickFolderFlow() {
   await activateRoot(handle, rootId);
 }
 
+async function pickFolderFlow() {
+  if (!('showDirectoryPicker' in window)) {
+    throw new Error('このブラウザは File System Access API に対応していません。Google Chrome 122 以降で開いてください。');
+  }
+  const handle = await window.showDirectoryPicker({ mode: 'readwrite', id: 'mdpreview-root' });
+  await openFolderHandle(handle);
+}
+
 async function openRecentFlow(id) {
   const handle = await reconnectRoot(id);
   if (!handle) throw new Error('許可が得られませんでした');
   await activateRoot(handle, id);
+}
+
+// ---------- 単体プレビュー(ドロップされた md 1つだけをワークスペース無しで開く) ----------
+// createSingleFileRoot() で「その md だけが入ったフォルダ」を装い、以降は通常の
+// ワークスペースと同じ経路(openFile / doSave / watcher)で動かす。rememberRoot・
+// setLastFile・setHashFile・tree.setRoot は呼ばない(IndexedDB にも localStorage にも
+// 残さない。次回起動は今までどおり前回のワークスペースに戻る)。
+async function openSingleFile(fileHandle) {
+  state.root = createSingleFileRoot(fileHandle);
+  state.rootId = null;
+  showAppScreen();
+  setSingleFileMode(true);
+  watcher.start();
+  await loadCssAndWatch();
+  await openFile(state.root.fileName, { updateHash: false });
+}
+
+// ---------- ドロップされたハンドルを受けての処理 ----------
+// src/ui/drop-zone.js は e.dataTransfer.items からハンドルを取り出すところまでを担当し、
+// 複数落とされたときの優先順位判定(フォルダ優先・無ければ最初の md)と実際に開く処理は
+// ここで行う。E2E テスト用フックとしても公開する(本物の DragEvent は
+// dataTransfer.items を組み立てられないため、ここが試験の継ぎ目になる)。
+async function openDroppedHandles(handles) {
+  const list = (handles || []).filter(Boolean);
+  const dir = list.find((h) => h.kind === 'directory');
+  const md = list.find((h) => h.kind === 'file' && /\.(md|markdown)$/i.test(h.name || ''));
+  const target = dir || md;
+  if (!target) {
+    statusbar.setMessage('md ファイルかフォルダをドロップしてください', { isError: true });
+    return;
+  }
+  if (!(await confirmDiscardIfDirty())) return;
+  try {
+    if (target.kind === 'directory') {
+      await openFolderHandle(target);
+    } else {
+      await openSingleFile(target);
+    }
+  } catch (e) {
+    if (e && e.name !== 'AbortError') {
+      statusbar.setMessage('開けませんでした: ' + ((e && e.message) || String(e)), { isError: true });
+    }
+  }
 }
 
 // ---------- 表示モード ----------
@@ -1074,6 +1154,19 @@ function bindStaticUi() {
     } catch (e) {
       if (e && e.name !== 'AbortError') {
         statusbar.setMessage('フォルダの切り替えに失敗しました: ' + ((e && e.message) || String(e)), { isError: true });
+      }
+    }
+  });
+
+  // 単体プレビューの帯の「フォルダを開く」。押すと通常のワークスペースへ切り替わる
+  // (activateRoot 側で single-file クラスを外す)。
+  els.singleFileOpenFolderBtn.addEventListener('click', async () => {
+    if (!(await confirmDiscardIfDirty())) return;
+    try {
+      await pickFolderFlow();
+    } catch (e) {
+      if (e && e.name !== 'AbortError') {
+        statusbar.setMessage('フォルダを開けませんでした: ' + ((e && e.message) || String(e)), { isError: true });
       }
     }
   });
@@ -1253,6 +1346,14 @@ async function setup() {
     onOpenRecent: openRecentFlow,
   });
 
+  // 起動画面・メイン画面のどちらでも受け付ける(window に配線するため画面切替の
+  // 前後関係を気にしなくてよい)。
+  attachDropZone({
+    overlayEl: els.dropOverlay,
+    onDropHandles: (handles) => openDroppedHandles(handles),
+    setStatusMessage: (text, opts) => statusbar.setMessage(text, opts),
+  });
+
   bindStaticUi();
   syncDirtyUi();
 
@@ -1280,6 +1381,10 @@ function exposeTestHooks() {
     pickFolder: () => pickFolderFlow(),
     openRecent: (id) => openRecentFlow(id),
     openFile: (path) => openFile(path),
+    // ドロップされたハンドルを受けての処理(E2E 用の試験の継ぎ目)。本物の
+    // DragEvent は dataTransfer.items を組み立てられないため、テストは
+    // window.showDirectoryPicker() 等で得た本物相当のハンドルを直接渡す。
+    openDroppedHandles: (handles) => openDroppedHandles(handles),
     save: () => doSave(),
     reloadCurrentFile: () => reloadCurrentFile(),
     exportNormal: () => doExport('normal'),

@@ -36,6 +36,15 @@
 //      「完全に削除」の文言・フォルダの件数(md・その他のファイル・フォルダ)・未保存の警告が
 //      確認文に出て、開いていた md を削除すると閉じる。F2/Delete キーでも同じ操作ができる。
 //      ⟳ の再読込で外部変更が反映され、開いていたフォルダは開いたまま
+//  12. (セクション28)md / フォルダのドラッグ&ドロップと単体プレビュー: フォルダの
+//      ハンドルを openDroppedHandles に渡すとワークスペースとして開いてツリーが出る。
+//      md のハンドルを渡すと単体プレビュー(#appScreen に single-file、サイドバー非表示、
+//      #singleFileBar 表示、本文がプレビューに出る、#exportBtn が disabled)になる。
+//      単体プレビューで内容を変えて保存するとディスク上のファイルが実際に書き変わる。
+//      「フォルダを開く」で通常のワークスペースに戻れ single-file クラスが外れる。
+//      本物の DragEvent は dataTransfer.items(getAsFileSystemHandle)を組み立てられない
+//      ため、window.showDirectoryPicker() 等で得た本物相当のハンドルを openDroppedHandles に
+//      直接渡して検証する(src/ui/drop-zone.js のイベント配線そのものはこのテストの対象外)。
 // すべてのテストでコンソールエラーが0件であることを確認する。
 //
 // 前提: 開発コンテナでは先に `bash dev/setup-container.sh` を1度実行しておく。
@@ -4680,6 +4689,150 @@ async function runTests(browser) {
         );
 
         printConsoleErrors(consoleErrors, 'ツリーの再読込(⟳)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n28) md / フォルダのドラッグ&ドロップと単体プレビュー');
+  await test('フォルダのハンドルを openDroppedHandles に渡すと、ワークスペースとして開いてツリーが出る', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'a.md'), '# a\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await page.evaluate(async () => {
+          const root = await window.showDirectoryPicker();
+          await window.__mdpreview.openDroppedHandles([root]);
+        });
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).hasRoot, {
+          message: 'ドロップしたフォルダがワークスペースとして開きませんでした',
+        });
+        await waitFor(
+          async () =>
+            page.evaluate(() => !!Array.from(document.querySelectorAll('#tree .tree-file-row')).find((r) => r.textContent.trim() === 'a.md')),
+          { message: 'ツリーに a.md が出ていません' }
+        );
+        assert.equal(
+          await page.evaluate(() => document.getElementById('appScreen').classList.contains('single-file')),
+          false,
+          'フォルダを開いたのに single-file クラスが付いています'
+        );
+
+        printConsoleErrors(consoleErrors, 'ドロップ(フォルダ)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('md のハンドルを openDroppedHandles に渡すと単体プレビューになる(サイドバー非表示・帯表示・本文描画・HTML出力が disabled)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'memo.md'), '# こんにちは\n\n単体プレビューの本文です。\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await page.evaluate(async () => {
+          const root = await window.showDirectoryPicker();
+          const fh = await root.getFileHandle('memo.md');
+          await window.__mdpreview.openDroppedHandles([fh]);
+        });
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'memo.md', {
+          message: '単体プレビューで memo.md が開きませんでした',
+        });
+
+        const info = await page.evaluate(() => ({
+          singleFileClass: document.getElementById('appScreen').classList.contains('single-file'),
+          sidebarDisplay: getComputedStyle(document.getElementById('sidebar')).display,
+          barDisplay: getComputedStyle(document.getElementById('singleFileBar')).display,
+          exportDisabled: document.getElementById('exportBtn').disabled,
+        }));
+        assert.equal(info.singleFileClass, true, '#appScreen に single-file クラスが付いていません');
+        assert.equal(info.sidebarDisplay, 'none', 'サイドバーが表示されています');
+        assert.equal(info.barDisplay, 'flex', '#singleFileBar が表示されていません');
+        assert.equal(info.exportDisabled, true, '#exportBtn が disabled になっていません');
+
+        const previewText = await getPreviewText(page);
+        assert.ok(previewText.includes('こんにちは'), '本文がプレビューに出ていません: ' + previewText);
+
+        printConsoleErrors(consoleErrors, 'ドロップ(単体プレビュー)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('単体プレビューで内容を変えて保存すると、ディスク上のファイルが実際に書き変わる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'memo.md'), '# 元の内容\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await page.evaluate(async () => {
+          const root = await window.showDirectoryPicker();
+          const fh = await root.getFileHandle('memo.md');
+          await window.__mdpreview.openDroppedHandles([fh]);
+        });
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'memo.md');
+
+        await page.evaluate(() => window.__mdpreview.setEditorText('# 書き換え後の内容\n'));
+        await page.evaluate(() => window.__mdpreview.save());
+        await waitFor(async () => !(await page.evaluate(() => window.__mdpreview.getState())).dirty, {
+          message: '保存後も未保存のままです',
+        });
+
+        const diskText = await fs.readFile(path.join(dir, 'memo.md'), 'utf8');
+        assert.ok(diskText.includes('書き換え後の内容'), 'ディスク上のファイルが書き変わっていません: ' + diskText);
+
+        printConsoleErrors(consoleErrors, '単体プレビューの保存');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('単体プレビューで「フォルダを開く」を押すと通常のワークスペースに戻り、single-file クラスが外れる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'memo.md'), '# メモ\n', 'utf8');
+
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await page.evaluate(async () => {
+          const root = await window.showDirectoryPicker();
+          const fh = await root.getFileHandle('memo.md');
+          await window.__mdpreview.openDroppedHandles([fh]);
+        });
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'memo.md');
+        assert.equal(
+          await page.evaluate(() => document.getElementById('appScreen').classList.contains('single-file')),
+          true,
+          '単体プレビューに切り替わっていません'
+        );
+
+        await page.click('#singleFileOpenFolderBtn');
+        await waitFor(
+          async () => !(await page.evaluate(() => document.getElementById('appScreen').classList.contains('single-file'))),
+          { message: 'フォルダを開いた後も single-file クラスが残っています' }
+        );
+
+        assert.equal(
+          await page.evaluate(() => getComputedStyle(document.getElementById('sidebar')).display),
+          'flex',
+          'サイドバーが表示されていません'
+        );
+        assert.ok(
+          await page.evaluate(() =>
+            !!Array.from(document.querySelectorAll('#tree .tree-file-row')).find((r) => r.textContent.trim() === 'memo.md')
+          ),
+          'ツリーに memo.md が出ていません'
+        );
+
+        printConsoleErrors(consoleErrors, 'フォルダを開くで通常のワークスペースに復帰');
         assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
       });
     } finally {

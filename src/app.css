@@ -76,6 +76,11 @@ svg {
 }
 
 .icon-lg {
+  /* .icon と一緒に使う前提だが、単独で使われても塗り潰されないようにしておく */
+  stroke: currentColor;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
   width: 30px;
   height: 30px;
   stroke-width: 1.4;
@@ -110,9 +115,15 @@ svg {
 }
 
 .start-desc {
-  margin: 0 0 20px;
+  margin: 0 0 8px;
   color: var(--ink-500);
   line-height: 1.6;
+}
+
+.start-hint {
+  margin: 0 0 20px;
+  color: var(--ink-300);
+  font-size: 12px;
 }
 
 .start-actions {
@@ -211,6 +222,16 @@ svg {
   outline-offset: 1px;
 }
 
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.btn:disabled:hover {
+  background: var(--surface);
+  color: var(--ink-700);
+}
+
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
@@ -271,7 +292,6 @@ svg {
 
 /* ---------- メイン画面: ツールバー ---------- */
 .app-screen {
-  position: relative; /* .drop の位置決めの基準 */
   display: flex;
   flex-direction: column;
   background: var(--shell);
@@ -334,6 +354,26 @@ svg {
   flex: 0 0 auto;
 }
 
+/* 単体プレビュー(フォルダを開かずに md 1つだけを見ている)であることを示す小さな札。 */
+.chip {
+  height: 20px;
+  display: none;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  flex: 0 0 auto;
+}
+
+#appScreen.single-file #docSingleChip {
+  display: inline-flex;
+}
+
 .toolbar-spacer {
   flex: 1;
 }
@@ -362,6 +402,10 @@ svg {
 
 .toolbar .btn:hover {
   background: var(--shell-2);
+}
+
+.toolbar .btn:disabled:hover {
+  background: transparent;
 }
 
 /* 「保存」だけは枠を持たせ、未保存のときは紺で満たす(下の #appScreen.is-dirty 参照)。 */
@@ -486,6 +530,40 @@ svg {
   gap: 8px;
 }
 
+/* ---------- 単体プレビュー(フォルダを開かずに md 1つだけを見ている状態)の帯 ----------
+ * できないこと(画像・@import が表示できないこと)を、その場で正直に伝える
+ * (dist/ui-demo.html の .notice 相当)。表示は #appScreen.single-file のときだけ。 */
+.single-file-bar {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  background: #fbf7ec;
+  border-bottom: 1px solid #ecdfc0;
+  color: #6b5300;
+  flex: 0 0 auto;
+}
+
+#appScreen.single-file .single-file-bar {
+  display: flex;
+}
+
+.single-file-bar .icon {
+  color: #9a7b23;
+}
+
+.single-file-bar-link {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
 /* ---------- 3ペイン ---------- */
 .main {
   flex: 1;
@@ -505,6 +583,18 @@ svg {
 
 .main.sidebar-collapsed .sidebar {
   display: none;
+}
+
+/* 単体プレビューにはフォルダが無いためツリーを出せない。サイドバーごとその
+ * 切替ボタン(#toggleSidebarBtn)も隠す。 */
+#appScreen.single-file .sidebar,
+#appScreen.single-file #toggleSidebarBtn {
+  display: none;
+}
+
+/* サイドバー切替ボタンが消える分、パンくずの開始位置を少し空ける(dist/ui-demo.html と同じ)。 */
+#appScreen.single-file .crumb {
+  margin-left: 10px;
 }
 
 /* ---------- サイドバー見出し: フォルダのアイコン + ワークスペース名 + 操作ボタン ---------- */
@@ -895,11 +985,14 @@ body.resizing .preview-frame {
 
 /* ============================================================
    ドラッグ中の覆い(dist/ui-demo.html の .drop 相当)
-   画面全体を薄い紺で覆い、枠に線を出す。ドラッグ&ドロップの配線は
-   別タスクで行うため、今は要素だけ置いて常に非表示にしておく。
+   画面全体(ビューポート)を薄い紺で覆い、枠に線を出す。起動画面・メイン画面の
+   どちらの上のドラッグでも検知できるよう、どちらの screen にも属さない
+   position: fixed にしている(src/ui/drop-zone.js が表示・非表示を切り替える)。
+   pointer-events: none は必須(無いとこの要素がドロップ先を奪い、エディタへの
+   画像ドロップ(src/paste.js)が壊れる)。
    ============================================================ */
 .drop {
-  position: absolute;
+  position: fixed;
   inset: 0;
   z-index: 50;
   display: none;
@@ -907,6 +1000,7 @@ body.resizing .preview-frame {
   justify-content: center;
   background: rgba(31, 78, 121, 0.16);
   box-shadow: inset 0 0 0 3px var(--accent);
+  pointer-events: none;
 }
 
 .drop-card {

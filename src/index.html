@@ -43,6 +43,7 @@
     <div class="start-card">
       <h1>Markdown Preview</h1>
       <p class="start-desc">Markdown を編集・プレビューします。まずワークスペースにするフォルダを選んでください。</p>
+      <p class="start-hint">md ファイルやフォルダを、このウィンドウにドロップしても開けます。</p>
       <div class="start-actions">
         <button id="pickFolderBtn" type="button" class="btn btn-primary">フォルダを選ぶ</button>
         <button id="reconnectBtn" type="button" class="btn" style="display:none;">前回のフォルダを再許可</button>
@@ -67,6 +68,7 @@
         <span id="docCrumb" class="crumb-path" style="display:none;"></span>
         <span id="docName" class="crumb-name is-placeholder">ファイルを開いてください</span>
         <span id="docDirty" class="dot-dirty" title="未保存の変更があります" style="display:none;"></span>
+        <span id="docSingleChip" class="chip">単体表示</span>
       </div>
       <div class="toolbar-spacer"></div>
       <div class="view-mode-group" role="group" aria-label="表示モード">
@@ -100,6 +102,15 @@
       </button>
       <button id="switchFolderBtn" type="button" class="btn" title="ワークスペースのフォルダを切り替え">フォルダ切替</button>
     </header>
+
+    <!-- 単体プレビュー(フォルダを開かずに md 1つだけを開いている)ときだけ出る帯。
+         同じフォルダの画像・@import は表示できないことを正直に伝える
+         (表示切替は #appScreen.single-file を見て src/app.css が行う)。 -->
+    <div id="singleFileBar" class="single-file-bar">
+      <svg class="icon" viewBox="0 0 24 24"><use href="#i-alert"/></svg>
+      <span>この md ファイルだけを開いています。同じフォルダの画像と <code>@import</code> は表示できません。</span>
+      <button id="singleFileOpenFolderBtn" type="button" class="single-file-bar-link">フォルダを開く</button>
+    </div>
 
     <div id="notifyBar" class="notify-bar" style="display:none;">
       <span id="notifyBarText" class="notify-bar-text"></span>
@@ -146,15 +157,16 @@
       <span id="statusSaved" class="status-saved"></span>
       <span id="statusMessage" class="status-message"></span>
     </footer>
+  </div>
 
-    <!-- ドラッグ中の覆い。ドラッグ&ドロップの配線は今回のタスク対象外のため、
-         今は要素だけ置いて常に display:none(CSS 側で表示は切り替えない)。 -->
-    <div class="drop" aria-hidden="true">
-      <div class="drop-card">
-        <svg class="icon-lg" viewBox="0 0 24 24"><use href="#i-drop"/></svg>
-        <div class="t1">ここで離すと、この md をすぐ表示します</div>
-        <div class="t2">フォルダを離すと、ワークスペースとして開きます</div>
-      </div>
+  <!-- ドラッグ中の覆い。起動画面・メイン画面のどちらの上にドロップしても検知できる
+       よう、#startScreen・#appScreen の外(ビューポート全体)に置く(src/ui/drop-zone.js
+       が表示・非表示を切り替える)。 -->
+  <div id="dropOverlay" class="drop" aria-hidden="true">
+    <div class="drop-card">
+      <svg class="icon icon-lg" viewBox="0 0 24 24"><use href="#i-drop"/></svg>
+      <div class="t1">ここで離すと、この md をすぐ表示します</div>
+      <div class="t2">フォルダを離すと、ワークスペースとして開きます</div>
     </div>
   </div>
 
