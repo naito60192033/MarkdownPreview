@@ -1,0 +1,64 @@
+/* src/theme/sidetoc-export.css
+ *
+ * HTML 出力(通常 / 1ファイルとも)専用の、サイドバー目次の「開く / 帯 / 出さない」の
+ * 決め方(幅による既定状態)。見た目そのものは sidetoc.css(共通)が持ち、このファイルは
+ * **幅による既定の状態だけ**を決める。アプリ内のプレビュー(iframe)側の同じ役目は
+ * sidetoc-app.css が持つ。
+ *
+ * 出力 HTML はブラウザのウィンドウ幅そのものがメディアクエリの対象になるため、
+ * アプリ内プレビュー(ペイン幅が対象)より広めの数値にしている。
+ *
+ *   1280px 以上      目次を開いた状態で出す(チェック = 畳む)
+ *   720px〜1279px    畳んだ帯で出す(チェック = 開く)
+ *   719px 以下       目次を出さない(1 列に戻す)
+ *
+ * 開閉の状態は保存しない(ページを開き直すたびに、その時点の画面幅の既定に戻る)。
+ */
+
+/* 畳んだときの見た目(見出し行とリストを隠し、帯だけを見せる)。チェックの意味は
+ * 画面幅で反転するため、同じ見た目を 2 つのメディアクエリに分けて書いている
+ * (重複は数行なので許容する)。 */
+@media (min-width: 1280px) {
+  /* 幅 1280px 以上は既定で開いた状態。チェック = 畳む。 */
+  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc {
+    width: var(--mdp-sidetoc-collapsed-width, 36px);
+    padding: 12px 0;
+    overflow: hidden;
+  }
+  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc .mdp-sidetoc-head,
+  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc > ul {
+    display: none;
+  }
+  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc .mdp-sidetoc-strip {
+    display: flex;
+  }
+}
+
+@media (min-width: 720px) and (max-width: 1279px) {
+  /* 幅 720px〜1279px は既定で畳んだ状態(帯)。チェック = 開く。 */
+  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc {
+    width: var(--mdp-sidetoc-collapsed-width, 36px);
+    padding: 12px 0;
+    overflow: hidden;
+  }
+  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc .mdp-sidetoc-head,
+  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc > ul {
+    display: none;
+  }
+  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc .mdp-sidetoc-strip {
+    display: flex;
+  }
+}
+
+/* 画面が狭いとき(目次と本文を並べると窮屈になる幅)は目次(帯・チェックボックスも)を
+ * 消し、レイアウトも通常の 1 列に戻す。 */
+@media (max-width: 719px) {
+  .mdp-layout {
+    display: block;
+    padding-left: 0;
+  }
+  .mdp-sidetoc-toggle,
+  .mdp-sidetoc {
+    display: none;
+  }
+}

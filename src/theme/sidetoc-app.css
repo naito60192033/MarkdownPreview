@@ -1,0 +1,72 @@
+/* src/theme/sidetoc-app.css
+ *
+ * アプリ内のプレビュー(iframe)でサイドバー目次を出すときの「開く / 帯 / 出さない」の
+ * 決め方。見た目そのものは sidetoc.css(共通)が持ち、このファイルは**幅による既定の
+ * 状態だけ**を決める。HTML 出力側の同じ役目は sidetoc-export.css が持つ。
+ *
+ * ---- なぜ HTML 出力と数値を分けるのか ----
+ * この CSS は iframe の中に流し込まれるので、メディアクエリが見る幅は
+ * 「プレビューのペインの幅」になる(ウィンドウ幅ではない)。アプリではサイドバーと
+ * ツールバーの分だけ狭く、1440px の画面でもプレビュー幅は 1200px 程度しかない。
+ * HTML 出力の 1280px / 720px をそのまま使うと、「プレビューのみ」に切り替えても
+ * 帯しか出ない。そのためアプリ内は次の数値にする。
+ *
+ *   1160px 以上      目次を開いた状態で出す(チェック = 畳む)
+ *   720px〜1159px    畳んだ帯で出す(チェック = 開く)
+ *   720px 未満       目次を出さない(1 列に戻す)
+ *
+ * 「開く」の下限だけを HTML 出力(1280px)より下げ、「出さない」の下限は
+ * HTML 出力と同じ 720px に揃えている。畳んだ帯は 36px しか使わないので、
+ * 本文が窮屈になるまでは帯だけでも残したほうが目次へ辿り着ける。
+ *
+ * 目次そのものを出すかどうか(表示モードが「プレビューのみ」か)は
+ * src/ui/preview.js が nav を差し込むかどうかで決める。このファイルは
+ * 「差し込まれた後、その幅でどう見せるか」だけを担当する。
+ *
+ * 開閉の状態は保存しない(sidetoc.css と同じ。描画のたびにその幅の既定に戻る)。
+ */
+
+@media (min-width: 1160px) {
+  /* 既定は開いた状態。チェック = 畳む。 */
+  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc {
+    width: var(--mdp-sidetoc-collapsed-width, 36px);
+    padding: 12px 0;
+    overflow: hidden;
+  }
+  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc .mdp-sidetoc-head,
+  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc > ul {
+    display: none;
+  }
+  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc .mdp-sidetoc-strip {
+    display: flex;
+  }
+}
+
+@media (min-width: 720px) and (max-width: 1159px) {
+  /* 既定は畳んだ状態(帯)。チェック = 開く。 */
+  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc {
+    width: var(--mdp-sidetoc-collapsed-width, 36px);
+    padding: 12px 0;
+    overflow: hidden;
+  }
+  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc .mdp-sidetoc-head,
+  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc > ul {
+    display: none;
+  }
+  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc .mdp-sidetoc-strip {
+    display: flex;
+  }
+}
+
+/* 目次と本文を並べると窮屈になる幅では、目次(帯・チェックボックスも)を消して
+ * 1 列に戻す。 */
+@media (max-width: 719px) {
+  .mdp-layout {
+    display: block;
+    padding-left: 0;
+  }
+  .mdp-sidetoc-toggle,
+  .mdp-sidetoc {
+    display: none;
+  }
+}

@@ -41,10 +41,11 @@
 
 import { dirname, basename, joinPath, urlToPath, isExternalUrl } from './fs/paths.js';
 import { getFileHandleByPath, writeByPath } from './fs/workspace.js';
-import { renderSideTocHtml } from './render/toc.js';
+import { collectSideTocItems, buildSideTocNav } from './render/sidetoc.js';
 import sidetocCss from './theme/sidetoc.css';
+import sidetocExportCss from './theme/sidetoc-export.css';
 
-const SIDE_TOC_SELECTOR = 'h2, h3, h4, h5, h6';
+const sideTocCssAll = sidetocCss + '\n' + sidetocExportCss;
 
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -123,40 +124,6 @@ async function inlineImages(clone, { root, mdDir }) {
   return failedCount;
 }
 
-// 見出し要素のクローンから、サイドバー目次のラベル用 HTML を組み立てる。
-// - 脚注参照(sup.footnote-ref)は目次には不要なので取り除く
-// - 連番の span(.mdp-heading-number。src/render/outline.js が見出しの先頭の
-//   子として挿入したもの)があれば、そのまま同じ class で先頭に出す
-// - 残りのテキスト(textContent を trim)はエスケープして続ける
-function buildSideTocLabelHtml(headingEl) {
-  const work = headingEl.cloneNode(true);
-  for (const el of work.querySelectorAll('sup.footnote-ref')) el.remove();
-
-  let numberHtml = '';
-  const first = work.firstElementChild;
-  if (first && first.classList.contains('mdp-heading-number')) {
-    numberHtml = `<span class="mdp-heading-number">${escapeHtml(first.textContent)}</span>`;
-    first.remove();
-  }
-  return numberHtml + escapeHtml(work.textContent.trim());
-}
-
-// クローン内の h2〜h6 を文書順に走査し、renderSideTocHtml に渡す項目一覧を作る。
-// id が空、または ignoredIds に含まれる見出し(`{ignore=true}`)は除外する。
-function collectSideTocItems(clone, ignoredIds) {
-  const items = [];
-  for (const headingEl of clone.querySelectorAll(SIDE_TOC_SELECTOR)) {
-    const id = headingEl.id;
-    if (!id || (ignoredIds && ignoredIds.has(id))) continue;
-    items.push({
-      level: Number(headingEl.tagName.slice(1)),
-      id,
-      labelHtml: buildSideTocLabelHtml(headingEl),
-    });
-  }
-  return items;
-}
-
 // sideToc が指定され、かつ本文に対象の見出しが 1 つ以上あるときだけ、
 // `.mdp-layout` で本文と `<nav class="mdp-sidetoc">`(折りたたみ用の隠し
 // チェックボックス付き)を包んだ body HTML を作る。それ以外はクローンの
@@ -165,40 +132,7 @@ function buildExportBody(doc, clone, sideToc) {
   const items = sideToc ? collectSideTocItems(clone, sideToc.ignoredIds) : [];
   if (!items.length) return { bodyHtml: clone.outerHTML, sideTocCss: '' };
 
-  // 開閉の状態を持つだけの隠しチェックボックス(JavaScript 不使用で開閉するため)。
-  const toggle = doc.createElement('input');
-  toggle.type = 'checkbox';
-  toggle.id = 'mdp-sidetoc-toggle';
-  toggle.className = 'mdp-sidetoc-toggle';
-  toggle.setAttribute('aria-label', '目次の開閉');
-
-  const nav = doc.createElement('nav');
-  nav.className = 'mdp-sidetoc';
-  nav.setAttribute('aria-label', '目次');
-
-  const head = doc.createElement('div');
-  head.className = 'mdp-sidetoc-head';
-  const title = doc.createElement('span');
-  title.className = 'mdp-sidetoc-title';
-  title.textContent = '目次';
-  const closeLabel = doc.createElement('label');
-  closeLabel.setAttribute('for', 'mdp-sidetoc-toggle');
-  closeLabel.className = 'mdp-sidetoc-close';
-  closeLabel.title = '目次を畳む';
-  closeLabel.textContent = '«';
-  head.appendChild(title);
-  head.appendChild(closeLabel);
-  nav.appendChild(head);
-
-  nav.insertAdjacentHTML('beforeend', renderSideTocHtml(items));
-
-  // 畳んだときだけ見える帯。押すと開く。
-  const stripLabel = doc.createElement('label');
-  stripLabel.setAttribute('for', 'mdp-sidetoc-toggle');
-  stripLabel.className = 'mdp-sidetoc-strip';
-  stripLabel.title = '目次を開く';
-  stripLabel.innerHTML = '<span>»</span><span class="mdp-sidetoc-strip-text">目次</span>';
-  nav.appendChild(stripLabel);
+  const { toggle, nav } = buildSideTocNav(doc, items);
 
   const layout = doc.createElement('div');
   layout.className = 'mdp-layout';
@@ -206,7 +140,7 @@ function buildExportBody(doc, clone, sideToc) {
   layout.appendChild(nav);
   layout.appendChild(clone);
 
-  return { bodyHtml: layout.outerHTML, sideTocCss: sidetocCss };
+  return { bodyHtml: layout.outerHTML, sideTocCss: sideTocCssAll };
 }
 
 function composeHtml({ title, css, bodyHtml }) {

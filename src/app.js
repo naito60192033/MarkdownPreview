@@ -292,7 +292,7 @@ async function doRender() {
   const text = editor.getText();
   const mySeq = ++renderSeq;
   const depLastModified = new Map();
-  const { html, lineMap, deps } = await renderDocument(text, {
+  const { html, lineMap, deps, headings } = await renderDocument(text, {
     path: state.currentPath,
     alertTitles: state.settings.alertTitles,
     readText: async (relPath) => {
@@ -307,7 +307,8 @@ async function doRender() {
   if (mySeq !== renderSeq) return;
   state.lineMap = lineMap;
   updateDepsWatch(deps, depLastModified);
-  await preview.render({ html, lineMap, root: state.root, mdPath: state.currentPath });
+  const ignoredHeadingIds = new Set(headings.filter((h) => h.ignore).map((h) => h.id));
+  await preview.render({ html, lineMap, root: state.root, mdPath: state.currentPath, ignoredHeadingIds });
 }
 
 // ---------- エディタの変更 ----------
@@ -988,6 +989,9 @@ function setViewMode(mode) {
   } catch {
     /* noop */
   }
+  // 「プレビューのみ」のときだけ、プレビュー(iframe)にサイドバーの目次を出す。
+  preview.setSideTocEnabled(mode === 'preview');
+  if (state.currentPath) scheduleRender(true);
 }
 
 // ---------- 設定の変更 ----------

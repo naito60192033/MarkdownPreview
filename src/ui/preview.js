@@ -18,6 +18,11 @@
 //     (同じソースは再描画しない。失敗時はその場にエラー表示する)
 //   - data-src を FSA で読んで blob URL に置き換える(パス+lastModified でキャッシュ)
 //   - プレビュー内のリンククリックの振り分け(#見出し / 相対 .md / 外部)
+//   - 表示モードが「プレビューのみ」のとき、サイドバーの目次(src/render/sidetoc.js。
+//     HTML 出力(src/export.js)と同じ部品)を本文の左に出す。setSideTocEnabled(on) で
+//     有効/無効を切り替え(値を保持するだけ)、次回以降の render() で本文・目次の
+//     両方を組み立て直す(開閉のチェック状態は差し替えのたびに失われる。
+//     sidetoc-app.css の設計どおり、開き直すたびに幅の既定に戻る)
 //
 // iframe には sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" を
 // 付け、md 内の <script> やインラインイベントハンドラ属性が実行されないようにする。
@@ -36,20 +41,33 @@ import baseCss from '../theme/base.css';
 import alertsCss from '../theme/alerts.css';
 import outlineCss from '../theme/outline.css';
 import markboxCss from '../theme/markbox.css';
+import sidetocCss from '../theme/sidetoc.css';
+import sidetocAppCss from '../theme/sidetoc-app.css';
 import { dirname, joinPath, isExternalUrl, urlToPath, extname } from '../fs/paths.js';
 import { getFileHandleByPath } from '../fs/workspace.js';
 import { applyOutline } from '../render/outline.js';
+import { collectSideTocItems, buildSideTocNav } from '../render/sidetoc.js';
 
 mermaid.initialize({ startOnLoad: false });
 
+// sidetoc.css(見た目) + sidetoc-app.css(アプリ内プレビューでの幅による既定状態)。
+// src/export.js の sidetoc.css + sidetoc-export.css と同じ連結順。
+const sideTocCssAll = sidetocCss + '\n' + sidetocAppCss;
+
+// #mdpreview-layout は既定では素の block 要素(レイアウトに影響しない)。
+// サイドバー目次を出すときだけ `mdp-layout` クラスを付け、toggle/nav を
+// #mdpreview-root の前に差し込む(src/render/sidetoc.js 参照)。
 const SKELETON_HTML =
   '<!DOCTYPE html><html><head><meta charset="utf-8">' +
   '<style id="mdpreview-base-style"></style>' +
   '<style id="mdpreview-alerts-style"></style>' +
   '<style id="mdpreview-outline-style"></style>' +
   '<style id="mdpreview-markbox-style"></style>' +
+  '<style id="mdpreview-sidetoc-style"></style>' +
   '<style id="mdpreview-user-style"></style>' +
-  '</head><body><div class="crossnote markdown-preview" id="mdpreview-root"></div></body></html>';
+  '</head><body>' +
+  '<div id="mdpreview-layout"><div class="crossnote markdown-preview" id="mdpreview-root"></div></div>' +
+  '</body></html>';
 
 function isMdPath(p) {
   const ext = extname(p);
@@ -63,12 +81,16 @@ export function createPreview({ iframe, onOpenMdLink }) {
   let ready = false;
   let readyPromise = null;
   let wrapperEl = null;
+  let layoutEl = null;
   let docRef = null;
   // setUseStandardCss() は iframe の load 前(init() 直後)にも呼ばれうるため、
   // 値は state として持っておき、load 時に最新の値を反映する。
   let useStandardCss = true;
   // 見出しの連番・字下げの設定(既定オフ)。render() のたびに本文へ適用する。
   let outlineOptions = { numbers: false, depth: 6, indent: false };
+  // サイドバー目次を出すかどうか(既定オフ。表示モードが「プレビューのみ」の
+  // ときだけ setSideTocEnabled(true) で有効にする)。render() のたびに反映する。
+  let sideTocEnabled = false;
 
   let currentRoot = null;
   let currentMdDir = '';
@@ -117,6 +139,7 @@ export function createPreview({ iframe, onOpenMdLink }) {
         () => {
           docRef = iframe.contentDocument;
           wrapperEl = docRef.getElementById('mdpreview-root');
+          layoutEl = docRef.getElementById('mdpreview-layout');
           const baseStyleEl = docRef.getElementById('mdpreview-base-style');
           if (baseStyleEl) baseStyleEl.textContent = useStandardCss ? baseCss : '';
           const alertsStyleEl = docRef.getElementById('mdpreview-alerts-style');
@@ -125,6 +148,8 @@ export function createPreview({ iframe, onOpenMdLink }) {
           if (outlineStyleEl) outlineStyleEl.textContent = outlineCss;
           const markboxStyleEl = docRef.getElementById('mdpreview-markbox-style');
           if (markboxStyleEl) markboxStyleEl.textContent = markboxCss;
+          const sidetocStyleEl = docRef.getElementById('mdpreview-sidetoc-style');
+          if (sidetocStyleEl) sidetocStyleEl.textContent = sideTocCssAll;
           attachLinkHandler();
           ready = true;
           resolve();
@@ -164,6 +189,35 @@ export function createPreview({ iframe, onOpenMdLink }) {
    */
   function setOutlineOptions(opts) {
     outlineOptions = { numbers: !!(opts && opts.numbers), depth: (opts && opts.depth) || 6, indent: !!(opts && opts.indent) };
+  }
+
+  /**
+   * サイドバー目次を出すかどうかを切り替える(値を保持するだけ)。次回以降の
+   * render() で本文の左に目次を出し入れする(表示モードが「プレビューのみ」の
+   * ときだけ呼び出し側が true にする想定)。
+   */
+  function setSideTocEnabled(on) {
+    sideTocEnabled = !!on;
+  }
+
+  // 本文差し込み・applyOutline() の後に呼ぶ(連番の span .mdp-heading-number を
+  // 拾うため。src/export.js と同じ順序)。既存の toggle/nav は毎回作り直す
+  // (開閉のチェック状態は差し替えのたびに失われる)。
+  function updateSideToc(ignoredHeadingIds) {
+    const oldToggle = docRef.getElementById('mdp-sidetoc-toggle');
+    if (oldToggle) oldToggle.remove();
+    const oldNav = layoutEl.querySelector('.mdp-sidetoc');
+    if (oldNav) oldNav.remove();
+
+    const items = sideTocEnabled ? collectSideTocItems(wrapperEl, ignoredHeadingIds) : [];
+    if (!items.length) {
+      layoutEl.classList.remove('mdp-layout');
+      return;
+    }
+    layoutEl.classList.add('mdp-layout');
+    const { toggle, nav } = buildSideTocNav(docRef, items);
+    layoutEl.insertBefore(toggle, wrapperEl);
+    layoutEl.insertBefore(nav, wrapperEl);
   }
 
   function applyMermaidResult(el, result) {
@@ -270,9 +324,13 @@ export function createPreview({ iframe, onOpenMdLink }) {
   }
 
   /**
-   * @param {{ html: string, lineMap: number[], root: any, mdPath: string }} args
+   * @param {{ html: string, lineMap: number[], root: any, mdPath: string,
+   *           ignoredHeadingIds?: Set<string> }} args
+   *   ignoredHeadingIds: サイドバー目次から除外する見出し(`{ignore=true}`)の id
+   *   の集合(省略可。src/render/pipeline.js の renderDocument() が返す headings
+   *   から呼び出し側が組み立てて渡す)。
    */
-  async function render({ html, lineMap, root, mdPath }) {
+  async function render({ html, lineMap, root, mdPath, ignoredHeadingIds }) {
     await whenReady();
     currentRoot = root;
     currentMdDir = dirname(mdPath || '');
@@ -288,6 +346,9 @@ export function createPreview({ iframe, onOpenMdLink }) {
     // innerHTML を丸ごと入れ直した直後の本文に対して適用する(オフのときの
     // 「外す」処理が要らないのはこのため。src/render/outline.js 参照)。
     applyOutline(wrapperEl, outlineOptions);
+    // 見出しの連番(上の applyOutline)が付いた後で目次を組み立てる(連番の
+    // span を目次のラベルに反映するため。src/export.js と同じ順序)。
+    updateSideToc(ignoredHeadingIds);
 
     await Promise.all([renderMermaidBlocks(mySeq), resolveImages(mySeq)]);
   }
@@ -298,6 +359,7 @@ export function createPreview({ iframe, onOpenMdLink }) {
     setUserCss,
     setUseStandardCss,
     setOutlineOptions,
+    setSideTocEnabled,
     render,
     getDocument: () => docRef,
     getWrapperElement: () => wrapperEl,

@@ -64,13 +64,15 @@ async function expand(text, { path, readText }) {
  *   readText: @import 先のテキストを読むコールバック(省略時は @import を展開しない)。
  *   alertTitles: アラートの既定タイトルを上書きする設定(src/render/alerts.js 参照)。
  *   md: 使用する markdown-it インスタンス(省略時は alertTitles から作る既定のもの)。
- * @returns {Promise<{ html: string, lineMap: number[], deps: string[] }>}
+ * @returns {Promise<{ html: string, lineMap: number[], deps: string[],
+ *   headings: {level: number, content: string, id: string, line: number|null, ignore: boolean}[] }>}
  */
 export async function renderDocument(text, { path, readText, alertTitles, md } = {}) {
   const { text: expanded, lineMap, deps } = await expand(text, { path, readText });
   const renderer = md || getMd(alertTitles);
-  const html = renderer.render(expanded);
-  return { html, lineMap, deps };
+  const env = {};
+  const html = renderer.render(expanded, env);
+  return { html, lineMap, deps, headings: env.headings || [] };
 }
 
 /**

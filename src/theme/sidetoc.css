@@ -1,9 +1,14 @@
 /* src/theme/sidetoc.css
  *
- * HTML 出力(通常 / 1ファイルとも)専用の、画面左側に固定表示するサイドバー目次
- * (Qiita 風)。設定「HTML 出力にサイドバーの目次を付ける」(既定オン)がオンで、
- * h2〜h6 の見出しが 1 つ以上あるときだけ src/export.js が本文と一緒に組み立てる。
- * アプリ内のプレビュー(iframe)には出さない。
+ * 画面左側に固定表示するサイドバー目次(Qiita 風)の見た目そのもの。HTML 出力
+ * (src/export.js。設定「HTML 出力にサイドバーの目次を付ける」が既定オン)と、
+ * アプリ内のプレビュー(iframe。src/ui/preview.js。表示モードが「プレビューのみ」の
+ * ときだけ)の両方で使う共通部品。h2〜h6 の見出しが 1 つ以上あるときだけ組み立てる。
+ *
+ * 「幅に応じて開く/畳む/出さない」の既定状態はここでは決めず、用途ごとに
+ * sidetoc-export.css(HTML 出力。ウィンドウ幅基準)/ sidetoc-app.css
+ * (アプリ内プレビュー。ペイン幅基準)に分けている(このファイルはどちらからも
+ * 参照される前提で、幅の数値を一切含まない)。
  *
  * ---- 出力 HTML の構造 ----
  *   <body>
@@ -34,10 +39,9 @@
  * `.mdp-layout` の先頭に視覚的に隠したチェックボックス(`#mdp-sidetoc-toggle`)を
  * 置き、見出し行の「«」ボタンと、畳んだときに出す帯(`.mdp-sidetoc-strip`)は
  * どちらも `<label for="mdp-sidetoc-toggle">` にする(チェックボックスハック)。
- * チェックの意味は画面幅で反転させている。
- *   - 幅 1280px 以上: 既定は開いた状態。チェック = 畳む
- *   - 幅 720px〜1279px: 既定は畳んだ状態(帯)。チェック = 開く
- * 開閉の状態は保存しない(ページを開き直すたびに、その時点の画面幅の既定に戻る)。
+ * チェックの意味は幅で反転させている(既定で開くか畳むかの閾値・どちらの幅で
+ * 反転するかは sidetoc-export.css / sidetoc-app.css を参照)。
+ * 開閉の状態は保存しない(開き直すたびに、その時点の幅の既定に戻る)。
  *
  * 目次は `.crossnote.markdown-preview` の外側にあり、その要素に定義された
  * `--mdp-*` 変数を継承できない。そのため `.mdp-layout` に同じ既定色の変数を
@@ -223,54 +227,6 @@
 .mdp-sidetoc-toggle:focus-visible ~ .mdp-sidetoc .mdp-sidetoc-strip {
   outline: 2px solid var(--mdp-sidetoc-accent);
   outline-offset: 2px;
-}
-
-/* 畳んだときの見た目(見出し行とリストを隠し、帯だけを見せる)。チェックの意味は
- * 画面幅で反転するため、同じ見た目を 2 つのメディアクエリに分けて書いている
- * (重複は数行なので許容する)。 */
-@media (min-width: 1280px) {
-  /* 幅 1280px 以上は既定で開いた状態。チェック = 畳む。 */
-  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc {
-    width: var(--mdp-sidetoc-collapsed-width, 36px);
-    padding: 12px 0;
-    overflow: hidden;
-  }
-  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc .mdp-sidetoc-head,
-  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc > ul {
-    display: none;
-  }
-  .mdp-sidetoc-toggle:checked ~ .mdp-sidetoc .mdp-sidetoc-strip {
-    display: flex;
-  }
-}
-
-@media (min-width: 720px) and (max-width: 1279px) {
-  /* 幅 720px〜1279px は既定で畳んだ状態(帯)。チェック = 開く。 */
-  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc {
-    width: var(--mdp-sidetoc-collapsed-width, 36px);
-    padding: 12px 0;
-    overflow: hidden;
-  }
-  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc .mdp-sidetoc-head,
-  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc > ul {
-    display: none;
-  }
-  .mdp-sidetoc-toggle:not(:checked) ~ .mdp-sidetoc .mdp-sidetoc-strip {
-    display: flex;
-  }
-}
-
-/* 画面が狭いとき(目次と本文を並べると窮屈になる幅)は目次(帯・チェックボックスも)を
- * 消し、レイアウトも通常の 1 列に戻す。 */
-@media (max-width: 719px) {
-  .mdp-layout {
-    display: block;
-    padding-left: 0;
-  }
-  .mdp-sidetoc-toggle,
-  .mdp-sidetoc {
-    display: none;
-  }
 }
 
 /* 印刷・PDF 保存でも目次は出さない(紙面は本文だけで完結させる)。 */
