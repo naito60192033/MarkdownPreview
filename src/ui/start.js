@@ -61,7 +61,7 @@ export function createStartScreen({
       forgetBtn.type = 'button';
       forgetBtn.className = 'recent-root-forget';
       forgetBtn.title = '一覧から削除';
-      forgetBtn.textContent = '✕';
+      forgetBtn.innerHTML = '<svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#i-x"/></svg>';
       forgetBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         await forgetRoot(r.id);

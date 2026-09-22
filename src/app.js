@@ -124,6 +124,9 @@ function cacheEls() {
     appScreen: document.getElementById('appScreen'),
     toggleSidebarBtn: document.getElementById('toggleSidebarBtn'),
     workspaceName: document.getElementById('workspaceName'),
+    docCrumb: document.getElementById('docCrumb'),
+    docName: document.getElementById('docName'),
+    docDirty: document.getElementById('docDirty'),
     viewModeBtns: Array.from(document.querySelectorAll('.view-mode-btn')),
     newMdBtn: document.getElementById('newMdBtn'),
     newFolderBtn: document.getElementById('newFolderBtn'),
@@ -152,6 +155,7 @@ function cacheEls() {
     preview: document.getElementById('preview'),
 
     statusPath: document.getElementById('statusPath'),
+    statusMeta: document.getElementById('statusMeta'),
     statusSaved: document.getElementById('statusSaved'),
     statusMessage: document.getElementById('statusMessage'),
 
@@ -214,10 +218,35 @@ async function confirmDiscardIfDirty() {
 // ---------- 表示状態(ファイルパス・保存状態・タイトル) ----------
 function syncDirtyUi() {
   const mark = state.dirty ? '● ' : '';
-  statusbar.setPath(mark + (state.currentPath || ''));
+  // ステータスバーのパスは素の値のみ(未保存の点は #docDirty が担当するため
+  // '● ' の接頭辞は付けない)。
+  statusbar.setPath(state.currentPath || '');
   statusbar.setSaved(state.dirty);
-  const name = state.currentPath ? state.currentPath.split('/').pop() : '';
+  const name = state.currentPath ? basename(state.currentPath) : '';
   document.title = name ? `${mark}${name} — Markdown Preview` : 'Markdown Preview';
+
+  // ツールバーのパンくず: フォルダ部分(docCrumb)・ファイル名(docName)・未保存の点(docDirty)。
+  const dir = state.currentPath ? dirname(state.currentPath) : '';
+  if (dir) {
+    els.docCrumb.textContent = dir.split('/').join(' › ');
+    els.docCrumb.style.display = '';
+  } else {
+    els.docCrumb.textContent = '';
+    els.docCrumb.style.display = 'none';
+  }
+  els.docName.textContent = name || 'ファイルを開いてください';
+  els.docName.classList.toggle('is-placeholder', !name);
+  els.docDirty.style.display = state.dirty ? '' : 'none';
+  els.appScreen.classList.toggle('is-dirty', state.dirty);
+
+  // ステータスバーの行数・改行コード。ファイル未選択なら空にする。
+  if (state.currentPath) {
+    const text = editor.getText();
+    const lineCount = text.split('\n').length;
+    els.statusMeta.textContent = `${lineCount} 行 · UTF-8 · ${state.eol === '\r\n' ? 'CRLF' : 'LF'}`;
+  } else {
+    els.statusMeta.textContent = '';
+  }
 }
 
 // ---------- @import 先(deps)の監視登録 ----------

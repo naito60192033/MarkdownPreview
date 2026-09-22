@@ -105,9 +105,13 @@ export function createTree({ container, onOpenFile, onContextMenu, onKeyAction }
     childUl.className = 'tree-children';
     li.appendChild(childUl);
 
+    // キャレットは #i-chev(右向き矢印)の SVG を使い、開いているときは
+    // row に is-open を付けて CSS の transform: rotate(90deg) で下向きに回す
+    // (src/index.html の SVG スプライト参照)。
+    caret.innerHTML = '<svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#i-chev"/></svg>';
     let loaded = false;
     const openAtBuild = openPaths.has(path);
-    caret.textContent = openAtBuild ? '▼' : '▶';
+    row.classList.toggle('is-open', openAtBuild);
     childUl.hidden = !openAtBuild;
     if (openAtBuild) {
       loaded = true;
@@ -119,7 +123,7 @@ export function createTree({ container, onOpenFile, onContextMenu, onKeyAction }
     async function openDir() {
       openPaths.add(path);
       childUl.hidden = false;
-      caret.textContent = '▼';
+      row.classList.add('is-open');
       if (!loaded) {
         loaded = true;
         await renderDir(dirHandle, path, childUl);
@@ -128,7 +132,7 @@ export function createTree({ container, onOpenFile, onContextMenu, onKeyAction }
     function closeDir() {
       openPaths.delete(path);
       childUl.hidden = true;
-      caret.textContent = '▶';
+      row.classList.remove('is-open');
     }
     async function toggle() {
       if (childUl.hidden) await openDir();
