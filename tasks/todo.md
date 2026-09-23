@@ -217,3 +217,9 @@
 
 ## 残り
 - [ ] Windows 実機での確認(`MarkdownPreview\dist\mdpreview.html`)
+
+## README にスクリーンショットを追加(2026-09-23)
+- [x] `dev/readme-screenshots.mjs`(Playwright + fake-fs でサンプルワークスペースを開いて撮影 → `docs/images/`)
+- [x] 撮影: メイン画面 / 起動画面 / アラート / 蛍光ペン / 注釈エディタ / 貼り付けメニュー / HTML 出力のサイドバー目次 / 単体プレビュー / 設定
+- [x] README の該当節に画像を挿入、開発者向けに撮り直し手順を追記
+- [x] 画像を目視確認

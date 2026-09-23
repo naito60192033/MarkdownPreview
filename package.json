@@ -9,7 +9,8 @@
     "test:e2e": "node dev/harness.mjs",
     "build:annotator-sandbox": "node dev/build-annotator-sandbox.mjs",
     "test:annotator-e2e": "node dev/annotator-harness.mjs",
-    "build:paste-demo": "node dev/build-paste-demo.mjs"
+    "build:paste-demo": "node dev/build-paste-demo.mjs",
+    "screenshots": "node dev/readme-screenshots.mjs"
   },
   "devDependencies": {
     "@codemirror/lang-markdown": "^6.5.2",
