@@ -27,6 +27,19 @@
 // 画像ではなく図形データ(mxGraphModel の XML を URL エンコードした文字列)を
 // text/plain に入れるだけなので、それは貼り付けずに「画像としてコピー」を案内する。
 // paste はキャプチャ段階で受ける(CodeMirror は defaultPrevented なら自前の貼り付けをしない)。
+//
+// ---- ドロップ: 画像でない Files(md・フォルダ等)は src/ui/drop-zone.js が横取りする ----
+// ここの drop リスナー(下の view.dom.addEventListener('drop', ...))は bubble フェーズで
+// CodeMirror 自身の drop リスナー(node_modules/@codemirror/view、contentDOM に付く)より
+// 後に実行されるため、画像かどうかをここで判定してからでは CodeMirror の既定の挿入を
+// 止められない(CodeMirror は Files のドロップで中身をテキストとして読み込み文書に
+// 挿入しようとする。バイナリらしい内容は制御文字の並びで自動的に除外されるため画像は
+// 実害がないが、md 等の素のテキストファイルはそのまま挿入されてしまう)。そのため
+// 画像を含まない Files のドロップは、より早い段階(window/iframe document の capture
+// フェーズ)で src/ui/drop-zone.js が preventDefault + stopPropagation して横取りし、
+// ここまでイベントが届かないようにしている(「開く」として扱う)。ここに drop イベントが
+// 届く時点で、画像を1つも含まなければ何もせず return する(通常はここへ来る前に
+// drop-zone.js が止めているので、来るとすれば防御的なフォールバックの意味合い)。
 
 import { toMarkdownLinkDest } from './fs/paths.js';
 import { saveImageFile, isImageFile, isDrawioClipboardText } from './paste-save.js';
@@ -165,17 +178,23 @@ export function attachImagePasteAndDrop({ view, getRoot, getMdPath, setStatusMes
     true
   );
 
+  // Files のドロップ(画像・md・フォルダ等)を「有効な drop 先」にするため無条件に
+  // preventDefault する。画像かどうかの振り分けは drop イベント側(下)と
+  // src/ui/drop-zone.js(覆いの表示)で行う。
   view.dom.addEventListener('dragover', (e) => {
     if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
       e.preventDefault();
     }
   });
 
+  // 画像を含まない Files のドロップは、通常はここへ届く前に src/ui/drop-zone.js が
+  // capture フェーズで横取りする(上のファイル先頭コメント参照)。ここでは画像だけを
+  // 拾い、画像が無ければ何もしない(防御的なフォールバック)。
   view.dom.addEventListener('drop', (e) => {
     const files = e.dataTransfer && e.dataTransfer.files;
     if (!files || files.length === 0) return;
     const images = Array.from(files).filter(isImageFile);
-    if (images.length === 0) return; // 画像でなければ既定動作に任せる
+    if (images.length === 0) return; // 画像でなければ何もしない
     e.preventDefault();
     if (saving) {
       setStatusMessage(SAVING_BUSY_MESSAGE, { isError: true });

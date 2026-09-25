@@ -237,3 +237,11 @@
 - [x] 実機確認で指摘: 見本が h4 までで h5・h6 の変化が見えない → 見本を h2〜h6 の 1 段ずつ下がる形に
 - [x] 「標準 CSS をこのパスへ書き出す」は誤り(書き出し先は常に standard.css)→ 文言を直す
 - [x] 実機確認(`MarkdownPreview\dist\mdpreview.html`)再
+
+## 単体表示の「フォルダを開く」とドロップの受け口の改善(2026-09-25)
+- [x] 「フォルダを開く」: showDirectoryPicker の startIn に開いている md のハンドルを渡し、その md のフォルダから選べるようにする
+- [x] フォルダを開いた後、その md が選んだフォルダの中にあれば開き直す(`dirHandle.resolve(fileHandle)`)
+- [x] プレビュー(iframe)の上でも md / フォルダのドロップを受け付ける
+- [x] エディタの上: 画像は従来どおり貼り付け、md / フォルダは「開く」として扱う(CodeMirror が中身を文字として挿入しないように)
+- [x] E2E
+- [x] 実機確認(`MarkdownPreview\dist\mdpreview.html`)
