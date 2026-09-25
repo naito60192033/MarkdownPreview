@@ -369,6 +369,9 @@ function initPageFakeFs({ rootName }) {
     const fh = {
       kind: 'file',
       name: initialName,
+      // dirHandle.resolve(fileHandle) 用(下の makeDirHandle 参照)。move() で
+      // relPath が変わるたびに一緒に更新する。
+      __relPath: initialRelPath,
       async getFile() {
         const res = await window.__fsCall('read', [relPath]);
         if (!res.ok) throw makeError(res.code || 'NotFoundError', 'not found: ' + relPath);
@@ -432,6 +435,7 @@ function initPageFakeFs({ rootName }) {
         const res = await window.__fsCall('move', [relPath, newRel]);
         if (!res.ok) throw makeError(res.code || 'UnknownError', res.message || 'move failed');
         relPath = newRel;
+        fh.__relPath = newRel;
         fh.name = newName;
         observedGen = null;
       },
@@ -485,6 +489,18 @@ function initPageFakeFs({ rootName }) {
       async isSameEntry(other) {
         return !!other && other.kind === 'directory' && other.__relPath === relPath;
       },
+      // 本物の FileSystemDirectoryHandle.resolve() の最小限の再現。possibleDescendant が
+      // このフォルダの中(サブフォルダ含む)にあれば相対パスの部品配列を、含まれなければ
+      // null を返す。単体表示の「フォルダを開く」で「開いたフォルダの中にその md があるか」の
+      // 判定に使う(src/app.js)。
+      async resolve(possibleDescendant) {
+        const childRel = possibleDescendant && typeof possibleDescendant.__relPath === 'string' ? possibleDescendant.__relPath : null;
+        if (childRel == null) return null;
+        if (childRel === relPath) return [];
+        const prefix = relPath ? relPath + '/' : '';
+        if (!childRel.startsWith(prefix)) return null;
+        return childRel.slice(prefix.length).split('/');
+      },
       keys() {
         return (async function* () {
           const res = await window.__fsCall('list', [relPath]);
@@ -514,8 +530,19 @@ function initPageFakeFs({ rootName }) {
     return self;
   }
 
-  window.showDirectoryPicker = async function () {
-    // ヘッドレスではネイティブダイアログを出せないので、常に rootDir 直下を返す。
+  window.showDirectoryPicker = async function (options) {
+    // ヘッドレスではネイティブダイアログを出せないので、常に rootDir 直下を返す
+    // (startIn は無視して常にルートを返す。実機と違いどこから開いても同じフォルダに
+    // なるが、単体表示の「フォルダを開く」のテストでは渡された options 自体を
+    // window.__lastShowDirectoryPickerOptions に記録して検証する)。
+    window.__lastShowDirectoryPickerOptions = options
+      ? {
+          mode: options.mode,
+          id: options.id,
+          hasStartIn: !!options.startIn,
+          startInName: options.startIn ? options.startIn.name : null,
+        }
+      : null;
     return makeDirHandle('', rootName);
   };
 

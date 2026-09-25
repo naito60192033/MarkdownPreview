@@ -75,6 +75,11 @@ const state = {
   lineMap: [],
   deps: [], // 現在の @import 先(ルート相対パス)。変わったら watcher の登録を入れ替える
   settings: loadSettings(),
+  // 単体表示(state.root が createSingleFileRoot() の偽ハンドル)のときだけ、元の
+  // FileSystemFileHandle を保持する(#singleFileOpenFolderBtn がその md のフォルダから
+  // showDirectoryPicker の startIn を開くために使う)。単体表示を抜けたら null に戻す
+  // (activateRoot() 参照)。
+  singleFileHandle: null,
 };
 
 let els = {};
@@ -979,6 +984,9 @@ function setSingleFileMode(on) {
 async function activateRoot(handle, rootId) {
   state.root = handle;
   state.rootId = rootId;
+  // 通常のワークスペースに切り替わったので、単体表示の元ハンドルは不要(単体表示を
+  // 抜けたら null に戻す)。
+  state.singleFileHandle = null;
   try {
     localStorage.setItem(LAST_ROOT_ID_KEY, rootId);
   } catch {
@@ -1009,12 +1017,22 @@ async function openFolderHandle(handle) {
   await activateRoot(handle, rootId);
 }
 
-async function pickFolderFlow() {
+// startInHandle を渡すと、その場所(単体表示で開いている md のフォルダ)からダイアログを
+// 開く。`id: 'mdpreview-root'` と `startIn` は併用しない: 両方指定すると、ブラウザに
+// よっては id で記憶した前回の場所が優先され、startIn が効かないことがあるため
+// (id は「次回も同じ場所から開く」ための記憶、startIn は「今回はここから」の指定で、
+// 目的が競合する)。startInHandle が無いとき(通常の「フォルダを選ぶ」「フォルダを
+// 切り替える」)は従来どおり id を付ける。
+async function pickFolderFlow({ startInHandle } = {}) {
   if (!('showDirectoryPicker' in window)) {
     throw new Error('このブラウザは File System Access API に対応していません。Google Chrome 122 以降で開いてください。');
   }
-  const handle = await window.showDirectoryPicker({ mode: 'readwrite', id: 'mdpreview-root' });
+  const options = { mode: 'readwrite' };
+  if (startInHandle) options.startIn = startInHandle;
+  else options.id = 'mdpreview-root';
+  const handle = await window.showDirectoryPicker(options);
   await openFolderHandle(handle);
+  return handle;
 }
 
 async function openRecentFlow(id) {
@@ -1031,6 +1049,7 @@ async function openRecentFlow(id) {
 async function openSingleFile(fileHandle) {
   state.root = createSingleFileRoot(fileHandle);
   state.rootId = null;
+  state.singleFileHandle = fileHandle;
   showAppScreen();
   setSingleFileMode(true);
   watcher.start();
@@ -1167,11 +1186,24 @@ function bindStaticUi() {
   });
 
   // 単体プレビューの帯の「フォルダを開く」。押すと通常のワークスペースへ切り替わる
-  // (activateRoot 側で single-file クラスを外す)。
+  // (activateRoot 側で single-file クラスを外す)。ダイアログは今開いている md の
+  // フォルダから開始し(startIn)、開いた後にその md がフォルダの中にあれば
+  // (dirHandle.resolve())、同じ md を開き直す(activateRoot の「最後に開いたファイルを
+  // 復元する」処理より、この md を優先する)。
   els.singleFileOpenFolderBtn.addEventListener('click', async () => {
     if (!(await confirmDiscardIfDirty())) return;
+    const fileHandle = state.singleFileHandle;
     try {
-      await pickFolderFlow();
+      const dirHandle = await pickFolderFlow({ startInHandle: fileHandle });
+      if (fileHandle) {
+        let parts = null;
+        try {
+          parts = await dirHandle.resolve(fileHandle);
+        } catch {
+          /* 未対応・失敗時は activateRoot の既定の動作のままにする */
+        }
+        if (parts) await openFile(parts.join('/'));
+      }
     } catch (e) {
       if (e && e.name !== 'AbortError') {
         statusbar.setMessage('フォルダを開けませんでした: ' + ((e && e.message) || String(e)), { isError: true });
@@ -1361,12 +1393,16 @@ async function setup() {
   });
 
   // 起動画面・メイン画面のどちらでも受け付ける(window に配線するため画面切替の
-  // 前後関係を気にしなくてよい)。
-  attachDropZone({
+  // 前後関係を気にしなくてよい)。プレビュー(iframe)は別のブラウジングコンテキストな
+  // ので、window への配線だけでは iframe 内でのドラッグ&ドロップを受け取れない。
+  // preview は上ですでに whenReady() 済みなので、iframe の contentDocument にも
+  // 同じ配線をする(iframe の document は作り直されない前提。src/ui/drop-zone.js 参照)。
+  const dropZone = attachDropZone({
     overlayEl: els.dropOverlay,
     onDropHandles: (handles) => openDroppedHandles(handles),
     setStatusMessage: (text, opts) => statusbar.setMessage(text, opts),
   });
+  dropZone.attachToDocument(preview.getDocument());
 
   bindStaticUi();
   syncDirtyUi();

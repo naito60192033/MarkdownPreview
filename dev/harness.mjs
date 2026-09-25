@@ -45,6 +45,15 @@
 //      本物の DragEvent は dataTransfer.items(getAsFileSystemHandle)を組み立てられない
 //      ため、window.showDirectoryPicker() 等で得た本物相当のハンドルを openDroppedHandles に
 //      直接渡して検証する(src/ui/drop-zone.js のイベント配線そのものはこのテストの対象外)。
+//  13. (セクション30)単体表示の「フォルダを開く」とドロップの受け口の改善:
+//      「フォルダを開く」は showDirectoryPicker に startIn としてその md のハンドルを渡し
+//      (id とは併用しない。dev/fake-fs.mjs が window.__lastShowDirectoryPickerOptions に
+//      記録する)、開いた後に dirHandle.resolve() でその md が見つかれば同じ md を開き直す。
+//      エディタ上への画像でない File(md 等)のドロップは、CodeMirror の既定の挿入
+//      (node_modules/@codemirror/view の handlers.drop)を捕捉フェーズで止め、文書に
+//      中身が挿入されない。画像ファイルのドロップは従来どおり paste.js が処理する
+//      (退行確認)。プレビュー(iframe)の上での Files の dragover/dragleave でも
+//      #dropOverlay の表示/非表示が切り替わる。
 // すべてのテストでコンソールエラーが0件であることを確認する。
 //
 // 前提: 開発コンテナでは先に `bash dev/setup-container.sh` を1度実行しておく。
@@ -5093,6 +5102,174 @@ async function runTests(browser) {
         await page.click('#settingsCancelBtn');
 
         printConsoleErrors(consoleErrors, '見本の h6');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n30) 単体表示の「フォルダを開く」とドロップの受け口の改善');
+  await test('単体表示の「フォルダを開く」は showDirectoryPicker に startIn としてその md のハンドルを渡し(id とは併用しない)、開いた後に同じ md が開いている', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.mkdir(path.join(dir, 'sub'), { recursive: true });
+      await fs.writeFile(path.join(dir, 'sub', 'memo.md'), '# メモ\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await page.evaluate(async () => {
+          const root = await window.showDirectoryPicker();
+          const sub = await root.getDirectoryHandle('sub');
+          const fh = await sub.getFileHandle('memo.md');
+          await window.__mdpreview.openDroppedHandles([fh]);
+        });
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'memo.md', {
+          message: '単体表示で memo.md が開きませんでした',
+        });
+
+        await page.click('#singleFileOpenFolderBtn');
+
+        await waitFor(
+          async () => !(await page.evaluate(() => document.getElementById('appScreen').classList.contains('single-file'))),
+          { message: 'フォルダを開いた後も single-file クラスが残っています' }
+        );
+
+        const opts = await page.evaluate(() => window.__lastShowDirectoryPickerOptions);
+        assert.equal(opts && opts.hasStartIn, true, 'showDirectoryPicker に startIn が渡っていません: ' + JSON.stringify(opts));
+        assert.equal(opts && opts.id, undefined, 'startIn と id を同時に指定しています: ' + JSON.stringify(opts));
+
+        // 開いたフォルダの中にその md がある(sub/memo.md)ので、同じ md が開き直されること。
+        await waitFor(
+          async () => (await page.evaluate(() => window.__mdpreview.getState())).currentPath === 'sub/memo.md',
+          { message: 'フォルダを開いた後に同じ md (sub/memo.md) が開いていません' }
+        );
+
+        printConsoleErrors(consoleErrors, '単体表示の「フォルダを開く」(startIn・開き直し)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('エディタ上に画像でない File(md)をドロップしても、エディタの文書に中身が挿入されない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 元の内容\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('.cm-content');
+
+        const before = await page.evaluate(() => window.__mdpreview.getEditorText());
+
+        await page.evaluate(() => {
+          const file = new File(['# よそ者の md\n'], 'other.md', { type: 'text/markdown' });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          const target = document.querySelector('.cm-content');
+          const rect = target.getBoundingClientRect();
+          const evt = new DragEvent('drop', {
+            dataTransfer: dt,
+            bubbles: true,
+            cancelable: true,
+            clientX: rect.left + 10,
+            clientY: rect.top + 10,
+          });
+          target.dispatchEvent(evt);
+        });
+
+        // CodeMirror の既定の挿入(あれば非同期の FileReader 経由)が万一動いても
+        // 検知できるよう、少し待ってから確認する。
+        await sleep(300);
+        const after = await page.evaluate(() => window.__mdpreview.getEditorText());
+        assert.equal(after, before, 'エディタの文書に md の中身が挿入されています: ' + after);
+
+        printConsoleErrors(consoleErrors, 'エディタへの md ドロップで中身が挿入されない');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('画像ファイルのドロップは従来どおり画像として保存され、参照が挿入される(退行確認)', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# 画像ドロップ\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('.cm-content');
+        await page.keyboard.press('Control+End');
+
+        await page.evaluate(async (b64) => {
+          const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+          const file = new File([bytes], 'shot.png', { type: 'image/png' });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          const target = document.querySelector('.cm-content');
+          const rect = target.getBoundingClientRect();
+          const evt = new DragEvent('drop', {
+            dataTransfer: dt,
+            bubbles: true,
+            cancelable: true,
+            clientX: rect.left + 10,
+            clientY: rect.top + 10,
+          });
+          target.dispatchEvent(evt);
+        }, TEST_PNG_BASE64);
+
+        await waitFor(async () => (await page.evaluate(() => window.__mdpreview.getEditorText())).includes('](images/'), {
+          message: '画像の参照が挿入されませんでした',
+        });
+        const text = await page.evaluate(() => window.__mdpreview.getEditorText());
+        assert.match(text, /!\[\]\(images\/doc\/image-1\.png\)/, '画像参照の形式が想定と異なります: ' + text);
+
+        printConsoleErrors(consoleErrors, '画像ドロップの退行確認');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('プレビュー(iframe)の上での Files の dragover で覆いが表示され、dragleave で隠れる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# タイトル\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+
+        assert.equal(
+          await page.evaluate(() => getComputedStyle(document.getElementById('dropOverlay')).display),
+          'none',
+          '最初から覆いが表示されています'
+        );
+
+        await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          const file = new File(['よそ者'], 'other.md', { type: 'text/markdown' });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          const evt = new DragEvent('dragover', { dataTransfer: dt, bubbles: true, cancelable: true });
+          doc.body.dispatchEvent(evt);
+        });
+
+        await waitFor(
+          async () => (await page.evaluate(() => document.getElementById('dropOverlay').style.display)) === 'flex',
+          { message: 'プレビュー(iframe)上の dragover で覆いが表示されませんでした' }
+        );
+
+        await page.evaluate(() => {
+          const doc = window.__mdpreview.getPreviewDocument();
+          const evt = new DragEvent('dragleave', { bubbles: true, cancelable: true });
+          doc.body.dispatchEvent(evt);
+        });
+
+        await waitFor(
+          async () => (await page.evaluate(() => document.getElementById('dropOverlay').style.display)) === 'none',
+          { message: 'プレビュー(iframe)上の dragleave で覆いが隠れませんでした' }
+        );
+
+        printConsoleErrors(consoleErrors, 'プレビュー(iframe)上のドラッグで覆い表示');
         assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
       });
     } finally {
