@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>設定画面の改善案 — Markdown Preview</title>
+<!--
+  設定画面(歯車ボタンで開く)の見た目を検討するための静的デモです。手書きの HTML で、
+  build.mjs の出力ではありません(dist/mdpreview.html とは無関係)。
+  値は保存されません。画面上部の切り替えで 案A / 案B / 案C を比べられます。
+  3 案とも同じ値を共有しているので、ある案で変えた値は別の案にも引き継がれます。
+-->
+<style>
+:root {
+  --ink-900: #16181d;
+  --ink-700: #3c424b;
+  --ink-500: #6a717c;
+  --ink-300: #98a0ab;
+  --line: #dcdfe4;
+  --line-soft: #e9ebef;
+  --surface: #ffffff;
+  --shell: #f4f5f7;
+  --shell-2: #e8eaee;
+  --accent: #1f4e79;
+  --accent-hover: #1a4368;
+  --accent-soft: #e9eff6;
+  --accent-line: #7f9cbd;
+  --warn: #8a6100;
+  --r: 4px;
+  --font: "Segoe UI", "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", Meiryo, sans-serif;
+  --mono: Consolas, "BIZ UDGothic", "SFMono-Regular", Menlo, "Noto Sans Mono", monospace;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; }
+body {
+  font-family: var(--font); font-size: 13px; color: var(--ink-900);
+  background: var(--shell); -webkit-font-smoothing: antialiased; overflow: hidden;
+}
+button, input, select { font: inherit; color: inherit; }
+svg { display: block; }
+.icon { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.7; fill: none;
+        stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
+.icon-sm { width: 14px; height: 14px; }
+
+/* ============================================================
+   背景のアプリ(ダミー)
+   ============================================================ */
+.app { position: absolute; inset: 0; display: grid;
+       grid-template-rows: 38px 1fr 24px; transition: right .18s ease; }
+.tb { display: flex; align-items: center; gap: 6px; padding: 0 8px 0 10px;
+      border-bottom: 1px solid var(--line); }
+.tb .name { font-weight: 600; margin-left: 8px; }
+.tb .sp { flex: 1; }
+.tb .ibtn { width: 28px; height: 28px; display: grid; place-items: center; border: 0; background: none;
+            border-radius: var(--r); color: var(--ink-500); cursor: pointer; }
+.tb .ibtn:hover { background: var(--shell-2); color: var(--ink-900); }
+.tb .ibtn.on { background: var(--shell-2); color: var(--ink-900); }
+.tb .ghost { padding: 4px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); color: var(--ink-700); }
+.main { display: grid; grid-template-columns: 236px 1fr 1fr; min-height: 0; }
+.side { padding: 10px 8px; color: var(--ink-700); }
+.side div { padding: 3px 8px; border-radius: var(--r); }
+.side .cur { background: var(--accent-soft); color: var(--ink-900); box-shadow: inset 2px 0 var(--accent); }
+.ed { background: var(--surface); border-left: 1px solid var(--line); font-family: var(--mono);
+      padding: 12px 16px; color: var(--ink-700); line-height: 1.75; white-space: pre; overflow: hidden; }
+.ed .h { color: var(--accent); font-weight: 600; }
+.pv { background: var(--surface); border-left: 1px solid var(--line); overflow: auto; padding: 20px 28px; }
+.sb { display: flex; gap: 12px; align-items: center; padding: 0 10px; font-size: 11.5px;
+      color: var(--ink-500); border-top: 1px solid var(--line); }
+
+/* プレビュー本文(標準 CSS 風) */
+.doc { font-size: 14px; line-height: 1.8; color: #1f2328; max-width: 640px; }
+.doc h2, .doc h3, .doc h4 { margin: 18px 0 6px; line-height: 1.4; color: #1f2328; }
+.doc h2 { font-size: 18px; padding: 6px 10px; border-left: 4px solid var(--accent); background: #eef2f6; }
+.doc h3 { font-size: 15.5px; padding-left: 8px; border-left: 3px solid var(--accent-line); }
+.doc h4 { font-size: 14px; }
+.doc p { margin: 0 0 8px; }
+.doc .num { margin-right: .45em; font-variant-numeric: tabular-nums; }
+.doc.indent .lv3 { margin-left: 1.2em; }
+.doc.indent .lv4 { margin-left: 2.4em; }
+.alert { border: 1px solid var(--b); background: var(--bg); border-radius: 6px;
+         padding: 8px 12px; margin: 10px 0; font-size: 13.5px; }
+.alert .t { display: flex; align-items: center; gap: 6px; color: var(--c); font-weight: 600; margin-bottom: 2px; }
+.alert .t i { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; display: inline-block; }
+
+/* 種類ごとの色(src/theme/alerts.css と同じ値) */
+.k-note      { --c: #2c5f94; --b: #a9c1dd; --bg: #f4f8fc; }
+.k-tip       { --c: #2d6b4f; --b: #a8cbb7; --bg: #f3f9f5; }
+.k-important { --c: #5b4a94; --b: #c3b8df; --bg: #f7f5fb; }
+.k-warning   { --c: #8a5a00; --b: #dcc28a; --bg: #fdf9ef; }
+.k-caution   { --c: #a2372f; --b: #deaba6; --bg: #fcf5f4; }
+.k-link      { --c: #44546a; --b: #bfc8d3; --bg: #f6f8fa; }
+.k-memo      { --c: #6b5a45; --b: #d6cabb; --bg: #faf8f5; }
+.k-check     { --c: #1d6a70; --b: #a3cdd1; --bg: #f2f9fa; }
+.k-question  { --c: #883d6f; --b: #dfbcd2; --bg: #fbf4f8; }
+
+/* ============================================================
+   共通の部品(3 案で共有)
+   ============================================================ */
+.overlay { position: fixed; inset: 0; background: rgba(22,24,29,.32); display: grid; place-items: center; z-index: 10; }
+.dlg { background: var(--surface); border-radius: 8px; box-shadow: 0 1px 2px rgba(22,24,29,.08), 0 16px 40px rgba(22,24,29,.18);
+       display: flex; flex-direction: column; overflow: hidden; }
+.dlg-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 12px 20px; border-bottom: 1px solid var(--line-soft); }
+.dlg-head h2 { margin: 0; font-size: 14px; font-weight: 600; flex: 1; }
+.x { width: 28px; height: 28px; display: grid; place-items: center; border: 0; background: none;
+     border-radius: var(--r); color: var(--ink-500); cursor: pointer; }
+.x:hover { background: var(--shell-2); color: var(--ink-900); }
+.dlg-foot { display: flex; align-items: center; gap: 8px; padding: 10px 16px 10px 20px;
+            border-top: 1px solid var(--line-soft); background: #fafbfc; }
+.dlg-foot .note { flex: 1; color: var(--ink-500); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.dlg-foot .note b { font-weight: 600; color: var(--ink-700); }
+.saved-dot { width: 6px; height: 6px; border-radius: 50%; background: #3f8a5f; }
+kbd { font-family: var(--mono); font-size: 11px; padding: 1px 5px; border: 1px solid var(--line);
+      border-bottom-width: 2px; border-radius: 3px; color: var(--ink-500); background: var(--surface); }
+
+.btn { padding: 5px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
+       cursor: pointer; color: var(--ink-700); }
+.btn:hover { background: var(--shell); border-color: #c9cdd4; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.linkbtn { border: 0; background: none; padding: 2px 0; color: var(--accent); cursor: pointer; font-size: 12px;
+           display: inline-flex; align-items: center; gap: 4px; }
+.linkbtn:hover { text-decoration: underline; text-underline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 1px; }
+
+/* 1 行 = 左に「何を決めるか」、右に操作。説明は左の下に 1 行だけ */
+.row { display: grid; grid-template-columns: 1fr auto; gap: 4px 24px; align-items: center; padding: 11px 0; }
+.row + .row { border-top: 1px solid var(--line-soft); }
+.row .lbl { color: var(--ink-900); }
+.row .hint { grid-column: 1; color: var(--ink-500); font-size: 12px; line-height: 1.55; }
+.row .ctl { grid-row: 1 / span 2; grid-column: 2; display: flex; align-items: center; gap: 8px; justify-self: end; }
+.row:not(:has(.hint)) .ctl { grid-row: 1; }
+.row.sub { padding-left: 16px; position: relative; }
+.row.sub::before { content: ""; position: absolute; left: 4px; top: 0; bottom: 50%; width: 7px;
+                   border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.row.is-off .lbl, .row.is-off .hint { color: var(--ink-300); }
+.row.stack { grid-template-columns: 1fr; }
+.row.stack .ctl { grid-row: auto; grid-column: 1; justify-self: stretch; }
+code { font-family: var(--mono); font-size: 11.5px; background: var(--shell); padding: 1px 4px; border-radius: 3px; color: var(--ink-700); }
+
+/* スイッチ(オン/オフ) */
+.sw { position: relative; width: 32px; height: 18px; flex: 0 0 auto; }
+.sw input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; z-index: 1; }
+.sw span { position: absolute; inset: 0; border-radius: 9px; background: #c4c9d1; transition: background .12s; }
+.sw span::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+                  background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .12s; }
+.sw input:checked + span { background: var(--accent); }
+.sw input:checked + span::after { transform: translateX(14px); }
+.sw input:focus-visible + span { outline: 2px solid var(--accent-line); outline-offset: 2px; }
+
+/* 入力欄 */
+.fld { display: inline-flex; align-items: center; height: 28px; border: 1px solid var(--line); border-radius: var(--r);
+       background: var(--surface); overflow: hidden; }
+.fld:focus-within { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+.fld input { border: 0; outline: 0; height: 100%; padding: 0 8px; background: transparent; min-width: 0; }
+.fld input:disabled { color: var(--ink-300); }
+.fld .unit { padding: 0 8px; color: var(--ink-500); background: var(--shell); height: 100%; display: grid;
+             place-items: center; border-left: 1px solid var(--line-soft); font-size: 12px; }
+.fld.num input { width: 52px; text-align: right; font-variant-numeric: tabular-nums; }
+.fld.path { width: 220px; }
+.fld.path input { width: 100%; font-family: var(--mono); font-size: 12px; }
+.fld.path .pre { padding-left: 8px; color: var(--ink-300); font-family: var(--mono); font-size: 12px; }
+
+/* セグメント(番号を付ける深さ) */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--surface); }
+.seg label { position: relative; }
+.seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.seg span { display: block; padding: 3px 9px; font-family: var(--mono); font-size: 12px; color: var(--ink-500);
+            border-left: 1px solid var(--line-soft); }
+.seg label:first-child span { border-left: 0; }
+.seg input:checked + span { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.seg input:focus-visible + span { outline: 2px solid var(--accent-line); outline-offset: -2px; }
+.seg input:disabled + span { color: var(--ink-300); }
+.seg input:disabled:checked + span { background: var(--shell); color: var(--ink-500); }
+
+/* アラートのタイトル(9 種類を表で) */
+.alerts { display: grid; grid-template-columns: auto 1fr 28px; gap: 6px 10px; align-items: center; }
+.alerts .kind { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 12px;
+                color: var(--c); min-width: 104px; }
+.alerts .kind::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
+.alerts .fld { width: 100%; }
+.alerts .fld input { width: 100%; }
+.alerts .fld input::placeholder { color: var(--ink-300); font-style: italic; }
+.alerts .reset { width: 28px; height: 28px; border: 0; background: none; color: var(--ink-500); border-radius: var(--r);
+                 cursor: pointer; display: grid; place-items: center; visibility: hidden; }
+.alerts .reset.show { visibility: visible; }
+.alerts .reset:hover { background: var(--shell-2); color: var(--ink-900); }
+.alerts .blank { grid-column: 2; font-size: 11.5px; color: var(--ink-500); margin-top: -4px; }
+.alerts .blank:empty { display: none; }
+
+/* ============================================================
+   案A 分類つき(左に分類、右に中身。高さ固定で跳ねない)
+   ============================================================ */
+.va { width: 760px; max-width: calc(100vw - 32px); height: 540px; max-height: calc(100vh - 32px); }
+.va .body { flex: 1; display: grid; grid-template-columns: 188px 1fr; min-height: 0; }
+.va nav { background: var(--shell); border-right: 1px solid var(--line-soft); padding: 10px 8px; }
+.va nav button { display: flex; width: 100%; align-items: center; gap: 8px; border: 0; background: none; text-align: left;
+                 padding: 7px 10px; border-radius: var(--r); color: var(--ink-700); cursor: pointer; }
+.va nav button:hover { background: var(--shell-2); }
+.va nav button[aria-selected="true"] { background: var(--surface); color: var(--ink-900); font-weight: 600;
+                                       box-shadow: 0 0 0 1px var(--line-soft), inset 2px 0 var(--accent); }
+.va nav .cnt { margin-left: auto; font-size: 11px; color: var(--ink-300); font-weight: 400; }
+.va .pane { overflow: auto; padding: 18px 28px 24px; }
+.va .pane h3 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
+.va .pane .lead { margin: 0 0 8px; color: var(--ink-500); font-size: 12px; }
+.va section[hidden] { display: none; }
+
+/* ============================================================
+   案B 見本つき(左で変えると右の見本がその場で変わる)
+   ============================================================ */
+.vb { width: 900px; max-width: calc(100vw - 32px); height: 600px; max-height: calc(100vh - 32px); }
+.vb .body { flex: 1; display: grid; grid-template-columns: 1fr 360px; min-height: 0; }
+.vb .form { overflow: auto; padding: 4px 24px 24px; scroll-padding-top: 40px; }
+.vb .grp { padding-top: 14px; }
+.vb .grp > h3 { position: sticky; top: 0; z-index: 1; margin: 0; padding: 10px 0 6px; background: var(--surface);
+                font-size: 11.5px; font-weight: 600; color: var(--ink-500); letter-spacing: .04em;
+                border-bottom: 1px solid var(--line); }
+.vb .sample { background: var(--shell); border-left: 1px solid var(--line-soft); display: flex; flex-direction: column; min-height: 0; }
+.vb .sample-h { padding: 12px 18px 8px; font-size: 11.5px; color: var(--ink-500); display: flex; justify-content: space-between; }
+.vb .paper { flex: 1; margin: 0 14px 14px; background: var(--surface); border: 1px solid var(--line-soft); border-radius: 6px;
+             padding: 6px 18px 14px; overflow: auto; }
+.vb .paper .doc { font-size: 12.5px; }
+.vb .paper .doc h2 { font-size: 15px; }
+.vb .paper .doc h3 { font-size: 13.5px; }
+.vb .paper .doc h4 { font-size: 12.5px; }
+.vb .paper .alert { font-size: 12px; }
+.flash { animation: flash .6s ease-out; }
+@keyframes flash { from { background-color: #fff3c4; } to { background-color: transparent; } }
+
+/* ============================================================
+   案C 右パネル(暗くせず、プレビューを見ながら変える)
+   ============================================================ */
+body.mode-c .app { right: 380px; }
+.vc { position: fixed; top: 0; right: 0; bottom: 0; width: 380px; background: var(--surface); z-index: 10;
+      border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(22,24,29,.06); display: flex; flex-direction: column; }
+.vc .dlg-head { height: 38px; padding: 0 8px 0 16px; }
+.vc .scroll { flex: 1; overflow: auto; }
+.vc details { border-bottom: 1px solid var(--line-soft); }
+.vc summary { list-style: none; display: flex; align-items: center; gap: 8px; padding: 12px 16px; cursor: pointer; font-weight: 600; }
+.vc summary::-webkit-details-marker { display: none; }
+.vc summary .chev { color: var(--ink-500); transition: transform .12s; }
+.vc details[open] summary .chev { transform: rotate(90deg); }
+.vc summary .state { margin-left: auto; font-weight: 400; font-size: 12px; color: var(--ink-500); }
+.vc summary:hover { background: var(--shell); }
+.vc .inner { padding: 0 16px 12px; }
+.vc .row { padding: 9px 0; }
+.vc .alerts .kind { min-width: 88px; }
+.vc .fld.path { width: 170px; }
+
+/* ============================================================
+   デモの切り替え(アプリの一部ではない)
+   ============================================================ */
+.demo-bar { position: fixed; left: 50%; bottom: 36px; transform: translateX(-50%); z-index: 50; display: flex; align-items: center;
+            gap: 10px; background: #16181d; color: #cfd4db; padding: 6px 6px 6px 14px; border-radius: 8px;
+            box-shadow: 0 6px 20px rgba(0,0,0,.25); font-size: 12px; }
+.demo-bar button { border: 0; background: none; color: #cfd4db; padding: 5px 10px; border-radius: 5px; cursor: pointer; }
+.demo-bar button:hover { background: #2a2e36; }
+.demo-bar button[aria-pressed="true"] { background: #fff; color: #16181d; font-weight: 600; }
+.demo-bar .desc { color: #8b929c; border-left: 1px solid #333842; padding-left: 10px; margin-left: 2px; max-width: 280px; }
+body.mode-c .demo-bar { left: calc(50% - 190px); }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+@media (max-width: 720px) {
+  .va .body { grid-template-columns: 1fr; }
+  .va nav { display: flex; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line-soft); }
+  .va nav button { width: auto; white-space: nowrap; }
+  .vb .body { grid-template-columns: 1fr; }
+  .vb .sample { display: none; }
+  .vc { width: 100%; }
+}
+</style>
+</head>
+<body class="mode-a">
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <g id="i-panel"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></g>
+    <g id="i-gear"><circle cx="12" cy="12" r="3"/><path d="M19.3 14.6a1.4 1.4 0 0 0 .3 1.6l.1.1a1.7 1.7 0 1 1-2.4 2.4l-.1-.1a1.4 1.4 0 0 0-2.4 1v.3a1.7 1.7 0 1 1-3.4 0v-.2a1.4 1.4 0 0 0-2.5-1l-.1.1a1.7 1.7 0 1 1-2.4-2.4l.1-.1a1.4 1.4 0 0 0-1-2.4h-.3a1.7 1.7 0 1 1 0-3.4h.2a1.4 1.4 0 0 0 1-2.5l-.1-.1a1.7 1.7 0 1 1 2.4-2.4l.1.1a1.4 1.4 0 0 0 1.6.3h.1a1.4 1.4 0 0 0 .9-1.3v-.3a1.7 1.7 0 1 1 3.4 0v.2a1.4 1.4 0 0 0 2.4 1l.1-.1a1.7 1.7 0 1 1 2.4 2.4l-.1.1a1.4 1.4 0 0 0-.3 1.6v.1a1.4 1.4 0 0 0 1.3.9h.3a1.7 1.7 0 1 1 0 3.4h-.2a1.4 1.4 0 0 0-1.3.8z"/></g>
+    <g id="i-x"><path d="M6 6l12 12M18 6 6 18"/></g>
+    <g id="i-chev"><path d="M9.5 6.5 15 12l-5.5 5.5"/></g>
+    <g id="i-undo"><path d="M9 7.5 5 11.5l4 4"/><path d="M5 11.5h9.5a4.5 4.5 0 0 1 0 9H12"/></g>
+    <g id="i-export"><path d="M12 4v10.5"/><path d="M8.2 11l3.8 3.8 3.8-3.8"/><path d="M4.6 16.4v1.8a2 2 0 0 0 2 2h10.8a2 2 0 0 0 2-2v-1.8"/></g>
+    <g id="i-eye"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></g>
+    <g id="i-css"><path d="M8 5.5c-2 0-2.5 1-2.5 2.5v2c0 1.2-.7 2-2 2 1.3 0 2 .8 2 2v2c0 1.5.5 2.5 2.5 2.5M16 5.5c2 0 2.5 1 2.5 2.5v2c0 1.2.7 2 2 2-1.3 0-2 .8-2 2v2c0 1.5-.5 2.5-2.5 2.5"/></g>
+    <g id="i-hash"><path d="M9.5 4 8 20M16 4l-1.5 16M4.5 9h15.5M4 15h15.5"/></g>
+    <g id="i-file"><path d="M13.5 3.5H7a1.8 1.8 0 0 0-1.8 1.8v13.4A1.8 1.8 0 0 0 7 20.5h10a1.8 1.8 0 0 0 1.8-1.8V8.8z"/><path d="M13.5 3.5v5.3h5.3"/></g>
+    <g id="i-alert"><path d="M12 4.8 21 19.8H3z"/><path d="M12 10v4.2M12 17.2v.05"/></g>
+  </defs>
+</svg>
+
+<!-- ============ 背景のアプリ(ダミー) ============ -->
+<div class="app" id="app">
+  <header class="tb">
+    <button class="ibtn"><svg class="icon" viewBox="0 0 24 24"><use href="#i-panel"/></svg></button>
+    <span class="name">基本設計書.md</span>
+    <span class="sp"></span>
+    <span class="ghost">保存 <kbd>Ctrl+S</kbd></span>
+    <button class="ibtn on" id="gear" title="設定"><svg class="icon" viewBox="0 0 24 24"><use href="#i-gear"/></svg></button>
+    <span class="ghost">フォルダ切替</span>
+  </header>
+  <div class="main">
+    <aside class="side">
+      <div>images</div><div>議事録</div><div>詳細設計</div><div class="cur">基本設計書.md</div><div>用語集.md</div>
+    </aside>
+<div class="ed"><span class="h">## 概要</span>
+
+〇〇受付管理システムの基本設計書です。
+
+<span class="h">### 対象範囲</span>
+
+受付登録・一覧・履歴検索を扱います。
+
+<span class="h">### 対象外</span>
+
+会計・請求処理は扱いません。
+
+<span class="h">## 画面構成</span>
+
+<span class="h">### 受付一覧</span>
+
+<span class="h">#### 検索条件</span>
+
+&gt; [!NOTE]
+&gt; 用語は「用語集」を参照してください。
+
+&gt; [!WARNING]
+&gt; 仕様確定前の暫定版です。</div>
+    <div class="pv"><div class="doc" data-sample></div></div>
+  </div>
+  <footer class="sb"><span>基本設計書.md</span><span>139 行</span><span>UTF-8</span><span>保存済み</span></footer>
+</div>
+
+<!-- ============ 案A 分類つき ============ -->
+<div class="overlay" id="modeA">
+  <div class="dlg va" role="dialog" aria-modal="true" aria-labelledby="ta">
+    <div class="dlg-head">
+      <h2 id="ta">設定</h2>
+      <button class="x" data-close title="閉じる (Esc)"><svg class="icon" viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
+    </div>
+    <div class="body">
+      <nav role="tablist" aria-orientation="vertical">
+        <button role="tab" aria-selected="true" data-tab="a-watch"><svg class="icon" viewBox="0 0 24 24"><use href="#i-eye"/></svg>変更の検知</button>
+        <button role="tab" aria-selected="false" data-tab="a-css"><svg class="icon" viewBox="0 0 24 24"><use href="#i-css"/></svg>プレビューの CSS</button>
+        <button role="tab" aria-selected="false" data-tab="a-head"><svg class="icon" viewBox="0 0 24 24"><use href="#i-hash"/></svg>見出し</button>
+        <button role="tab" aria-selected="false" data-tab="a-html"><svg class="icon" viewBox="0 0 24 24"><use href="#i-file"/></svg>HTML 出力</button>
+        <button role="tab" aria-selected="false" data-tab="a-alert"><svg class="icon" viewBox="0 0 24 24"><use href="#i-alert"/></svg>アラート</button>
+      </nav>
+      <div class="pane">
+        <section id="a-watch">
+          <h3>変更の検知</h3>
+          <p class="lead">ほかのエディタで保存した内容を、開いているファイルに取り込みます。</p>
+          <div class="row">
+            <span class="lbl">外部での変更を自動で検知する</span>
+            <span class="ctl"><label class="sw"><input type="checkbox" data-k="pollEnabled" aria-label="外部での変更を自動で検知する"><span></span></label></span>
+          </div>
+          <div class="row sub" data-dep="pollEnabled">
+            <span class="lbl">確認する間隔</span>
+            <span class="hint">短いほど早く気付きますが、フォルダが大きいと重くなります。</span>
+            <span class="ctl"><span class="fld num"><input type="number" min="1" step="1" data-k="pollInterval" aria-label="確認する間隔(秒)"><span class="unit">秒</span></span></span>
+          </div>
+        </section>
+
+        <section id="a-css" hidden>
+          <h3>プレビューの CSS</h3>
+          <p class="lead">プレビューと HTML 出力の見た目を決めます。</p>
+          <div class="row">
+            <span class="lbl">標準 CSS を使う</span>
+            <span class="hint">オフにすると、下の CSS ファイルだけで表示します。アラートの見た目は常に適用されます。</span>
+            <span class="ctl"><label class="sw"><input type="checkbox" data-k="useStd" aria-label="標準 CSS を使う"><span></span></label></span>
+          </div>
+          <div class="row">
+            <span class="lbl">追加で読み込む CSS</span>
+            <span class="hint">ワークスペースのフォルダからの相対パス。</span>
+            <span class="ctl"><span class="fld path"><span class="pre">./</span><input type="text" data-k="cssPath" aria-label="CSS のパス"></span></span>
+          </div>
+          <div class="row">
+            <span class="lbl">標準 CSS を手元で直したいとき</span>
+            <span class="hint">標準 CSS を上のパスへ書き出します。書き出した後は標準 CSS をオフにしてください。</span>
+            <span class="ctl"><button class="btn"><svg class="icon icon-sm" viewBox="0 0 24 24" style="display:inline;vertical-align:-2px;margin-right:4px"><use href="#i-export"/></svg>書き出す</button></span>
+          </div>
+        </section>
+
+        <section id="a-head" hidden>
+          <h3>見出し</h3>
+          <p class="lead">プレビューと HTML 出力の見出しに番号や字下げを付けます。</p>
+          <div class="row">
+            <span class="lbl">見出しに連番を付ける</span>
+            <span class="hint">例: <code>1.</code> <code>1-2.</code> <code>1-2-3.</code> 番号を付けない見出しは末尾に <code>{.nonum}</code></span>
+            <span class="ctl"><label class="sw"><input type="checkbox" data-k="numbers" aria-label="見出しに連番を付ける"><span></span></label></span>
+          </div>
+          <div class="row sub" data-dep="numbers">
+            <span class="lbl">どの見出しまで付けるか</span>
+            <span class="ctl"><span class="seg" role="radiogroup" aria-label="どの見出しまで付けるか">
+              <label><input type="radio" name="a-depth" value="2" data-k="depth"><span>h2</span></label>
+              <label><input type="radio" name="a-depth" value="3" data-k="depth"><span>h3</span></label>
+              <label><input type="radio" name="a-depth" value="4" data-k="depth"><span>h4</span></label>
+              <label><input type="radio" name="a-depth" value="5" data-k="depth"><span>h5</span></label>
+              <label><input type="radio" name="a-depth" value="6" data-k="depth"><span>h6</span></label>
+            </span></span>
+          </div>
+          <div class="row">
+            <span class="lbl">階層ごとに字下げする</span>
+            <span class="ctl"><label class="sw"><input type="checkbox" data-k="indent" aria-label="階層ごとに字下げする"><span></span></label></span>
+          </div>
+        </section>
+
+        <section id="a-html" hidden>
+          <h3>HTML 出力</h3>
+          <p class="lead">「HTML 出力」で書き出すファイルの作りを決めます。</p>
+          <div class="row">
+            <span class="lbl">左側に目次を付ける</span>
+            <span class="hint">h2〜h6 の目次。狭い画面では畳んで開き、印刷には出ません。</span>
+            <span class="ctl"><label class="sw"><input type="checkbox" data-k="sideToc" aria-label="左側に目次を付ける"><span></span></label></span>
+          </div>
+        </section>
+
+        <section id="a-alert" hidden>
+          <h3>アラートのタイトル</h3>
+          <p class="lead"><code>&gt; [!NOTE]</code> などの見出しに出す文字。空欄にするとアイコンだけになります。</p>
+          <div class="alerts" data-alerts style="margin-top:14px"></div>
+        </section>
+      </div>
+    </div>
+    <div class="dlg-foot">
+      <span class="note"><span class="saved-dot"></span>変更はすぐに保存されます</span>
+      <button class="btn btn-primary" data-close>閉じる</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 案B 見本つき ============ -->
+<div class="overlay" id="modeB" hidden>
+  <div class="dlg vb" role="dialog" aria-modal="true" aria-labelledby="tb">
+    <div class="dlg-head">
+      <h2 id="tb">設定</h2>
+      <button class="x" data-close title="閉じる (Esc)"><svg class="icon" viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
+    </div>
+    <div class="body">
+      <div class="form">
+        <div class="grp">
+          <h3>見出し</h3>
+          <div class="row">
+            <span class="lbl">見出しに連番を付ける</span>
+            <span class="hint">番号を付けない見出しは末尾に <code>{.nonum}</code></span>
+            <span class="ctl"><label class="sw"><input type="checkbox" data-k="numbers" aria-label="見出しに連番を付ける"><span></span></label></span>
+          </div>
+          <div class="row sub" data-dep="numbers">
+            <span class="lbl">どの見出しまで付けるか</span>
+            <span class="ctl"><span class="seg" role="radiogroup" aria-label="どの見出しまで付けるか">
+              <label><input type="radio" name="b-depth" value="2" data-k="depth"><span>h2</span></label>
+              <label><input type="radio" name="b-depth" value="3" data-k="depth"><span>h3</span></label>
+              <label><input type="radio" name="b-depth" value="4" data-k="depth"><span>h4</span></label>
+              <label><input type="radio" name="b-depth" value="5" data-k="depth"><span>h5</span></label>
+              <label><input type="radio" name="b-depth" value="6" data-k="depth"><span>h6</span></label>
+            </span></span>
+          </div>
+          <div class="row">
+            <span class="lbl">階層ごとに字下げする</span>
+            <span class="ctl"><label class="sw"><input type="checkbox" data-k="indent" aria-label="階層ごとに字下げする"><span></span></label></span>
+          </div>
+        </div>
+
+        <div class="grp">
+          <h3>アラートのタイトル</h3>
+          <div class="row stack">
+            <span class="hint" style="grid-column:1">空欄にするとアイコンだけになります。</span>
+            <div class="ctl"><div class="alerts" data-alerts style="width:100%"></div></div>
+          </div>
+        </div>
+
+        <div class="grp">
+          <h3>プレビューの CSS</h3>
+          <div class="row">
+            <span class="lbl">標準 CSS を使う</span>
+            <span class="hint">オフにすると、下の CSS ファイルだけで表示します。</span>
+            <span class="ctl"><label class="sw"><input type="checkbox" data-k="useStd" aria-label="標準 CSS を使う"><span></span></label></span>
+          </div>
+          <div class="row">
+            <span class="lbl">追加で読み込む CSS</span>
+            <span class="hint"><button class="linkbtn">標準 CSS をこのパスへ書き出す</button></span>
+            <span class="ctl"><span class="fld path"><span class="pre">./</span><input type="text" data-k="cssPath" aria-label="CSS のパス"></span></span>
+          </div>
+        </div>
+
+        <div class="grp">
+          <h3>HTML 出力</h3>
+          <div class="row">
+            <span class="lbl">左側に目次を付ける</span>
+            <span class="hint">狭い画面では畳んで開き、印刷には出ません。</span>
+            <span class="ctl"><label class="sw"><input type="checkbox" data-k="sideToc" aria-label="左側に目次を付ける"><span></span></label></span>
+          </div>
+        </div>
+
+        <div class="grp">
+          <h3>変更の検知</h3>
+          <div class="row">
+            <span class="lbl">外部での変更を自動で検知する</span>
+            <span class="ctl"><label class="sw"><input type="checkbox" data-k="pollEnabled" aria-label="外部での変更を自動で検知する"><span></span></label></span>
+          </div>
+          <div class="row sub" data-dep="pollEnabled">
+            <span class="lbl">確認する間隔</span>
+            <span class="ctl"><span class="fld num"><input type="number" min="1" step="1" data-k="pollInterval" aria-label="確認する間隔(秒)"><span class="unit">秒</span></span></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="sample">
+        <div class="sample-h"><span>見本</span><span>変えるとすぐ反映</span></div>
+        <div class="paper"><div class="doc" data-sample></div></div>
+      </div>
+    </div>
+    <div class="dlg-foot">
+      <span class="note"><span class="saved-dot"></span>変更はすぐに保存されます</span>
+      <button class="btn btn-primary" data-close>閉じる</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 案C 右パネル ============ -->
+<aside class="vc" id="modeC" hidden role="complementary" aria-labelledby="tc">
+  <div class="dlg-head">
+    <h2 id="tc">設定</h2>
+    <button class="x" data-close title="閉じる (Esc)"><svg class="icon" viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="scroll">
+    <details open>
+      <summary><svg class="icon icon-sm chev" viewBox="0 0 24 24"><use href="#i-chev"/></svg>見出し<span class="state" data-state="head"></span></summary>
+      <div class="inner">
+        <div class="row">
+          <span class="lbl">連番を付ける</span>
+          <span class="ctl"><label class="sw"><input type="checkbox" data-k="numbers" aria-label="連番を付ける"><span></span></label></span>
+        </div>
+        <div class="row sub" data-dep="numbers">
+          <span class="lbl">ここまで</span>
+          <span class="ctl"><span class="seg" role="radiogroup" aria-label="どの見出しまで付けるか">
+            <label><input type="radio" name="c-depth" value="2" data-k="depth"><span>h2</span></label>
+            <label><input type="radio" name="c-depth" value="3" data-k="depth"><span>h3</span></label>
+            <label><input type="radio" name="c-depth" value="4" data-k="depth"><span>h4</span></label>
+            <label><input type="radio" name="c-depth" value="5" data-k="depth"><span>h5</span></label>
+            <label><input type="radio" name="c-depth" value="6" data-k="depth"><span>h6</span></label>
+          </span></span>
+        </div>
+        <div class="row">
+          <span class="lbl">階層ごとに字下げ</span>
+          <span class="ctl"><label class="sw"><input type="checkbox" data-k="indent" aria-label="階層ごとに字下げ"><span></span></label></span>
+        </div>
+      </div>
+    </details>
+    <details open>
+      <summary><svg class="icon icon-sm chev" viewBox="0 0 24 24"><use href="#i-chev"/></svg>アラートのタイトル<span class="state" data-state="alert"></span></summary>
+      <div class="inner">
+        <div class="alerts" data-alerts></div>
+      </div>
+    </details>
+    <details>
+      <summary><svg class="icon icon-sm chev" viewBox="0 0 24 24"><use href="#i-chev"/></svg>プレビューの CSS<span class="state" data-state="css"></span></summary>
+      <div class="inner">
+        <div class="row">
+          <span class="lbl">標準 CSS を使う</span>
+          <span class="ctl"><label class="sw"><input type="checkbox" data-k="useStd" aria-label="標準 CSS を使う"><span></span></label></span>
+        </div>
+        <div class="row">
+          <span class="lbl">追加の CSS</span>
+          <span class="hint"><button class="linkbtn">標準 CSS をここへ書き出す</button></span>
+          <span class="ctl"><span class="fld path"><span class="pre">./</span><input type="text" data-k="cssPath" aria-label="CSS のパス"></span></span>
+        </div>
+      </div>
+    </details>
+    <details>
+      <summary><svg class="icon icon-sm chev" viewBox="0 0 24 24"><use href="#i-chev"/></svg>HTML 出力<span class="state" data-state="html"></span></summary>
+      <div class="inner">
+        <div class="row">
+          <span class="lbl">左側に目次を付ける</span>
+          <span class="hint">狭い画面では畳んで開き、印刷には出ません。</span>
+          <span class="ctl"><label class="sw"><input type="checkbox" data-k="sideToc" aria-label="左側に目次を付ける"><span></span></label></span>
+        </div>
+      </div>
+    </details>
+    <details>
+      <summary><svg class="icon icon-sm chev" viewBox="0 0 24 24"><use href="#i-chev"/></svg>変更の検知<span class="state" data-state="watch"></span></summary>
+      <div class="inner">
+        <div class="row">
+          <span class="lbl">外部での変更を検知</span>
+          <span class="ctl"><label class="sw"><input type="checkbox" data-k="pollEnabled" aria-label="外部での変更を検知"><span></span></label></span>
+        </div>
+        <div class="row sub" data-dep="pollEnabled">
+          <span class="lbl">確認する間隔</span>
+          <span class="ctl"><span class="fld num"><input type="number" min="1" step="1" data-k="pollInterval" aria-label="確認する間隔(秒)"><span class="unit">秒</span></span></span>
+        </div>
+      </div>
+    </details>
+  </div>
+  <div class="dlg-foot">
+    <span class="note"><span class="saved-dot"></span>変更はすぐに保存されます</span>
+  </div>
+</aside>
+
+<!-- ============ デモの切り替え ============ -->
+<div class="demo-bar" role="group" aria-label="改善案の切り替え">
+  <button data-mode="a" aria-pressed="true">案A 分類つき</button>
+  <button data-mode="b" aria-pressed="false">案B 見本つき</button>
+  <button data-mode="c" aria-pressed="false">案C 右パネル</button>
+  <span class="desc" id="desc"></span>
+</div>
+
+<script>
+const KINDS = ['note','tip','important','warning','caution','link','memo','check','question'];
+const DEF = { note:'Note', tip:'Tip', important:'Important', warning:'Warning', caution:'Caution',
+              link:'Link', memo:'Memo', check:'Check', question:'Question' };
+const S = { pollEnabled: true, pollInterval: 2, cssPath: 'style.css', useStd: true,
+            numbers: true, depth: '3', indent: false, sideToc: true, alerts: { ...DEF, note: '補足' } };
+const DESC = {
+  a: '分類ごとに切り替える。高さが一定で、項目が増えても散らからない',
+  b: '左で変えると右の見本がその場で変わる。見出しとアラートを先頭に',
+  c: '画面を暗くせず右に出す。実際のプレビューを見ながら変えられる',
+};
+
+// アラートの表を各案に作る
+document.querySelectorAll('[data-alerts]').forEach((box, i) => {
+  box.innerHTML = KINDS.map(k => `
+    <span class="kind k-${k}">${k.toUpperCase()}</span>
+    <span class="fld"><input type="text" data-k="alert.${k}" placeholder="(アイコンだけ)" aria-label="${DEF[k]} のタイトル"></span>
+    <button class="reset" data-reset="${k}" title="既定の「${DEF[k]}」に戻す" aria-label="${DEF[k]} を既定に戻す"><svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#i-undo"/></svg></button>`).join('');
+});
+
+function get(k) { return k.startsWith('alert.') ? S.alerts[k.slice(6)] : S[k]; }
+function set(k, v) { if (k.startsWith('alert.')) S.alerts[k.slice(6)] = v; else S[k] = v; }
+
+function renderSample() {
+  const hs = [[2,'概要'],[3,'対象範囲'],[3,'対象外'],[2,'画面構成'],[3,'受付一覧'],[4,'検索条件']];
+  const c = [0,0,0,0,0,0,0];
+  const depth = Number(S.depth);
+  const body = { '概要':'〇〇受付管理システムの基本設計書です。', '対象範囲':'受付登録・一覧・履歴検索を扱います。',
+                 '対象外':'会計・請求処理は扱いません。' };
+  let html = '';
+  for (const [lv, t] of hs) {
+    c[lv]++; for (let j = lv + 1; j <= 6; j++) c[j] = 0;
+    const num = S.numbers && lv <= depth ? `<span class="num">${c.slice(2, lv + 1).join('-')}.</span>` : '';
+    html += `<h${lv} class="lv${lv}">${num}${t}</h${lv}>`;
+    if (body[t]) html += `<p class="lv${lv}">${body[t]}</p>`;
+    if (t === '検索条件') {
+      html += alertHtml('note', '用語は「用語集」を参照してください。');
+      html += alertHtml('warning', '仕様確定前の暫定版です。');
+    }
+  }
+  document.querySelectorAll('[data-sample]').forEach(el => {
+    el.innerHTML = html; el.classList.toggle('indent', S.indent);
+  });
+}
+function alertHtml(k, text) {
+  const t = S.alerts[k];
+  return `<div class="alert k-${k}"><div class="t"><i></i>${t ? esc(t) : ''}</div>${text}</div>`;
+}
+function esc(s) { return s.replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch])); }
+
+function sync(except) {
+  document.querySelectorAll('[data-k]').forEach(el => {
+    if (el === except) return;
+    const v = get(el.dataset.k);
+    if (el.type === 'checkbox') el.checked = !!v;
+    else if (el.type === 'radio') el.checked = el.value === v;
+    else el.value = v;
+  });
+  document.querySelectorAll('[data-dep]').forEach(row => {
+    const on = !!S[row.dataset.dep];
+    row.classList.toggle('is-off', !on);
+    row.querySelectorAll('input').forEach(i => i.disabled = !on);
+  });
+  document.querySelectorAll('[data-reset]').forEach(b => b.classList.toggle('show', S.alerts[b.dataset.reset] !== DEF[b.dataset.reset]));
+  // 案C の見出し行に今の状態を短く出す(畳んでいても分かるように)
+  const changed = KINDS.filter(k => S.alerts[k] !== DEF[k]).length;
+  const st = {
+    head: S.numbers ? `連番 h2〜h${S.depth}${S.indent ? '・字下げ' : ''}` : (S.indent ? '字下げ' : 'オフ'),
+    alert: changed ? `${changed} 件を変更` : '既定のまま',
+    css: (S.useStd ? '標準 + ' : '') + S.cssPath,
+    html: S.sideToc ? '目次あり' : '目次なし',
+    watch: S.pollEnabled ? `${S.pollInterval} 秒ごと` : 'オフ',
+  };
+  document.querySelectorAll('[data-state]').forEach(el => el.textContent = st[el.dataset.state]);
+  renderSample();
+}
+
+document.addEventListener('input', e => {
+  const el = e.target; if (!el.dataset || !el.dataset.k) return;
+  let v = el.type === 'checkbox' ? el.checked : el.value;
+  if (el.dataset.k === 'pollInterval') v = Math.max(1, Number(v) || 1);
+  set(el.dataset.k, v);
+  sync(el);
+  // 案B: 見本の変わった箇所を一瞬だけ示す
+  if (document.body.classList.contains('mode-b')) {
+    const paper = document.querySelector('.vb .paper .doc');
+    const target = el.dataset.k.startsWith('alert.')
+      ? paper.querySelector(`.k-${el.dataset.k.slice(6)}`) || null
+      : ['numbers','depth','indent'].includes(el.dataset.k) ? paper : null;
+    if (target) { target.classList.remove('flash'); void target.offsetWidth; target.classList.add('flash'); }
+  }
+});
+document.addEventListener('click', e => {
+  const r = e.target.closest('[data-reset]');
+  if (r) { S.alerts[r.dataset.reset] = DEF[r.dataset.reset]; sync(); return; }
+  const tab = e.target.closest('[data-tab]');
+  if (tab) {
+    tab.parentElement.querySelectorAll('[data-tab]').forEach(t => {
+      const on = t === tab; t.setAttribute('aria-selected', on);
+      document.getElementById(t.dataset.tab).hidden = !on;
+    });
+    return;
+  }
+  if (e.target.closest('[data-close]')) { closeAll(); return; }
+  if (e.target.classList && e.target.classList.contains('overlay')) { closeAll(); return; }
+  if (e.target.closest('#gear')) { setMode(mode); return; }
+  const m = e.target.closest('[data-mode]');
+  if (m) setMode(m.dataset.mode);
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAll(); });
+
+let mode = 'a';
+function closeAll() {
+  ['modeA','modeB','modeC'].forEach(id => document.getElementById(id).hidden = true);
+  document.body.classList.remove('mode-c');
+}
+function setMode(m) {
+  mode = m;
+  closeAll();
+  document.body.className = 'mode-' + m;
+  document.getElementById('mode' + m.toUpperCase()).hidden = false;
+  document.querySelectorAll('[data-mode]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === m));
+  document.getElementById('desc').textContent = DESC[m];
+}
+setMode('a');
+sync();
+</script>
+</body>
+</html>

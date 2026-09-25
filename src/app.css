@@ -8,6 +8,12 @@
  * (エディタ・プレビュー)は白。枠線を減らし、面の違いで区切る。アクセントは
  * 紺 #1f4e79 の 1 色だけ(プレビュー標準 CSS の見出し色と揃えている。
  * src/theme/base.css の --mdp-accent を参照)。
+ *
+ * 設定パネル(`.settings-*`)は dist/settings-demo.html の「案B 見本つき」から
+ * そのまま移植(左に設定フォーム・右に見本。共通部品は .row → .settings-row、
+ * .sw → .settings-sw、.fld → .settings-fld、.seg → .settings-seg、
+ * .alerts → .settings-alerts、.vb → .settings-modal のように接頭辞を付けて
+ * 対応させている)。見本(iframe の中身)は src/ui/settings-sample.js が担当する。
  */
 
 :root {
@@ -866,13 +872,6 @@ body.resizing .preview-frame {
   box-shadow: 0 10px 30px rgba(22, 24, 29, 0.2);
 }
 
-/* 設定パネルは項目数が多く縦に長くなるため、画面に収まらない場合はパネル内で
- * スクロールする(閉じるボタンが画面外に出てクリックできなくなるのを防ぐ)。 */
-.settings-modal {
-  max-height: calc(100vh - 40px);
-  overflow-y: auto;
-}
-
 .modal h2 {
   margin: 0 0 12px;
   font-size: 16px;
@@ -884,33 +883,500 @@ body.resizing .preview-frame {
   line-height: 1.6;
 }
 
-.settings-subheading {
-  margin: 20px 0 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
-  font-size: 13px;
-  color: var(--ink-500);
+/* ---------- 設定パネル(案B: 左に設定・右に見本。dist/settings-demo.html の
+ * 案Bをそのまま移植。900×600 固定、画面が小さいときは縮む) ----------
+ * `.modal` の余白・幅は他のモーダル(名前入力・競合)と共通の値を使っているため、
+ * ここでは幅・高さ・padding を上書きし、ヘッダ/本文/フッタで own padding を
+ * 持たせる(dist/settings-demo.html の .dlg.vb と同じ構造)。 */
+.settings-modal {
+  width: 900px;
+  max-width: calc(100vw - 32px);
+  height: 600px;
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.settings-row {
+.settings-modal .settings-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-head {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
+  gap: 8px;
+  padding: 12px 12px 12px 20px;
+  border-bottom: 1px solid var(--line-soft);
 }
 
-.settings-input-number {
-  width: 70px;
-}
-
-.settings-input-text {
+.settings-head h2 {
   flex: 1;
+}
+
+.settings-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  min-height: 0;
+}
+
+.settings-form {
+  overflow-y: auto;
+  padding: 4px 24px 24px;
+  scroll-padding-top: 40px;
+}
+
+.settings-grp {
+  padding-top: 14px;
+}
+
+.settings-grp > h3 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 10px 0 6px;
+  background: var(--surface);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-500);
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--line);
+}
+
+/* 1 行 = 左に「何を決めるか」、右に操作。説明は左の下に 1 行だけ */
+.settings-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 24px;
+  align-items: center;
+  padding: 11px 0;
+}
+
+.settings-row + .settings-row {
+  border-top: 1px solid var(--line-soft);
+}
+
+.settings-lbl {
+  color: var(--ink-900);
+}
+
+.settings-hint {
+  grid-column: 1;
+  color: var(--ink-500);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.settings-ctl {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: end;
+}
+
+.settings-row:not(:has(.settings-hint)) .settings-ctl {
+  grid-row: 1;
+}
+
+/* 親のチェックボックスに従属する行(検知間隔・番号の深さ)。親がオフのときは
+ * settings-panel.js が is-off を付け、行の中の input を disabled にする。 */
+.settings-row-sub {
+  padding-left: 16px;
+  position: relative;
+}
+
+.settings-row-sub::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 0;
+  bottom: 50%;
+  width: 7px;
+  border-left: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  border-bottom-left-radius: 4px;
+}
+
+.settings-row.is-off .settings-lbl,
+.settings-row.is-off .settings-hint {
+  color: var(--ink-300);
+}
+
+.settings-row-stack {
+  grid-template-columns: 1fr;
+}
+
+.settings-row-stack .settings-ctl {
+  grid-row: auto;
+  grid-column: 1;
+  justify-self: stretch;
+}
+
+/* スイッチ(オン/オフ)。input 自体は checkbox のまま、見た目だけスイッチにする */
+.settings-sw {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.settings-sw input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.settings-sw span {
+  position: absolute;
+  inset: 0;
+  border-radius: 9px;
+  background: #c4c9d1;
+  transition: background 0.12s;
+}
+
+.settings-sw span::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform 0.12s;
+}
+
+.settings-sw input:checked + span {
+  background: var(--accent);
+}
+
+.settings-sw input:checked + span::after {
+  transform: translateX(14px);
+}
+
+.settings-sw input:focus-visible + span {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+
+/* 入力欄(検知間隔の秒・CSS のパス) */
+/* input は font を継承しないため、設定画面の中では UI の文字に揃える */
+.settings-modal input {
+  font: inherit;
+  font-size: 13px;
+}
+
+.settings-fld {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.settings-fld:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.settings-fld input {
+  border: 0;
+  outline: 0;
+  height: 100%;
+  padding: 0 8px;
+  background: transparent;
   min-width: 0;
 }
 
-.settings-row-alert label {
-  min-width: 76px;
+.settings-fld input:disabled {
+  color: var(--ink-300);
+}
+
+.settings-unit {
+  padding: 0 8px;
+  color: var(--ink-500);
+  background: var(--shell);
+  height: 100%;
+  display: grid;
+  place-items: center;
+  border-left: 1px solid var(--line-soft);
+  font-size: 12px;
+}
+
+.settings-fld-num input {
+  width: 52px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-fld-path {
+  width: 220px;
+}
+
+.settings-fld-path input {
+  width: 100%;
+  font-family: Consolas, "SFMono-Regular", Menlo, "Noto Sans Mono", monospace;
+  font-size: 12px;
+}
+
+.settings-pre {
+  padding-left: 8px;
+  color: var(--ink-300);
+  font-family: Consolas, "SFMono-Regular", Menlo, "Noto Sans Mono", monospace;
+  font-size: 12px;
+}
+
+/* セグメント(番号を付ける深さ: h2〜h6) */
+.settings-seg {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.settings-seg label {
+  position: relative;
+}
+
+.settings-seg input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.settings-seg span {
+  display: block;
+  padding: 3px 9px;
+  font-family: Consolas, "SFMono-Regular", Menlo, "Noto Sans Mono", monospace;
+  font-size: 12px;
+  color: var(--ink-500);
+  border-left: 1px solid var(--line-soft);
+}
+
+.settings-seg label:first-child span {
+  border-left: 0;
+}
+
+.settings-seg input:checked + span {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.settings-seg input:focus-visible + span {
+  outline: 2px solid var(--accent-line);
+  outline-offset: -2px;
+}
+
+.settings-seg input:disabled + span {
+  color: var(--ink-300);
+}
+
+.settings-seg input:disabled:checked + span {
+  background: var(--shell);
+  color: var(--ink-500);
+}
+
+/* アラートのタイトル(9 種類を表で) */
+.settings-alerts {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr 28px;
+  gap: 6px 10px;
+  align-items: center;
+}
+
+.settings-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: Consolas, "SFMono-Regular", Menlo, "Noto Sans Mono", monospace;
+  font-size: 12px;
+  color: var(--c);
+  min-width: 104px;
+}
+
+.settings-kind::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--c);
+}
+
+.settings-alerts .settings-fld {
+  width: 100%;
+}
+
+.settings-alerts .settings-fld input {
+  width: 100%;
+}
+
+.settings-alerts .settings-fld input::placeholder {
+  color: var(--ink-300);
+  font-style: italic;
+}
+
+.settings-reset {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: none;
+  color: var(--ink-500);
+  border-radius: var(--r);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  visibility: hidden;
+}
+
+.settings-reset.show {
+  visibility: visible;
+}
+
+.settings-reset:hover {
+  background: var(--shell-2);
+  color: var(--ink-900);
+}
+
+/* 種類ごとの色(src/theme/alerts.css と同じトーン。dist/settings-demo.html と同じ値) */
+.settings-kind-note {
+  --c: #2c5f94;
+}
+.settings-kind-tip {
+  --c: #2d6b4f;
+}
+.settings-kind-important {
+  --c: #5b4a94;
+}
+.settings-kind-warning {
+  --c: #8a5a00;
+}
+.settings-kind-caution {
+  --c: #a2372f;
+}
+.settings-kind-link {
+  --c: #44546a;
+}
+.settings-kind-memo {
+  --c: #6b5a45;
+}
+.settings-kind-check {
+  --c: #1d6a70;
+}
+.settings-kind-question {
+  --c: #883d6f;
+}
+
+/* リンク風ボタン(標準 CSS をこのパスへ書き出す) */
+.settings-linkbtn {
+  border: 0;
+  background: none;
+  padding: 2px 0;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.settings-linkbtn:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* 右側の見本(左で変えるとその場で変わる)。iframe の中身(見本用の縮小 CSS 込み)は
+ * src/ui/settings-sample.js が担当する。 */
+.settings-sample {
+  background: var(--shell);
+  border-left: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.settings-sample-head {
+  flex: 0 0 auto;
+  padding: 12px 18px 8px;
+  font-size: 11.5px;
+  color: var(--ink-500);
+  display: flex;
+  justify-content: space-between;
+}
+
+.settings-paper {
+  flex: 1;
+  margin: 0 14px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.settings-sample-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
+.settings-foot {
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding: 10px 16px 10px 20px;
+  border-top: 1px solid var(--line-soft);
+  background: #fafbfc;
+}
+
+.settings-note {
+  flex: 1;
+  color: var(--ink-500);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 未保存の変更があるときだけ出す(アプリの未保存表示と同じ amber) */
+.settings-note.is-dirty {
+  color: var(--warn);
+}
+
+.settings-note.is-dirty::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* 画面幅が 760px 未満のときは見本を隠し、フォームだけを 1 列で表示する
+ * (dist/settings-demo.html の .vb .body と同じブレークポイント)。 */
+@media (max-width: 760px) {
+  .settings-body {
+    grid-template-columns: 1fr;
+  }
+  .settings-sample {
+    display: none;
+  }
 }
 
 .modal-footer {

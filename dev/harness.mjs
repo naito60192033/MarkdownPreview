@@ -277,6 +277,19 @@ async function setSettingCheckbox(page, id, checked) {
   );
 }
 
+// 設定パネルのラジオ群(name="settingHeadingNumberDepth" の h2〜h6 5 つ)から
+// 指定の値のものを選んで change イベントを発火する(commit() が呼ばれる)。
+async function setSettingRadio(page, name, value) {
+  await page.evaluate(
+    ({ name, value }) => {
+      const input = document.querySelector(`input[name="${name}"][value="${value}"]`);
+      input.checked = true;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    },
+    { name, value }
+  );
+}
+
 async function getPreviewText(page) {
   return page.evaluate(() => window.__mdpreview.getPreviewDocument().body.textContent);
 }
@@ -1424,7 +1437,7 @@ async function runTests(browser) {
             input.dispatchEvent(new Event('change', { bubbles: true }));
           }
         });
-        await page.click('#settingsCloseBtn');
+        await page.click('#settingsSaveBtn');
 
         await waitFor(async () =>
           page.evaluate(() => {
@@ -1475,6 +1488,7 @@ async function runTests(browser) {
           input.value = '';
           input.dispatchEvent(new Event('change', { bubbles: true }));
         });
+        await page.click('#settingsSaveBtn');
 
         await waitFor(
           async () =>
@@ -1513,6 +1527,7 @@ async function runTests(browser) {
         // 「既定に戻す」ボタンで既定のタイトル(Note)に戻ることも確認する。
         await page.click('#settingsBtn');
         await page.click('#resetAlertTitleNote');
+        await page.click('#settingsSaveBtn');
         await waitFor(
           async () =>
             page.evaluate(() => {
@@ -2534,7 +2549,7 @@ async function runTests(browser) {
         await pickFolderAndOpen(page, 'doc.md');
         await page.click('#settingsBtn');
         await setSettingCheckbox(page, 'settingHeadingNumbers', true);
-        await page.click('#settingsCloseBtn');
+        await page.click('#settingsSaveBtn');
         await waitFor(
           async () =>
             !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdp-heading-number')))
@@ -2960,7 +2975,7 @@ async function runTests(browser) {
         await pickFolderAndOpen(page, 'doc.md');
         await page.click('#settingsBtn');
         await setSettingCheckbox(page, 'settingSideToc', false);
-        await page.click('#settingsCloseBtn');
+        await page.click('#settingsSaveBtn');
         await page.evaluate(() => window.__mdpreview.exportNormal());
         await waitFor(async () => existsSync(path.join(dir, 'doc.html')), { message: 'doc.html が出力されませんでした' });
       });
@@ -3065,7 +3080,7 @@ async function runTests(browser) {
           input.checked = false;
           input.dispatchEvent(new Event('change', { bubbles: true }));
         });
-        await page.click('#settingsCloseBtn');
+        await page.click('#settingsSaveBtn');
 
         await waitFor(
           async () =>
@@ -3280,7 +3295,7 @@ async function runTests(browser) {
 
         await page.click('#settingsBtn');
         await setSettingCheckbox(page, 'settingHeadingNumbers', true);
-        await page.click('#settingsCloseBtn');
+        await page.click('#settingsSaveBtn');
         await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdp-heading-number'))));
 
         const { idsAfter, numbers } = await page.evaluate(() => {
@@ -3318,8 +3333,8 @@ async function runTests(browser) {
         await pickFolderAndOpen(page, 'doc.md');
         await page.click('#settingsBtn');
         await setSettingCheckbox(page, 'settingHeadingNumbers', true);
-        await page.selectOption('#settingHeadingNumberDepth', '3');
-        await page.click('#settingsCloseBtn');
+        await setSettingRadio(page, 'settingHeadingNumberDepth', '3');
+        await page.click('#settingsSaveBtn');
         await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdp-heading-number'))));
 
         const numbers = await page.evaluate(() =>
@@ -3360,7 +3375,7 @@ async function runTests(browser) {
         await pickFolderAndOpen(page, 'doc.md');
         await page.click('#settingsBtn');
         await setSettingCheckbox(page, 'settingHeadingNumbers', true);
-        await page.click('#settingsCloseBtn');
+        await page.click('#settingsSaveBtn');
         await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('h2 .mdp-heading-number'))));
 
         // 保存でソース書き込み型 TOC(<!-- @import "[TOC]" --> の直後のブロック)を
@@ -3437,7 +3452,7 @@ async function runTests(browser) {
         await pickFolderAndOpen(page, 'doc.md');
         await page.click('#settingsBtn');
         await setSettingCheckbox(page, 'settingHeadingIndent', true);
-        await page.click('#settingsCloseBtn');
+        await page.click('#settingsSaveBtn');
         await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('table[data-mdp-indent]'))));
 
         const result = await page.evaluate(() => {
@@ -3492,7 +3507,7 @@ async function runTests(browser) {
         await setSettingCheckbox(page, 'settingUseStandardCss', false);
         await setSettingCheckbox(page, 'settingHeadingNumbers', true);
         await setSettingCheckbox(page, 'settingHeadingIndent', true);
-        await page.click('#settingsCloseBtn');
+        await page.click('#settingsSaveBtn');
         await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdp-heading-number'))));
 
         const { numberText, indentMarginLeft } = await page.evaluate(() => {
@@ -3524,7 +3539,7 @@ async function runTests(browser) {
         await page.click('#settingsBtn');
         await setSettingCheckbox(page, 'settingHeadingNumbers', true);
         await setSettingCheckbox(page, 'settingHeadingIndent', true);
-        await page.click('#settingsCloseBtn');
+        await page.click('#settingsSaveBtn');
         await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdp-heading-number'))));
 
         await page.evaluate(() => window.__mdpreview.exportNormal());
@@ -3550,9 +3565,9 @@ async function runTests(browser) {
         await pickFolderAndOpen(page, 'doc.md');
         await page.click('#settingsBtn');
         await setSettingCheckbox(page, 'settingHeadingNumbers', true);
-        await page.selectOption('#settingHeadingNumberDepth', '3');
+        await setSettingRadio(page, 'settingHeadingNumberDepth', '3');
         await setSettingCheckbox(page, 'settingHeadingIndent', true);
-        await page.click('#settingsCloseBtn');
+        await page.click('#settingsSaveBtn');
         await waitFor(async () => !!(await page.evaluate(() => window.__mdpreview.getPreviewDocument().querySelector('.mdp-heading-number'))));
 
         await page.reload();
@@ -3678,7 +3693,7 @@ async function runTests(browser) {
 
         await page.click('#settingsBtn');
         await setSettingCheckbox(page, 'settingUseStandardCss', false);
-        await page.click('#settingsCloseBtn');
+        await page.click('#settingsSaveBtn');
         await waitFor(
           async () =>
             page.evaluate(() => document.getElementById('preview').contentDocument.getElementById('mdpreview-base-style').textContent === ''),
@@ -4833,6 +4848,251 @@ async function runTests(browser) {
         );
 
         printConsoleErrors(consoleErrors, 'フォルダを開くで通常のワークスペースに復帰');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n29) 設定画面の見本(案B)');
+  await test('連番をオンにすると見本の最初の h2 に 1. が付く', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# タイトル\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingHeadingNumbers', true);
+        await waitFor(
+          async () =>
+            page.evaluate(() => {
+              const doc = document.getElementById('settingsSampleFrame').contentDocument;
+              const span = doc && doc.querySelector('h2 .mdp-heading-number');
+              return !!span && span.textContent === '1.';
+            }),
+          { message: '見本の最初の h2 に連番が付きませんでした' }
+        );
+        await page.click('#settingsSaveBtn');
+
+        printConsoleErrors(consoleErrors, '設定画面の見本(連番)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('NOTE のタイトルを変えると見本の NOTE のタイトルがその文言になる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# タイトル\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        await page.evaluate(() => {
+          const input = document.getElementById('settingAlertTitleNote');
+          input.value = '注記';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await waitFor(
+          async () =>
+            page.evaluate(() => {
+              const doc = document.getElementById('settingsSampleFrame').contentDocument;
+              return !!(doc && doc.querySelector('.markdown-alert-note .markdown-alert-title'));
+            }),
+          { message: '見本に NOTE のアラートが見つかりませんでした' }
+        );
+        const titleText = await page.evaluate(
+          () =>
+            document
+              .getElementById('settingsSampleFrame')
+              .contentDocument.querySelector('.markdown-alert-note .markdown-alert-title').textContent
+        );
+        assert.equal(titleText, '注記', '見本の NOTE のタイトルが入力した文言になっていません');
+        await page.click('#settingsSaveBtn');
+
+        printConsoleErrors(consoleErrors, '設定画面の見本(アラートのタイトル)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('外部での変更の検知をオフにすると確認する間隔の入力欄が disabled になる', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# タイトル\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        assert.equal(
+          await page.evaluate(() => document.getElementById('settingPollInterval').disabled),
+          false,
+          '既定(検知オン)で確認する間隔の入力欄が disabled になっています'
+        );
+
+        await setSettingCheckbox(page, 'settingPollEnabled', false);
+        assert.equal(
+          await page.evaluate(() => document.getElementById('settingPollInterval').disabled),
+          true,
+          '検知をオフにしても確認する間隔の入力欄が disabled になりません'
+        );
+        await page.click('#settingsSaveBtn');
+
+        printConsoleErrors(consoleErrors, '設定画面の見本(確認する間隔の disabled)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('アラートのタイトルが既定値のときは戻すボタンが見えず、変えると見える', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# タイトル\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        assert.equal(
+          await page.evaluate(() => getComputedStyle(document.getElementById('resetAlertTitleNote')).visibility),
+          'hidden',
+          '既定値のままなのに戻すボタンが見えています'
+        );
+
+        await page.evaluate(() => {
+          const input = document.getElementById('settingAlertTitleNote');
+          input.value = '注記';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await waitFor(
+          async () =>
+            (await page.evaluate(() => getComputedStyle(document.getElementById('resetAlertTitleNote')).visibility)) ===
+            'visible',
+          { message: '既定値と違う値にしても戻すボタンが見えるようになりません' }
+        );
+        await page.click('#settingsSaveBtn');
+
+        printConsoleErrors(consoleErrors, '設定画面の見本(戻すボタンの表示切替)');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // ---- 保存するまで背景のプレビューに反映しない ----
+  const hasNumber = (page) =>
+    page.evaluate(() => !!window.__mdpreview.getPreviewDocument().querySelector('h2 .mdp-heading-number'));
+  const isSettingsOpen = (page) =>
+    page.evaluate(() => document.getElementById('settingsPanel').style.display !== 'none');
+
+  await test('保存するまでは背景のプレビューが変わらず、保存で反映される', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# タイトル\n\n## 概要\n\n本文です。\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingHeadingNumbers', true);
+        // 見本には出る
+        await waitFor(
+          async () =>
+            page.evaluate(() => {
+              const doc = document.getElementById('settingsSampleFrame').contentDocument;
+              return !!doc.querySelector('h2 .mdp-heading-number');
+            }),
+          { message: '見本に連番が付きませんでした' }
+        );
+        assert.equal(
+          await page.evaluate(() => document.getElementById('settingsDirtyNote').textContent),
+          '未保存の変更があります'
+        );
+        await sleep(400);
+        assert.equal(await hasNumber(page), false, '保存前なのに背景のプレビューに連番が付きました');
+        assert.equal(
+          await page.evaluate(() => window.__mdpreview.getSettings().headingNumbers),
+          false,
+          '保存前なのに設定が保存されました'
+        );
+
+        await page.click('#settingsSaveBtn');
+        assert.equal(await isSettingsOpen(page), false, '保存を押しても閉じませんでした');
+        await waitFor(() => hasNumber(page), { message: '保存しても背景のプレビューに連番が付きませんでした' });
+        assert.equal(await page.evaluate(() => window.__mdpreview.getSettings().headingNumbers), true);
+
+        printConsoleErrors(consoleErrors, '設定の保存で反映');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('キャンセル・× ・Esc は変更を捨て、背景クリックは未保存の変更があると閉じない', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# タイトル\n\n## 概要\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        for (const how of ['cancel', 'x', 'esc']) {
+          await page.click('#settingsBtn');
+          await setSettingCheckbox(page, 'settingHeadingNumbers', true);
+          if (how === 'cancel') await page.click('#settingsCancelBtn');
+          if (how === 'x') await page.click('#settingsCloseXBtn');
+          if (how === 'esc') await page.keyboard.press('Escape');
+          assert.equal(await isSettingsOpen(page), false, `${how} で閉じませんでした`);
+          assert.equal(await page.evaluate(() => window.__mdpreview.getSettings().headingNumbers), false, `${how} で変更が保存されました`);
+          await page.click('#settingsBtn');
+          assert.equal(
+            await page.evaluate(() => document.getElementById('settingHeadingNumbers').checked),
+            false,
+            `${how} の後に開き直すと、捨てたはずの変更が残っていました`
+          );
+          await page.click('#settingsCancelBtn');
+        }
+
+        // 未保存の変更があるときは背景のクリックで閉じない
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingHeadingIndent', true);
+        await page.mouse.click(5, 5);
+        await sleep(200);
+        assert.equal(await isSettingsOpen(page), true, '未保存の変更があるのに背景のクリックで閉じました');
+        // 元に戻せば(変更なし)背景のクリックで閉じる
+        await setSettingCheckbox(page, 'settingHeadingIndent', false);
+        await page.mouse.click(5, 5);
+        await waitFor(async () => !(await isSettingsOpen(page)), { message: '変更が無いのに背景のクリックで閉じませんでした' });
+
+        printConsoleErrors(consoleErrors, '設定のキャンセル');
+        assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('見本には h6 まであり、深さ h6 で h6 に 2-1-1-1-1. が付く', async () => {
+    const dir = await mkTmpDir();
+    try {
+      await fs.writeFile(path.join(dir, 'doc.md'), '# タイトル\n', 'utf8');
+      await withPage(browser, { rootDir: dir }, async ({ page, consoleErrors }) => {
+        await pickFolderAndOpen(page, 'doc.md');
+        await page.click('#settingsBtn');
+        await setSettingCheckbox(page, 'settingHeadingNumbers', true);
+        await waitFor(
+          async () =>
+            page.evaluate(() => {
+              const doc = document.getElementById('settingsSampleFrame').contentDocument;
+              const span = doc.querySelector('h6 .mdp-heading-number');
+              return !!span && span.textContent === '2-1-1-1-1.';
+            }),
+          { message: '見本の h6 に 2-1-1-1-1. が付きませんでした' }
+        );
+        await page.click('#settingsCancelBtn');
+
+        printConsoleErrors(consoleErrors, '見本の h6');
         assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
       });
     } finally {
