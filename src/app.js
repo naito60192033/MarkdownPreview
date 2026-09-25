@@ -165,14 +165,20 @@ function cacheEls() {
     statusMessage: document.getElementById('statusMessage'),
 
     settingsPanel: document.getElementById('settingsPanel'),
-    settingsCloseBtn: document.getElementById('settingsCloseBtn'),
+    settingsSaveBtn: document.getElementById('settingsSaveBtn'),
+    settingsCancelBtn: document.getElementById('settingsCancelBtn'),
+    settingsDirtyNote: document.getElementById('settingsDirtyNote'),
+    settingsCloseXBtn: document.getElementById('settingsCloseXBtn'),
+    settingsSampleFrame: document.getElementById('settingsSampleFrame'),
     settingPollEnabled: document.getElementById('settingPollEnabled'),
     settingPollInterval: document.getElementById('settingPollInterval'),
+    settingPollIntervalRow: document.getElementById('settingPollIntervalRow'),
     settingCssPath: document.getElementById('settingCssPath'),
     settingUseStandardCss: document.getElementById('settingUseStandardCss'),
     exportStandardCssBtn: document.getElementById('exportStandardCssBtn'),
     settingHeadingNumbers: document.getElementById('settingHeadingNumbers'),
-    settingHeadingNumberDepth: document.getElementById('settingHeadingNumberDepth'),
+    settingHeadingNumberDepthInputs: document.querySelectorAll('input[name="settingHeadingNumberDepth"]'),
+    settingHeadingDepthRow: document.getElementById('settingHeadingDepthRow'),
     settingHeadingIndent: document.getElementById('settingHeadingIndent'),
     settingSideToc: document.getElementById('settingSideToc'),
     settingAlertTitleNote: document.getElementById('settingAlertTitleNote'),
@@ -770,10 +776,12 @@ async function loadCssAndWatch() {
     /* noop (存在しない場合は空扱い) */
   }
   preview.setUserCss(result ? result.text : '');
+  settingsPanel.setUserCss(result ? result.text : '');
   watcher.watch(
     cssPath,
     (info) => {
       preview.setUserCss(info.text || '');
+      settingsPanel.setUserCss(info.text || '');
     },
     result ? result.lastModified : null
   );
@@ -1299,16 +1307,22 @@ async function setup() {
   settingsPanel = createSettingsPanel({
     overlay: els.settingsPanel,
     openBtn: els.settingsBtn,
-    closeBtn: els.settingsCloseBtn,
+    saveBtn: els.settingsSaveBtn,
+    cancelBtn: els.settingsCancelBtn,
+    dirtyNoteEl: els.settingsDirtyNote,
+    closeXBtn: els.settingsCloseXBtn,
     pollEnabledInput: els.settingPollEnabled,
     pollIntervalInput: els.settingPollInterval,
+    pollIntervalRow: els.settingPollIntervalRow,
     cssPathInput: els.settingCssPath,
     useStandardCssInput: els.settingUseStandardCss,
     exportStandardCssBtn: els.exportStandardCssBtn,
     headingNumbersInput: els.settingHeadingNumbers,
-    headingNumberDepthInput: els.settingHeadingNumberDepth,
+    headingNumberDepthInputs: els.settingHeadingNumberDepthInputs,
+    headingDepthRow: els.settingHeadingDepthRow,
     headingIndentInput: els.settingHeadingIndent,
     sideTocInput: els.settingSideToc,
+    sampleFrame: els.settingsSampleFrame,
     alertTitleInputs: {
       note: els.settingAlertTitleNote,
       tip: els.settingAlertTitleTip,

@@ -815,7 +815,7 @@ async function main() {
         message: '設定パネルが開きませんでした',
       });
       await shot(page, 'settings.png');
-      await page.click('#settingsCloseBtn');
+      await page.click('#settingsSaveBtn');
     });
 
     // HTML 出力(exportNormal)はステータスバーに「HTML を出力しました」の文言が

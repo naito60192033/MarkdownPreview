@@ -35,6 +35,7 @@
     <g id="i-v-prev"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M12 5v14"/><rect x="13.2" y="6.2" width="6.1" height="11.6" rx="1" fill="currentColor" stroke="none" opacity=".92"/></g>
     <g id="i-x"><path d="M6 6l12 12M18 6 6 18"/></g>
     <g id="i-drop"><path d="M14 3.5H7.6A2.1 2.1 0 0 0 5.5 5.6v12.8a2.1 2.1 0 0 0 2.1 2.1h8.8a2.1 2.1 0 0 0 2.1-2.1V8z"/><path d="M14 3.5V8h4.5"/><path d="M12 11v5.4"/><path d="M9.6 14l2.4 2.4 2.4-2.4"/></g>
+    <g id="i-undo"><path d="M9 7.5 5 11.5l4 4"/><path d="M5 11.5h9.5a4.5 4.5 0 0 1 0 9H12"/></g>
   </defs>
 </svg>
 
@@ -170,106 +171,163 @@
     </div>
   </div>
 
-  <!-- 設定パネル -->
+  <!-- 設定パネル(案B: 左に設定・右に見本。dist/settings-demo.html の
+       案Bをそのまま移植)。見本(#settingsSampleFrame)は本物の描画経路
+       (renderDocument + applyOutline。src/ui/settings-sample.js)で作る。 -->
   <div id="settingsPanel" class="modal-overlay" style="display:none;">
-    <div class="modal settings-modal">
-      <h2>設定</h2>
-      <label class="settings-row">
-        <input type="checkbox" id="settingPollEnabled" />
-        外部での変更を自動検知する
-      </label>
-      <label class="settings-row">
-        <span>検知間隔(秒)</span>
-        <input type="number" id="settingPollInterval" min="1" step="1" class="settings-input-number" />
-      </label>
-      <label class="settings-row">
-        <span>CSS のパス(ルート相対)</span>
-        <input type="text" id="settingCssPath" class="settings-input-text" />
-      </label>
-      <label class="settings-row">
-        <input type="checkbox" id="settingUseStandardCss" />
-        標準 CSS を使う
-      </label>
-      <p>オフにすると、CSS のパスのファイルだけを使います(アラートの見た目は常に適用されます)。</p>
-      <div class="settings-row">
-        <button type="button" id="exportStandardCssBtn" class="btn btn-small">標準 CSS を書き出す</button>
+    <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="settings-head">
+        <h2 id="settingsTitle">設定</h2>
+        <button type="button" id="settingsCloseXBtn" class="icon-btn" title="保存せずに閉じる (Esc)">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-x"/></svg>
+        </button>
       </div>
-      <h3 class="settings-subheading">見出し</h3>
-      <label class="settings-row">
-        <input type="checkbox" id="settingHeadingNumbers" />
-        h2 以降の見出しに連番を付ける(例: 1-2-3.)
-      </label>
-      <label class="settings-row">
-        <span>番号を付ける深さ</span>
-        <select id="settingHeadingNumberDepth">
-          <option value="2">h2 のみ</option>
-          <option value="3">h2〜h3</option>
-          <option value="4">h2〜h4</option>
-          <option value="5">h2〜h5</option>
-          <option value="6">h2〜h6</option>
-        </select>
-      </label>
-      <label class="settings-row">
-        <input type="checkbox" id="settingHeadingIndent" />
-        見出しの階層ごとに字下げする
-      </label>
-      <p>手書きの番号(<code>## 1. はじめに</code> など)がある資料では番号が二重になります。番号を付けたくない見出しは <code>## 改訂履歴 {.nonum}</code> のように書きます。</p>
-      <h3 class="settings-subheading">HTML 出力</h3>
-      <label class="settings-row">
-        <input type="checkbox" id="settingSideToc" />
-        HTML 出力にサイドバーの目次を付ける
-      </label>
-      <p>出力した HTML の画面左側に、見出し(h2〜h6)の目次を表示します。« で細い帯に畳めます。画面の幅が 1280px 未満のときは畳んだ状態で開き、720px 未満のときと印刷するときは表示しません。</p>
-      <h3 class="settings-subheading">アラートのタイトル</h3>
-      <p>空欄にすると、タイトル文字を出さずアイコンだけを表示します。</p>
-      <div class="settings-row settings-row-alert">
-        <label for="settingAlertTitleNote">Note</label>
-        <input type="text" id="settingAlertTitleNote" class="settings-input-text" />
-        <button type="button" id="resetAlertTitleNote" class="btn btn-small">既定に戻す</button>
+      <div class="settings-body">
+        <div class="settings-form">
+          <div class="settings-grp">
+            <h3>見出し</h3>
+            <div class="settings-row">
+              <span class="settings-lbl">見出しに連番を付ける</span>
+              <span class="settings-hint">番号を付けない見出しは末尾に <code>{.nonum}</code></span>
+              <span class="settings-ctl">
+                <label class="settings-sw">
+                  <input type="checkbox" id="settingHeadingNumbers" aria-label="見出しに連番を付ける" /><span></span>
+                </label>
+              </span>
+            </div>
+            <div class="settings-row settings-row-sub" id="settingHeadingDepthRow">
+              <span class="settings-lbl">どの見出しまで付けるか</span>
+              <span class="settings-ctl">
+                <span class="settings-seg" role="radiogroup" aria-label="どの見出しまで付けるか">
+                  <label><input type="radio" name="settingHeadingNumberDepth" value="2" /><span>h2</span></label>
+                  <label><input type="radio" name="settingHeadingNumberDepth" value="3" /><span>h3</span></label>
+                  <label><input type="radio" name="settingHeadingNumberDepth" value="4" /><span>h4</span></label>
+                  <label><input type="radio" name="settingHeadingNumberDepth" value="5" /><span>h5</span></label>
+                  <label><input type="radio" name="settingHeadingNumberDepth" value="6" /><span>h6</span></label>
+                </span>
+              </span>
+            </div>
+            <div class="settings-row">
+              <span class="settings-lbl">階層ごとに字下げする</span>
+              <span class="settings-ctl">
+                <label class="settings-sw">
+                  <input type="checkbox" id="settingHeadingIndent" aria-label="階層ごとに字下げする" /><span></span>
+                </label>
+              </span>
+            </div>
+          </div>
+
+          <div class="settings-grp">
+            <h3>アラートのタイトル</h3>
+            <div class="settings-row settings-row-stack">
+              <span class="settings-hint">空欄にするとアイコンだけになります。</span>
+              <div class="settings-ctl">
+                <div class="settings-alerts">
+                  <span class="settings-kind settings-kind-note">NOTE</span>
+                  <span class="settings-fld"><input type="text" id="settingAlertTitleNote" aria-label="Note のタイトル" /></span>
+                  <button type="button" id="resetAlertTitleNote" class="settings-reset" title="既定の「Note」に戻す" aria-label="Note を既定に戻す"><svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#i-undo"/></svg></button>
+
+                  <span class="settings-kind settings-kind-tip">TIP</span>
+                  <span class="settings-fld"><input type="text" id="settingAlertTitleTip" aria-label="Tip のタイトル" /></span>
+                  <button type="button" id="resetAlertTitleTip" class="settings-reset" title="既定の「Tip」に戻す" aria-label="Tip を既定に戻す"><svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#i-undo"/></svg></button>
+
+                  <span class="settings-kind settings-kind-important">IMPORTANT</span>
+                  <span class="settings-fld"><input type="text" id="settingAlertTitleImportant" aria-label="Important のタイトル" /></span>
+                  <button type="button" id="resetAlertTitleImportant" class="settings-reset" title="既定の「Important」に戻す" aria-label="Important を既定に戻す"><svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#i-undo"/></svg></button>
+
+                  <span class="settings-kind settings-kind-warning">WARNING</span>
+                  <span class="settings-fld"><input type="text" id="settingAlertTitleWarning" aria-label="Warning のタイトル" /></span>
+                  <button type="button" id="resetAlertTitleWarning" class="settings-reset" title="既定の「Warning」に戻す" aria-label="Warning を既定に戻す"><svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#i-undo"/></svg></button>
+
+                  <span class="settings-kind settings-kind-caution">CAUTION</span>
+                  <span class="settings-fld"><input type="text" id="settingAlertTitleCaution" aria-label="Caution のタイトル" /></span>
+                  <button type="button" id="resetAlertTitleCaution" class="settings-reset" title="既定の「Caution」に戻す" aria-label="Caution を既定に戻す"><svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#i-undo"/></svg></button>
+
+                  <span class="settings-kind settings-kind-link">LINK</span>
+                  <span class="settings-fld"><input type="text" id="settingAlertTitleLink" aria-label="Link のタイトル" /></span>
+                  <button type="button" id="resetAlertTitleLink" class="settings-reset" title="既定の「Link」に戻す" aria-label="Link を既定に戻す"><svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#i-undo"/></svg></button>
+
+                  <span class="settings-kind settings-kind-memo">MEMO</span>
+                  <span class="settings-fld"><input type="text" id="settingAlertTitleMemo" aria-label="Memo のタイトル" /></span>
+                  <button type="button" id="resetAlertTitleMemo" class="settings-reset" title="既定の「Memo」に戻す" aria-label="Memo を既定に戻す"><svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#i-undo"/></svg></button>
+
+                  <span class="settings-kind settings-kind-check">CHECK</span>
+                  <span class="settings-fld"><input type="text" id="settingAlertTitleCheck" aria-label="Check のタイトル" /></span>
+                  <button type="button" id="resetAlertTitleCheck" class="settings-reset" title="既定の「Check」に戻す" aria-label="Check を既定に戻す"><svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#i-undo"/></svg></button>
+
+                  <span class="settings-kind settings-kind-question">QUESTION</span>
+                  <span class="settings-fld"><input type="text" id="settingAlertTitleQuestion" aria-label="Question のタイトル" /></span>
+                  <button type="button" id="resetAlertTitleQuestion" class="settings-reset" title="既定の「Question」に戻す" aria-label="Question を既定に戻す"><svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#i-undo"/></svg></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-grp">
+            <h3>プレビューの CSS</h3>
+            <div class="settings-row">
+              <span class="settings-lbl">標準 CSS を使う</span>
+              <span class="settings-hint">オフにすると、下の CSS ファイルだけで表示します。</span>
+              <span class="settings-ctl">
+                <label class="settings-sw">
+                  <input type="checkbox" id="settingUseStandardCss" aria-label="標準 CSS を使う" /><span></span>
+                </label>
+              </span>
+            </div>
+            <div class="settings-row">
+              <span class="settings-lbl">追加で読み込む CSS</span>
+              <span class="settings-hint">
+                <button type="button" id="exportStandardCssBtn" class="settings-linkbtn">
+                  <svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#i-export"/></svg>標準 CSS を standard.css に書き出す
+                </button>
+              </span>
+              <span class="settings-ctl">
+                <span class="settings-fld settings-fld-path"><span class="settings-pre">./</span><input type="text" id="settingCssPath" aria-label="CSS のパス" /></span>
+              </span>
+            </div>
+          </div>
+
+          <div class="settings-grp">
+            <h3>HTML 出力</h3>
+            <div class="settings-row">
+              <span class="settings-lbl">左側に目次を付ける</span>
+              <span class="settings-hint">狭い画面では畳んで開き、印刷には出ません。</span>
+              <span class="settings-ctl">
+                <label class="settings-sw">
+                  <input type="checkbox" id="settingSideToc" aria-label="左側に目次を付ける" /><span></span>
+                </label>
+              </span>
+            </div>
+          </div>
+
+          <div class="settings-grp">
+            <h3>変更の検知</h3>
+            <div class="settings-row">
+              <span class="settings-lbl">外部での変更を自動で検知する</span>
+              <span class="settings-ctl">
+                <label class="settings-sw">
+                  <input type="checkbox" id="settingPollEnabled" aria-label="外部での変更を自動で検知する" /><span></span>
+                </label>
+              </span>
+            </div>
+            <div class="settings-row settings-row-sub" id="settingPollIntervalRow">
+              <span class="settings-lbl">確認する間隔</span>
+              <span class="settings-ctl">
+                <span class="settings-fld settings-fld-num"><input type="number" id="settingPollInterval" min="1" step="1" aria-label="確認する間隔(秒)" /><span class="settings-unit">秒</span></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-sample">
+          <div class="settings-sample-head"><span>見本</span><span>保存するとプレビューに反映</span></div>
+          <div class="settings-paper"><iframe id="settingsSampleFrame" class="settings-sample-frame" title="設定の見本"></iframe></div>
+        </div>
       </div>
-      <div class="settings-row settings-row-alert">
-        <label for="settingAlertTitleTip">Tip</label>
-        <input type="text" id="settingAlertTitleTip" class="settings-input-text" />
-        <button type="button" id="resetAlertTitleTip" class="btn btn-small">既定に戻す</button>
-      </div>
-      <div class="settings-row settings-row-alert">
-        <label for="settingAlertTitleImportant">Important</label>
-        <input type="text" id="settingAlertTitleImportant" class="settings-input-text" />
-        <button type="button" id="resetAlertTitleImportant" class="btn btn-small">既定に戻す</button>
-      </div>
-      <div class="settings-row settings-row-alert">
-        <label for="settingAlertTitleWarning">Warning</label>
-        <input type="text" id="settingAlertTitleWarning" class="settings-input-text" />
-        <button type="button" id="resetAlertTitleWarning" class="btn btn-small">既定に戻す</button>
-      </div>
-      <div class="settings-row settings-row-alert">
-        <label for="settingAlertTitleCaution">Caution</label>
-        <input type="text" id="settingAlertTitleCaution" class="settings-input-text" />
-        <button type="button" id="resetAlertTitleCaution" class="btn btn-small">既定に戻す</button>
-      </div>
-      <div class="settings-row settings-row-alert">
-        <label for="settingAlertTitleLink">Link</label>
-        <input type="text" id="settingAlertTitleLink" class="settings-input-text" />
-        <button type="button" id="resetAlertTitleLink" class="btn btn-small">既定に戻す</button>
-      </div>
-      <div class="settings-row settings-row-alert">
-        <label for="settingAlertTitleMemo">Memo</label>
-        <input type="text" id="settingAlertTitleMemo" class="settings-input-text" />
-        <button type="button" id="resetAlertTitleMemo" class="btn btn-small">既定に戻す</button>
-      </div>
-      <div class="settings-row settings-row-alert">
-        <label for="settingAlertTitleCheck">Check</label>
-        <input type="text" id="settingAlertTitleCheck" class="settings-input-text" />
-        <button type="button" id="resetAlertTitleCheck" class="btn btn-small">既定に戻す</button>
-      </div>
-      <div class="settings-row settings-row-alert">
-        <label for="settingAlertTitleQuestion">Question</label>
-        <input type="text" id="settingAlertTitleQuestion" class="settings-input-text" />
-        <button type="button" id="resetAlertTitleQuestion" class="btn btn-small">既定に戻す</button>
-      </div>
-      <div class="modal-footer">
-        <div></div>
-        <button id="settingsCloseBtn" type="button" class="btn btn-primary">閉じる</button>
+      <div class="modal-footer settings-foot">
+        <span class="settings-note" id="settingsDirtyNote"></span>
+        <button id="settingsCancelBtn" type="button" class="btn">キャンセル</button>
+        <button id="settingsSaveBtn" type="button" class="btn btn-primary">保存</button>
       </div>
     </div>
   </div>
