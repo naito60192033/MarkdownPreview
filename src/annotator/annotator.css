@@ -238,11 +238,22 @@
   cursor: text;
 }
 
-/* 図形の当たり判定用の透明な図形(クリックしやすくするためのもの) */
+/* 図形の当たり判定用の透明な図形(クリックしやすくするためのもの)。
+   移動カーソルは選択ツールのときだけ出す(描くツールでは図形の上でも新しく描くので、
+   キャンバスのカーソル=十字などをそのまま引き継ぐ。カーソルで今のツールが分かるように) */
 .annotator-hit-area {
   fill: transparent;
   stroke: transparent;
+}
+
+.annotator-svg[data-tool="select"] .annotator-hit-area {
   cursor: move;
+}
+
+/* 中ボタンドラッグでのパン中は、どのツールでも手のカーソルにする */
+.annotator-svg.is-panning,
+.annotator-svg.is-panning * {
+  cursor: grabbing !important;
 }
 
 /* カギ線(elbow)の当たり判定は <polyline>(fill を持たない図形)なので、折れ点で

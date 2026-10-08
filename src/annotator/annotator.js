@@ -476,7 +476,7 @@ function buildToolGroup() {
   group.setAttribute('aria-label', 'ツール');
   const tools = [
     ['select', '選択 (V)'],
-    ['rect', '赤枠 (R)'],
+    ['rect', '四角 (R)'],
     ['arrow', '矢印 (A)'],
     ['elbow', 'カギ線 (L)'],
     ['callout', '吹き出し (T)'],
@@ -787,6 +787,7 @@ function onWheel(inst, e) {
 function startPanDrag(inst, startClientX, startClientY) {
   const st = inst.state;
   const startCam = { ...st.camera };
+  inst.dom.svg.classList.add('is-panning'); // 手のカーソル(CSS)
   const move = (e) => {
     const dx = (e.clientX - startClientX) / st.zoom;
     const dy = (e.clientY - startClientY) / st.zoom;
@@ -794,6 +795,7 @@ function startPanDrag(inst, startClientX, startClientY) {
     render(inst);
   };
   const up = () => {
+    inst.dom.svg.classList.remove('is-panning');
     window.removeEventListener('mousemove', move);
     window.removeEventListener('mouseup', up);
   };

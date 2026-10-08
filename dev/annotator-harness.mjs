@@ -1133,6 +1133,44 @@ async function runTests(browser) {
     });
   });
 
+  console.log('\n18b) カーソルが今の操作と一致する(図形上の移動カーソルは選択ツールだけ、中ボタンでのパン中は手)');
+  await test('描くツールでは図形の上でも十字、選択ツールでは移動、中ボタンドラッグ中は grabbing', async () => {
+    await withPage(browser, async ({ page, consoleErrors }) => {
+      await openWithTestImage(page, { format: 'png', width: 800, height: 600 });
+      await selectTool(page, 'rect');
+      await dragOnCanvas(page, { x: 100, y: 100 }, { x: 300, y: 250 });
+
+      // 枠の内側(当たり判定の上)のカーソル
+      const c = await imgToClient(page, 200, 175);
+      const cursorAt = (pt) =>
+        page.evaluate((p) => getComputedStyle(document.elementFromPoint(p.x, p.y)).cursor, pt);
+
+      // 描いた直後は選択ツールに戻っている → 図形の上は移動カーソル
+      assert.equal((await getDebugState(page)).activeTool, 'select');
+      assert.equal(await cursorAt(c), 'move');
+
+      // 描くツールでは図形の上でも十字(移動カーソルを出さない)
+      await selectTool(page, 'rect');
+      assert.equal(await cursorAt(c), 'crosshair');
+      await selectTool(page, 'arrow');
+      assert.equal(await cursorAt(c), 'crosshair');
+
+      // 中ボタンドラッグ中は手(grabbing)、離すと元に戻る
+      await page.mouse.move(c.x, c.y);
+      await page.mouse.down({ button: 'middle' });
+      await page.mouse.move(c.x + 30, c.y + 20, { steps: 3 });
+      assert.equal(await cursorAt({ x: c.x + 30, y: c.y + 20 }), 'grabbing');
+      await page.mouse.up({ button: 'middle' });
+      assert.equal(await cursorAt({ x: c.x + 30, y: c.y + 20 }), 'crosshair');
+
+      // ツール名は色を含まない「四角」
+      assert.equal(await page.textContent('.annotator-tool-btn[data-tool="rect"]'), '四角 (R)');
+
+      printConsoleErrors(consoleErrors, 'カーソル');
+      assert.equal(consoleErrors.length, 0, 'コンソールエラーが発生しました');
+    });
+  });
+
   console.log('\n19) 出力サイズの上限を超えると保存を止めてメッセージを出す');
   await test('大きめの画像+出力倍率1000%で保存しようとするとメッセージが出てモーダルは開いたまま', async () => {
     await withPage(browser, async ({ page, consoleErrors }) => {
